@@ -21,6 +21,11 @@ sequence and track order, lock/kind state, clip/media IDs, and normalized exact
 timeline/source time pairs. Domain objects remain independent of serialization;
 the CLI maps them into boundary-specific DTOs.
 
+Added `create-project --project PATH --name NAME`. It creates a validated empty
+domain project, saves it through the atomic persistence adapter, reports its
+stable project ID, and refuses any destination that already exists. The command
+does not write directly to SQLite or bypass project invariants.
+
 ## Actual workflow verification
 
 The opt-in integration builds media, sequence, track, and clip state through the
@@ -34,13 +39,16 @@ reported sequence and track IDs against the command-built project.
 
 - Formatting passes.
 - Strict workspace Clippy passes with warnings denied.
-- 45 default tests pass.
+- 46 default tests pass.
 - Two media, two playback, three export-library, and one CLI actual-fixture tests
   pass with explicit local `FFmpeg`/ffprobe executables.
+- The ordinary executable suite creates, inspects, and attempts to replace a
+  project, confirming the replacement fails and original state remains intact.
 
 ## Limitations and next work
 
-The CLI cannot yet create projects, edit clips, report progress, or cancel export.
+The CLI cannot yet add media/sequences/tracks/clips, edit clips, report progress,
+or cancel export.
 Inspection exposes source paths and is intended for trusted local project use;
 future permission-filtered scripting surfaces must not copy that policy blindly.
 The CLI inherits the video-only renderer and reference-codec licensing boundary.

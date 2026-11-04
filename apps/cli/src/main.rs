@@ -18,6 +18,10 @@ fn main() -> ExitCode {
             println!("{json}");
             ExitCode::SUCCESS
         }
+        Ok(prism_cli::CliOutcome::ProjectCreated { path, project_id }) => {
+            println!("Created project {project_id} at {}", path.display());
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("Prism: {error}");
             ExitCode::FAILURE

@@ -2,6 +2,7 @@
 
 use prism_core::{SequenceId, TrackId};
 use prism_export::{BasicMp4Exporter, ExportError, ExportReport, SingleTrackMp4ExportRequest};
+use prism_persistence::save_atomic;
 use prism_persistence::{PersistenceError, load};
 use prism_project::{Project, TrackKind};
 use prism_timeline::{RationalTime, TimeError};
@@ -40,6 +41,13 @@ pub enum CliOutcome {
     Exported(ExportReport),
     /// Versioned project inspection JSON.
     Inspected(String),
+    /// A newly created, atomically saved project.
+    ProjectCreated {
+        /// Saved project path.
+        path: PathBuf,
+        /// Stable project UUID.
+        project_id: String,
+    },
 }
 
 /// CLI parse and workflow failures.
@@ -47,7 +55,7 @@ pub enum CliOutcome {
 pub enum CliError {
     /// No supported subcommand was supplied.
     #[error(
-        "usage: prism-cli inspect --project PATH | prism-cli export-track --project PATH --sequence UUID --track UUID --output PATH --width PIXELS --height PIXELS --fps NUM/DEN --ffmpeg PATH --ffprobe PATH"
+        "usage: prism-cli create-project --project PATH --name NAME | prism-cli inspect --project PATH | prism-cli export-track --project PATH --sequence UUID --track UUID --output PATH --width PIXELS --height PIXELS --fps NUM/DEN --ffmpeg PATH --ffprobe PATH"
     )]
     Usage,
     /// A flag was unknown or repeated.
@@ -79,6 +87,9 @@ pub enum CliError {
     /// Inspection JSON serialization failed.
     #[error("could not serialize project inspection: {0}")]
     Json(#[from] serde_json::Error),
+    /// Project creation never overwrites an existing path.
+    #[error("project already exists: {0}")]
+    ProjectExists(PathBuf),
 }
 
 /// Parses and runs one CLI invocation, excluding the executable name.
@@ -91,8 +102,61 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOutcome, 
     match arguments.first().and_then(|argument| argument.to_str()) {
         Some("export-track") => run_export_track(arguments),
         Some("inspect") => run_inspect(&arguments),
+        Some("create-project") => run_create_project(&arguments),
         Some(_) | None => Err(CliError::Usage),
     }
+}
+
+fn run_create_project(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
+    let parsed = parse_create_project(arguments)?;
+    if parsed.path.exists() {
+        return Err(CliError::ProjectExists(parsed.path));
+    }
+    let project = Project::new(parsed.name);
+    project.validate().map_err(|error| CliError::InvalidValue {
+        option: "--name",
+        value: error.to_string(),
+    })?;
+    save_atomic(&project, &parsed.path)?;
+    Ok(CliOutcome::ProjectCreated {
+        path: parsed.path,
+        project_id: project.id.as_uuid().to_string(),
+    })
+}
+
+struct CreateProjectArgs {
+    path: PathBuf,
+    name: String,
+}
+
+fn parse_create_project(arguments: &[OsString]) -> Result<CreateProjectArgs, CliError> {
+    let Some(command) = arguments.first() else {
+        return Err(CliError::Usage);
+    };
+    if command != "create-project" || arguments.len() != 5 {
+        return Err(CliError::Usage);
+    }
+    let mut path = None;
+    let mut name = None;
+    for pair in arguments[1..].chunks_exact(2) {
+        let flag = pair[0].to_str().ok_or(CliError::NonUtf8Value("option"))?;
+        match flag {
+            "--project" if path.is_none() => path = Some(PathBuf::from(&pair[1])),
+            "--name" if name.is_none() => {
+                name = Some(
+                    pair[1]
+                        .clone()
+                        .into_string()
+                        .map_err(|_| CliError::NonUtf8Value("--name"))?,
+                );
+            }
+            _ => return Err(CliError::InvalidOption(flag.to_owned())),
+        }
+    }
+    Ok(CreateProjectArgs {
+        path: path.ok_or(CliError::MissingOption("--project"))?,
+        name: name.ok_or(CliError::MissingOption("--name"))?,
+    })
 }
 
 fn run_export_track(arguments: Vec<OsString>) -> Result<CliOutcome, CliError> {

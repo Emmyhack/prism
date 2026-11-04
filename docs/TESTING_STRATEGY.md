@@ -12,7 +12,7 @@ CI must execute `fmt`, Clippy with warnings denied, unit/integration tests, SDK
 conformance, dependency advisories, and license policy. Platform-native smoke
 jobs are required before support claims.
 
-Current result (2026-11-04): forty-five default tests pass, including the first
+Current result (2026-11-04): forty-six default tests pass, including the first
 generated rational-time property test. Strict Clippy and formatting are required;
 broader property, integration, fuzz, regression, and media tests remain. Two
 media integration tests and two playback integration tests pass against an actual
@@ -46,5 +46,8 @@ the resulting MP4. Parser tests reject missing, duplicate, and malformed options
 The same executable test first inspects the project as versioned JSON and verifies
 the reported IDs before export. Unit coverage checks exact rational time fields
 remain integer numerator/timescale pairs at the JSON boundary.
+An executable-level project-creation test verifies atomic creation, inspection of
+the empty saved state, and refusal to replace an existing project. It reinspects
+the original after refusal to prove the existing file was not mutated.
 The local FFmpeg build is a reference tool, not an approved distribution
 dependency.

@@ -19,6 +19,13 @@ single-video-track MP4 export paths, but it is not yet a usable desktop editor.
 
 ## Headless track export
 
+Create an empty validated project without overwriting an existing file:
+
+```sh
+cargo run -p prism-cli -- create-project \
+  --project ./edit.prism --name "My edit"
+```
+
 Inspect a saved project to discover stable object IDs and exact clip timing:
 
 ```sh
