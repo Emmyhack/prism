@@ -6,7 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+prism-core = { path = "../prism-core" }
 prism-media = { path = "../prism-media" }
+prism-project = { path = "../prism-project" }
 prism-timeline = { path = "../prism-timeline" }
 thiserror.workspace = true
 uuid.workspace = true

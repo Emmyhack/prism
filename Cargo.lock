@@ -388,7 +388,9 @@ dependencies = [
 name = "prism-export"
 version = "0.1.0"
 dependencies = [
+ "prism-core",
  "prism-media",
+ "prism-project",
  "prism-timeline",
  "thiserror",
  "uuid",

@@ -16,6 +16,12 @@ positive duration and video stream and checked for nonzero length before
 same-filesystem no-clobber hard-link finalization. This prevents replacement even
 if a destination appears during encoding. Failure paths remove the temporary file.
 
+The crate also builds a deterministic plan for one authoritative video track.
+It preserves clip IDs, asset IDs, source trims, sequence placement, and exact
+durations while inserting explicit leading and inter-clip gap segments. It does
+not invent a trailing gap because the current sequence model has no independent
+duration. Invalid or non-video track layouts fail before encoding.
+
 ## Actual-media verification
 
 The opt-in integration exports the 1/4-through-3/4-second range of the synthetic
@@ -27,7 +33,7 @@ from the result. The test removes its explicit temporary directory afterward.
 
 - Formatting passes.
 - Strict workspace Clippy passes with warnings denied.
-- 39 default tests pass.
+- 41 default tests pass.
 - Two media, two playback, and one export actual-fixture tests pass with explicit
   local `FFmpeg`/ffprobe executables.
 
@@ -37,5 +43,5 @@ This slice exports a source range, not a fully evaluated multitrack sequence.
 It has no progress reporting, cancellation, hardware encoding, presets, effects,
 color transforms, or codec capability negotiation. The installed Homebrew build
 remains a local GPL-enabled reference tool and is not approved for distribution.
-Next, define a sequence export plan that uses the same clip timing semantics as
-preview, initially for one video track with deterministic gap handling.
+Next, render this plan into one MP4 using deterministic black gap frames and
+source clip ranges, then independently compare its timing with preview plans.

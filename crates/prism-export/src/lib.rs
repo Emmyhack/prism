@@ -4,7 +4,9 @@
 //! explicitly configured `FFmpeg` executable. Multi-clip timeline rendering,
 //! effects, and production codec distribution remain separate milestones.
 
+use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
 use prism_media::{FfprobeInspector, MediaError, StreamKind};
+use prism_project::{Project, TrackKind};
 use prism_timeline::{RationalTime, RoundingMode, TimeError};
 use std::{
     fs,
@@ -42,9 +44,59 @@ pub struct ExportReport {
     pub has_audio: bool,
 }
 
+/// One exact segment in a single-video-track export plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SequenceExportSegment {
+    /// Transparent/black sequence time without a clip on the selected track.
+    Gap {
+        /// Exact start in sequence time.
+        timeline_start: RationalTime,
+        /// Exact positive gap duration.
+        duration: RationalTime,
+    },
+    /// One nondestructive source range placed on the selected track.
+    Clip {
+        /// Authoritative clip identifier.
+        clip_id: ClipId,
+        /// Referenced source asset.
+        media_id: MediaAssetId,
+        /// Exact start in sequence time.
+        timeline_start: RationalTime,
+        /// Exact start in source media time.
+        source_start: RationalTime,
+        /// Exact source/sequence duration before retiming exists.
+        duration: RationalTime,
+    },
+}
+
+/// Deterministic export interpretation of one video track.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SingleTrackExportPlan {
+    /// Source sequence.
+    pub sequence_id: SequenceId,
+    /// Selected video track.
+    pub track_id: TrackId,
+    /// Ordered, contiguous segments from zero through the final clip end.
+    pub segments: Vec<SequenceExportSegment>,
+    /// Exact plan duration, or zero for an empty track.
+    pub duration: RationalTime,
+}
+
 /// Basic export failures.
 #[derive(Debug, Error)]
 pub enum ExportError {
+    /// Requested sequence was absent from the project.
+    #[error("export sequence does not exist")]
+    SequenceNotFound,
+    /// Requested track was absent from the selected sequence.
+    #[error("export track does not exist in the sequence")]
+    TrackNotFound,
+    /// The initial sequence exporter only accepts video tracks.
+    #[error("export track is not a video track")]
+    TrackIsNotVideo,
+    /// Track clips were overlapping, out of order, or otherwise invalid.
+    #[error("export track layout is invalid")]
+    InvalidTrackLayout,
     /// Input source does not exist as a regular file.
     #[error("export source is not a regular file: {0}")]
     InvalidSource(PathBuf),
@@ -77,6 +129,61 @@ pub enum ExportError {
     /// The encoder output was empty or lacked required video/duration evidence.
     #[error("encoded output failed validation: {0}")]
     InvalidOutput(&'static str),
+}
+
+/// Builds contiguous export timing for one authoritative video track.
+///
+/// Gaps before or between clips are explicit plan segments. No trailing gap is
+/// invented because the current sequence model has no independent duration.
+///
+/// # Errors
+///
+/// Returns [`ExportError`] for missing/wrong-kind objects or exact-time
+/// arithmetic overflow.
+pub fn plan_single_video_track(
+    project: &Project,
+    sequence_id: SequenceId,
+    track_id: TrackId,
+) -> Result<SingleTrackExportPlan, ExportError> {
+    let sequence = project
+        .sequences
+        .get(&sequence_id)
+        .ok_or(ExportError::SequenceNotFound)?;
+    let track = sequence
+        .tracks
+        .iter()
+        .find(|track| track.id == track_id)
+        .ok_or(ExportError::TrackNotFound)?;
+    if track.kind != TrackKind::Video {
+        return Err(ExportError::TrackIsNotVideo);
+    }
+    let mut cursor = RationalTime::ZERO;
+    let mut segments = Vec::with_capacity(track.clips.len().saturating_mul(2));
+    for clip in &track.clips {
+        if clip.timeline_start < cursor || !clip.source_duration.is_positive() {
+            return Err(ExportError::InvalidTrackLayout);
+        }
+        if clip.timeline_start > cursor {
+            segments.push(SequenceExportSegment::Gap {
+                timeline_start: cursor,
+                duration: clip.timeline_start.checked_sub(cursor)?,
+            });
+        }
+        segments.push(SequenceExportSegment::Clip {
+            clip_id: clip.id,
+            media_id: clip.media_id,
+            timeline_start: clip.timeline_start,
+            source_start: clip.source_start,
+            duration: clip.source_duration,
+        });
+        cursor = clip.timeline_start.checked_add(clip.source_duration)?;
+    }
+    Ok(SingleTrackExportPlan {
+        sequence_id,
+        track_id,
+        segments,
+        duration: cursor,
+    })
 }
 
 /// Explicit `FFmpeg`/ffprobe adapter for the initial validated MP4 workflow.
@@ -247,7 +354,12 @@ impl Drop for TemporaryExport {
 
 #[cfg(test)]
 mod tests {
-    use super::{BasicMp4ExportRequest, ExportError, format_timestamp, validate_request};
+    use super::{
+        BasicMp4ExportRequest, ExportError, SequenceExportSegment, format_timestamp,
+        plan_single_video_track, validate_request,
+    };
+    use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
+    use prism_project::{Clip, MediaAsset, Project, Sequence, Track, TrackKind};
     use prism_timeline::RationalTime;
     use std::path::PathBuf;
 
@@ -274,5 +386,114 @@ mod tests {
             Err(ExportError::InvalidSource(_))
         ));
         Ok(())
+    }
+
+    #[test]
+    fn sequence_plan_preserves_trims_and_makes_gaps_explicit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Export plan");
+        let media_id = MediaAssetId::new();
+        let sequence_id = SequenceId::new();
+        let track_id = TrackId::new();
+        let first_clip_id = ClipId::new();
+        let second_clip_id = ClipId::new();
+        project.media.insert(
+            media_id,
+            MediaAsset {
+                id: media_id,
+                source_path: "source.mp4".to_owned(),
+            },
+        );
+        project.sequences.insert(
+            sequence_id,
+            Sequence {
+                id: sequence_id,
+                name: "Main".to_owned(),
+                tracks: vec![Track {
+                    id: track_id,
+                    kind: TrackKind::Video,
+                    clips: vec![
+                        Clip {
+                            id: first_clip_id,
+                            media_id,
+                            timeline_start: RationalTime::new(1, 1)?,
+                            source_start: RationalTime::new(10, 1)?,
+                            source_duration: RationalTime::new(2, 1)?,
+                        },
+                        Clip {
+                            id: second_clip_id,
+                            media_id,
+                            timeline_start: RationalTime::new(4, 1)?,
+                            source_start: RationalTime::new(20, 1)?,
+                            source_duration: RationalTime::new(1, 1)?,
+                        },
+                    ],
+                    locked: false,
+                }],
+            },
+        );
+        project.validate()?;
+        let plan = plan_single_video_track(&project, sequence_id, track_id)?;
+        assert_eq!(plan.duration, RationalTime::new(5, 1)?);
+        assert_eq!(plan.segments.len(), 4);
+        assert_eq!(
+            plan.segments[0],
+            SequenceExportSegment::Gap {
+                timeline_start: RationalTime::ZERO,
+                duration: RationalTime::new(1, 1)?,
+            }
+        );
+        assert_eq!(
+            plan.segments[1],
+            SequenceExportSegment::Clip {
+                clip_id: first_clip_id,
+                media_id,
+                timeline_start: RationalTime::new(1, 1)?,
+                source_start: RationalTime::new(10, 1)?,
+                duration: RationalTime::new(2, 1)?,
+            }
+        );
+        assert_eq!(
+            plan.segments[2],
+            SequenceExportSegment::Gap {
+                timeline_start: RationalTime::new(3, 1)?,
+                duration: RationalTime::new(1, 1)?,
+            }
+        );
+        assert_eq!(
+            plan.segments[3],
+            SequenceExportSegment::Clip {
+                clip_id: second_clip_id,
+                media_id,
+                timeline_start: RationalTime::new(4, 1)?,
+                source_start: RationalTime::new(20, 1)?,
+                duration: RationalTime::new(1, 1)?,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sequence_plan_rejects_audio_track() {
+        let mut project = Project::new("Audio only");
+        let sequence_id = SequenceId::new();
+        let track_id = TrackId::new();
+        project.sequences.insert(
+            sequence_id,
+            Sequence {
+                id: sequence_id,
+                name: "Main".to_owned(),
+                tracks: vec![Track {
+                    id: track_id,
+                    kind: TrackKind::Audio,
+                    clips: Vec::new(),
+                    locked: false,
+                }],
+            },
+        );
+        assert!(matches!(
+            plan_single_video_track(&project, sequence_id, track_id),
+            Err(ExportError::TrackIsNotVideo)
+        ));
     }
 }

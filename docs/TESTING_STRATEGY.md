@@ -12,7 +12,7 @@ CI must execute `fmt`, Clippy with warnings denied, unit/integration tests, SDK
 conformance, dependency advisories, and license policy. Platform-native smoke
 jobs are required before support claims.
 
-Current result (2026-11-04): thirty-nine default tests pass, including the first
+Current result (2026-11-04): forty-one default tests pass, including the first
 generated rational-time property test. Strict Clippy and formatting are required;
 broader property, integration, fuzz, regression, and media tests remain. Two
 media integration tests and two playback integration tests pass against an actual
@@ -30,5 +30,8 @@ after a playback-generation change.
 An opt-in export integration encodes an exact source range to a temporary MP4,
 independently probes the finalized output, and decodes a frame from it. This is
 a local reference-codec test, not a distribution support claim.
+Export-plan unit tests verify exact clip trim/placement preservation, explicit
+leading and inter-clip gaps, video-track type enforcement, and malformed-layout
+rejection before any encoder process starts.
 The local FFmpeg build is a reference tool, not an approved distribution
 dependency.
