@@ -38,3 +38,8 @@ through the same command engine used by the visual editor.
 The initial Python SDK slice in `packages/prism-python-sdk` builds this envelope
 with exact `RationalTime` values. It is a protocol authoring layer; execution,
 permissions, and worker isolation remain Prism application responsibilities.
+
+The JavaScript SDK slice in `packages/prism-js-sdk` exposes equivalent
+`RationalTime`, `moveClip`, and `transaction` helpers as an ESM package. Both
+SDKs intentionally emit the same protocol objects rather than maintaining
+separate editing semantics.
