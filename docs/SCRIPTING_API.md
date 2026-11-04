@@ -19,3 +19,18 @@ loader and no ambient Deno/Node APIs. TypeScript compiles before execution using
 a pinned compiler; remote imports are denied. Python is a supervised isolated
 worker and SDK client; virtual environments are explicit and capability-scoped.
 No runtime is described as fully sandboxed.
+
+## Executable protocol example
+
+The checked-in `examples/script-transaction-dry-run.json` fixture demonstrates
+the version-1 transaction envelope. It can be submitted with:
+
+```sh
+cargo run -p prism-cli -- script-transaction \
+  --project ./edit.prism \
+  --request ./examples/script-transaction-dry-run.json
+```
+
+The `expectedRevision` must match the loaded project. Set `dryRun` to `false`
+only after reviewing the validated operation; committed requests are persisted
+through the same command engine used by the visual editor.

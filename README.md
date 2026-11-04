@@ -101,6 +101,9 @@ cargo run -p prism-cli -- script-transaction \
 Set `dryRun` to `false` in the versioned JSON request to commit through the
 same validated command engine.
 
+See [the example transaction](examples/script-transaction-dry-run.json) for
+the complete wire shape used by future Python, JavaScript, and TypeScript SDKs.
+
 The command emits deterministic, versioned JSON. Use the reported sequence and
 track IDs with the export command:
 
