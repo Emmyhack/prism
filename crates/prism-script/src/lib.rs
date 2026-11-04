@@ -414,4 +414,16 @@ mod tests {
         ));
         Ok(())
     }
+
+    #[test]
+    fn checked_in_transaction_example_matches_protocol() -> Result<(), Box<dyn std::error::Error>> {
+        let request: TransactionRequest = serde_json::from_str(include_str!(
+            "../../../examples/script-transaction-dry-run.json"
+        ))?;
+        let transaction = request.into_transaction()?;
+        assert_eq!(transaction.expected_revision, 1);
+        assert!(transaction.dry_run);
+        assert_eq!(transaction.commands.len(), 1);
+        Ok(())
+    }
 }
