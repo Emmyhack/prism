@@ -49,5 +49,8 @@ remain integer numerator/timescale pairs at the JSON boundary.
 An executable-level project-creation test verifies atomic creation, inspection of
 the empty saved state, and refusal to replace an existing project. It reinspects
 the original after refusal to prove the existing file was not mutated.
+The second real-media CLI test creates a project, probes actual media, commits
+media/sequence/track/clip creation as one revision, and verifies exact source
+start and duration through the inspection JSON contract.
 The local FFmpeg build is a reference tool, not an approved distribution
 dependency.

@@ -113,3 +113,58 @@ fn cli_loads_saved_project_and_exports_selected_track() -> Result<(), Box<dyn st
     fs::remove_dir(&test_directory)?;
     Ok(())
 }
+
+#[test]
+#[ignore = "requires PRISM_FFMPEG, PRISM_FFPROBE, and the generated media fixture"]
+fn cli_inspects_media_and_commits_first_video_sequence() -> Result<(), Box<dyn std::error::Error>> {
+    let ffprobe =
+        PathBuf::from(std::env::var_os("PRISM_FFPROBE").ok_or("PRISM_FFPROBE is not set")?);
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/media/av-ntsc-48k.mp4");
+    let test_directory =
+        std::env::temp_dir().join(format!("prism-cli-edit-test-{}", Uuid::new_v4()));
+    fs::create_dir(&test_directory)?;
+    let project_path = test_directory.join("edit.prism");
+    let binary = env!("CARGO_BIN_EXE_prism-cli");
+    let created = ProcessCommand::new(binary)
+        .args(["create-project", "--project"])
+        .arg(&project_path)
+        .args(["--name", "CLI edit"])
+        .output()?;
+    assert!(created.status.success());
+    let edited = ProcessCommand::new(binary)
+        .args(["create-video-sequence", "--project"])
+        .arg(&project_path)
+        .arg("--media")
+        .arg(&fixture)
+        .args([
+            "--sequence-name",
+            "Main",
+            "--source-start",
+            "1/4",
+            "--duration",
+            "1/2",
+            "--ffprobe",
+        ])
+        .arg(&ffprobe)
+        .output()?;
+    if !edited.status.success() {
+        return Err(String::from_utf8_lossy(&edited.stderr).into_owned().into());
+    }
+    let inspected = ProcessCommand::new(binary)
+        .args(["inspect", "--project"])
+        .arg(&project_path)
+        .output()?;
+    let json: serde_json::Value = serde_json::from_slice(&inspected.stdout)?;
+    assert_eq!(json["revision"], 1);
+    assert_eq!(json["media"].as_array().map(Vec::len), Some(1));
+    assert_eq!(json["sequences"].as_array().map(Vec::len), Some(1));
+    let clip = &json["sequences"][0]["tracks"][0]["clips"][0];
+    assert_eq!(clip["sourceStart"]["value"], 1);
+    assert_eq!(clip["sourceStart"]["timescale"], 4);
+    assert_eq!(clip["sourceDuration"]["value"], 1);
+    assert_eq!(clip["sourceDuration"]["timescale"], 2);
+    fs::remove_file(&project_path)?;
+    fs::remove_dir(&test_directory)?;
+    Ok(())
+}

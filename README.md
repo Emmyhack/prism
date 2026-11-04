@@ -26,6 +26,15 @@ cargo run -p prism-cli -- create-project \
   --project ./edit.prism --name "My edit"
 ```
 
+Inspect real media and create the first video sequence through one validated
+command transaction:
+
+```sh
+cargo run -p prism-cli -- create-video-sequence \
+  --project ./edit.prism --media ./source.mp4 --sequence-name Main \
+  --source-start 0/1 --duration 10/1 --ffprobe /path/to/ffprobe
+```
+
 Inspect a saved project to discover stable object IDs and exact clip timing:
 
 ```sh

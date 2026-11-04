@@ -1,7 +1,9 @@
 //! Dependency-light command-line workflows backed by Prism's core APIs.
 
-use prism_core::{SequenceId, TrackId};
+use prism_commands::{Command, CommandEngine};
+use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
 use prism_export::{BasicMp4Exporter, ExportError, ExportReport, SingleTrackMp4ExportRequest};
+use prism_media::{FfprobeInspector, MediaError, StreamKind};
 use prism_persistence::save_atomic;
 use prism_persistence::{PersistenceError, load};
 use prism_project::{Project, TrackKind};
@@ -48,6 +50,15 @@ pub enum CliOutcome {
         /// Stable project UUID.
         project_id: String,
     },
+    /// A new video sequence and first clip were committed and saved.
+    VideoSequenceCreated {
+        /// Updated project path.
+        path: PathBuf,
+        /// New sequence UUID.
+        sequence_id: String,
+        /// New video-track UUID.
+        track_id: String,
+    },
 }
 
 /// CLI parse and workflow failures.
@@ -90,6 +101,18 @@ pub enum CliError {
     /// Project creation never overwrites an existing path.
     #[error("project already exists: {0}")]
     ProjectExists(PathBuf),
+    /// Media inspection failed before mutation.
+    #[error("could not inspect media: {0}")]
+    Media(#[from] MediaError),
+    /// Inspected media did not contain video.
+    #[error("media has no video stream")]
+    NoVideoStream,
+    /// Requested exact range exceeded inspected duration.
+    #[error("clip source range exceeds inspected media duration")]
+    SourceRangeOutOfBounds,
+    /// The shared command engine rejected the edit.
+    #[error("could not edit project: {0}")]
+    Command(String),
 }
 
 /// Parses and runs one CLI invocation, excluding the executable name.
@@ -103,8 +126,104 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOutcome, 
         Some("export-track") => run_export_track(arguments),
         Some("inspect") => run_inspect(&arguments),
         Some("create-project") => run_create_project(&arguments),
+        Some("create-video-sequence") => run_create_video_sequence(&arguments),
         Some(_) | None => Err(CliError::Usage),
     }
+}
+
+fn run_create_video_sequence(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
+    let [
+        command,
+        project_flag,
+        project_path,
+        media_flag,
+        media_path,
+        name_flag,
+        name,
+        start_flag,
+        start,
+        duration_flag,
+        duration,
+        probe_flag,
+        probe,
+    ] = arguments
+    else {
+        return Err(CliError::Usage);
+    };
+    if command != "create-video-sequence"
+        || project_flag != "--project"
+        || media_flag != "--media"
+        || name_flag != "--sequence-name"
+        || start_flag != "--source-start"
+        || duration_flag != "--duration"
+        || probe_flag != "--ffprobe"
+    {
+        return Err(CliError::Usage);
+    }
+    let project_path = PathBuf::from(project_path);
+    let media_path = PathBuf::from(media_path);
+    let sequence_name = name
+        .to_str()
+        .ok_or(CliError::NonUtf8Value("--sequence-name"))?
+        .to_owned();
+    let source_start = parse_exact_time(start.clone(), "--source-start")?;
+    let duration = parse_exact_time(duration.clone(), "--duration")?;
+    let metadata = FfprobeInspector::new(probe).inspect(&media_path)?;
+    if !metadata
+        .streams
+        .iter()
+        .any(|stream| matches!(stream.kind, StreamKind::Video(_)))
+    {
+        return Err(CliError::NoVideoStream);
+    }
+    let requested_end = source_start.checked_add(duration)?;
+    if !source_start.is_non_negative()
+        || !duration.is_positive()
+        || metadata
+            .duration
+            .is_none_or(|available| requested_end > available)
+    {
+        return Err(CliError::SourceRangeOutOfBounds);
+    }
+    let mut project = load(&project_path)?;
+    let media_id = MediaAssetId::new();
+    let sequence_id = SequenceId::new();
+    let track_id = TrackId::new();
+    CommandEngine::execute_transaction(
+        &mut project,
+        "Create video sequence",
+        vec![
+            Command::ImportMedia {
+                id: media_id,
+                source_path: media_path.to_string_lossy().into_owned(),
+            },
+            Command::CreateSequence {
+                id: sequence_id,
+                name: sequence_name,
+            },
+            Command::CreateTrack {
+                sequence_id,
+                id: track_id,
+                kind: TrackKind::Video,
+            },
+            Command::InsertClip {
+                sequence_id,
+                track_id,
+                id: ClipId::new(),
+                media_id,
+                timeline_start: RationalTime::ZERO,
+                source_start,
+                source_duration: duration,
+            },
+        ],
+    )
+    .map_err(|error| CliError::Command(error.to_string()))?;
+    save_atomic(&project, &project_path)?;
+    Ok(CliOutcome::VideoSequenceCreated {
+        path: project_path,
+        sequence_id: sequence_id.as_uuid().to_string(),
+        track_id: track_id.as_uuid().to_string(),
+    })
 }
 
 fn run_create_project(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
@@ -400,25 +519,26 @@ fn parse_u32(value: OsString, option: &'static str) -> Result<u32, CliError> {
 }
 
 fn parse_rate(value: OsString) -> Result<RationalTime, CliError> {
+    parse_exact_time(value, "--fps")
+}
+
+fn parse_exact_time(value: OsString, option: &'static str) -> Result<RationalTime, CliError> {
     let value = value
         .into_string()
-        .map_err(|_| CliError::NonUtf8Value("--fps"))?;
+        .map_err(|_| CliError::NonUtf8Value(option))?;
     let Some((numerator, denominator)) = value.split_once('/') else {
-        return Err(CliError::InvalidValue {
-            option: "--fps",
-            value,
-        });
+        return Err(CliError::InvalidValue { option, value });
     };
     let numerator = numerator
         .parse::<i64>()
         .map_err(|_| CliError::InvalidValue {
-            option: "--fps",
+            option,
             value: value.clone(),
         })?;
     let denominator = denominator
         .parse::<u32>()
         .map_err(|_| CliError::InvalidValue {
-            option: "--fps",
+            option,
             value: value.clone(),
         })?;
     RationalTime::new(numerator, denominator).map_err(CliError::from)

@@ -22,6 +22,17 @@ fn main() -> ExitCode {
             println!("Created project {project_id} at {}", path.display());
             ExitCode::SUCCESS
         }
+        Ok(prism_cli::CliOutcome::VideoSequenceCreated {
+            path,
+            sequence_id,
+            track_id,
+        }) => {
+            println!(
+                "Updated {}: sequence {sequence_id}, track {track_id}",
+                path.display()
+            );
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("Prism: {error}");
             ExitCode::FAILURE
