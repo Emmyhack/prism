@@ -317,6 +317,7 @@ fn cli_adds_a_second_video_clip_to_existing_track() -> Result<(), Box<dyn std::e
         .arg(&project_path)
         .output()?;
     let json: serde_json::Value = serde_json::from_slice(&inspected.stdout)?;
+    let revision = json["revision"].as_u64().ok_or("missing revision")?;
     let clips = json["sequences"][0]["tracks"][0]["clips"]
         .as_array()
         .ok_or("missing clips")?;
@@ -355,7 +356,50 @@ fn cli_adds_a_second_video_clip_to_existing_track() -> Result<(), Box<dyn std::e
             .into());
     }
     assert!(String::from_utf8(scripted.stdout)?.contains("Validated"));
+    let commit_request_path = test_directory.join("commit.json");
+    let commit_request = serde_json::json!({
+        "requestId": "cli-commit",
+        "apiVersion": "1",
+        "expectedRevision": json["revision"],
+        "label": "Commit move",
+        "dryRun": false,
+        "operations": [{
+            "type": "moveClip",
+            "sequenceId": json["sequences"][0]["id"],
+            "trackId": track_id,
+            "clipId": clips[0]["id"],
+            "timelineStart": {"value": 1, "timescale": 8}
+        }]
+    });
+    fs::write(&commit_request_path, serde_json::to_vec(&commit_request)?)?;
+    let committed = ProcessCommand::new(binary)
+        .args(["script-transaction", "--project"])
+        .arg(&project_path)
+        .args(["--request"])
+        .arg(&commit_request_path)
+        .output()?;
+    if !committed.status.success() {
+        return Err(String::from_utf8_lossy(&committed.stderr)
+            .into_owned()
+            .into());
+    }
+    assert!(String::from_utf8(committed.stdout)?.contains("Committed"));
+    let committed_inspection = ProcessCommand::new(binary)
+        .args(["inspect", "--project"])
+        .arg(&project_path)
+        .output()?;
+    let committed_json: serde_json::Value = serde_json::from_slice(&committed_inspection.stdout)?;
+    assert_eq!(committed_json["revision"], revision + 1);
+    assert_eq!(
+        committed_json["sequences"][0]["tracks"][0]["clips"][0]["timelineStart"]["value"],
+        1
+    );
+    assert_eq!(
+        committed_json["sequences"][0]["tracks"][0]["clips"][0]["timelineStart"]["timescale"],
+        8
+    );
     fs::remove_file(&request_path)?;
+    fs::remove_file(&commit_request_path)?;
     fs::remove_file(&project_path)?;
     fs::remove_dir(&test_directory)?;
     Ok(())

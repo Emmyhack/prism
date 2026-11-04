@@ -56,6 +56,8 @@ The third executable CLI test appends a second trimmed clip to the existing
 video track, moves, trims, splits, and deletes it through subsequent command
 invocations, and verifies the resulting exact source and timeline positions.
 The same executable workflow submits a versioned JSON transaction in dry-run
-mode and verifies that validation succeeds without an additional project save.
+mode and verifies that validation succeeds without an additional project save,
+then commits a second transaction and verifies the persisted revision and exact
+timeline position after reopening.
 The local FFmpeg build is a reference tool, not an approved distribution
 dependency.
