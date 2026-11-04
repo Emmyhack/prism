@@ -33,5 +33,8 @@ a local reference-codec test, not a distribution support claim.
 Export-plan unit tests verify exact clip trim/placement preservation, explicit
 leading and inter-clip gaps, video-track type enforcement, and malformed-layout
 rejection before any encoder process starts.
+The second export integration renders two trimmed clip ranges with leading and
+inter-clip black gaps, verifies duration within one output-frame tolerance, and
+decodes both gap and content frames from the finalized video-only MP4.
 The local FFmpeg build is a reference tool, not an approved distribution
 dependency.

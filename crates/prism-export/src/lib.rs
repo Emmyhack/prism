@@ -9,6 +9,8 @@ use prism_media::{FfprobeInspector, MediaError, StreamKind};
 use prism_project::{Project, TrackKind};
 use prism_timeline::{RationalTime, RoundingMode, TimeError};
 use std::{
+    ffi::OsString,
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -25,6 +27,19 @@ pub struct BasicMp4ExportRequest {
     pub source_start: RationalTime,
     /// Strictly positive source duration.
     pub duration: RationalTime,
+    /// New final output path. Existing files are never replaced.
+    pub output: PathBuf,
+}
+
+/// Output settings for rendering one planned video track.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SingleTrackMp4ExportRequest {
+    /// Final encoded width in pixels.
+    pub width: u32,
+    /// Final encoded height in pixels.
+    pub height: u32,
+    /// Exact positive output frame rate.
+    pub frame_rate: RationalTime,
     /// New final output path. Existing files are never replaced.
     pub output: PathBuf,
 }
@@ -97,6 +112,15 @@ pub enum ExportError {
     /// Track clips were overlapping, out of order, or otherwise invalid.
     #[error("export track layout is invalid")]
     InvalidTrackLayout,
+    /// A planned clip references media absent from the project.
+    #[error("planned export clip references missing media")]
+    MissingMedia,
+    /// The selected track has no clips and therefore no duration.
+    #[error("selected export track is empty")]
+    EmptyPlan,
+    /// Explicit sequence output dimensions or frame rate were invalid.
+    #[error("sequence export video settings are invalid")]
+    InvalidVideoSettings,
     /// Input source does not exist as a regular file.
     #[error("export source is not a regular file: {0}")]
     InvalidSource(PathBuf),
@@ -278,6 +302,144 @@ impl BasicMp4Exporter {
             has_audio,
         })
     }
+
+    /// Renders one planned video track, including deterministic black gaps.
+    ///
+    /// All clips are scaled to the explicitly requested output dimensions and
+    /// concatenated in plan order. This initial path emits video only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExportError`] for invalid project/layout/settings, missing
+    /// media, encoder/probe failure, or finalization failure.
+    pub fn export_single_video_track(
+        &self,
+        project: &Project,
+        sequence_id: SequenceId,
+        track_id: TrackId,
+        request: &SingleTrackMp4ExportRequest,
+    ) -> Result<ExportReport, ExportError> {
+        let plan = plan_single_video_track(project, sequence_id, track_id)?;
+        if plan.segments.is_empty() {
+            return Err(ExportError::EmptyPlan);
+        }
+        if request.width == 0
+            || request.height == 0
+            || !request.frame_rate.is_positive()
+            || u64::from(request.width)
+                .checked_mul(u64::from(request.height))
+                .is_none_or(|pixels| pixels > 134_217_728)
+        {
+            return Err(ExportError::InvalidVideoSettings);
+        }
+        validate_output_path(&request.output)?;
+        let temporary = temporary_output_path(&request.output)?;
+        let guard = TemporaryExport::new(temporary);
+        let mut arguments = build_sequence_ffmpeg_arguments(project, &plan, request)?;
+        arguments.extend([
+            OsString::from("-r"),
+            OsString::from(format!(
+                "{}/{}",
+                request.frame_rate.value(),
+                request.frame_rate.timescale()
+            )),
+            OsString::from("-c:v"),
+            OsString::from("mpeg4"),
+            OsString::from("-q:v"),
+            OsString::from("4"),
+            OsString::from("-movflags"),
+            OsString::from("+faststart"),
+            OsString::from("-f"),
+            OsString::from("mp4"),
+            OsString::from("-y"),
+            guard.path().as_os_str().to_owned(),
+        ]);
+        let output = Command::new(&self.ffmpeg).args(arguments).output()?;
+        if !output.status.success() {
+            return Err(ExportError::Encoder {
+                status: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        let report = validate_temporary_output(&self.ffprobe, guard.path(), &request.output)?;
+        guard.finalize(&request.output)?;
+        Ok(report)
+    }
+}
+
+fn build_sequence_ffmpeg_arguments(
+    project: &Project,
+    plan: &SingleTrackExportPlan,
+    request: &SingleTrackMp4ExportRequest,
+) -> Result<Vec<OsString>, ExportError> {
+    let mut arguments = vec![OsString::from("-v"), OsString::from("error")];
+    for segment in &plan.segments {
+        match segment {
+            SequenceExportSegment::Gap { duration, .. } => arguments.extend([
+                OsString::from("-f"),
+                OsString::from("lavfi"),
+                OsString::from("-t"),
+                OsString::from(format_timestamp(*duration)?),
+                OsString::from("-i"),
+                OsString::from(format!(
+                    "color=c=black:s={}x{}:r={}/{}",
+                    request.width,
+                    request.height,
+                    request.frame_rate.value(),
+                    request.frame_rate.timescale()
+                )),
+            ]),
+            SequenceExportSegment::Clip {
+                media_id,
+                source_start,
+                duration,
+                ..
+            } => {
+                let source = project
+                    .media
+                    .get(media_id)
+                    .ok_or(ExportError::MissingMedia)?;
+                let source_path = PathBuf::from(&source.source_path);
+                if !source_path.is_file() {
+                    return Err(ExportError::InvalidSource(source_path));
+                }
+                arguments.extend([
+                    OsString::from("-ss"),
+                    OsString::from(format_timestamp(*source_start)?),
+                    OsString::from("-t"),
+                    OsString::from(format_timestamp(*duration)?),
+                    OsString::from("-i"),
+                    source_path.into_os_string(),
+                ]);
+            }
+        }
+    }
+    arguments.extend([
+        OsString::from("-filter_complex"),
+        OsString::from(build_concat_filter(plan, request)),
+        OsString::from("-map"),
+        OsString::from("[outv]"),
+    ]);
+    Ok(arguments)
+}
+
+fn build_concat_filter(
+    plan: &SingleTrackExportPlan,
+    request: &SingleTrackMp4ExportRequest,
+) -> String {
+    let mut filter = String::new();
+    for index in 0..plan.segments.len() {
+        let _ = write!(
+            filter,
+            "[{index}:v:0]scale={}:{},setsar=1,setpts=PTS-STARTPTS[v{index}];",
+            request.width, request.height
+        );
+    }
+    for index in 0..plan.segments.len() {
+        let _ = write!(filter, "[v{index}]");
+    }
+    let _ = write!(filter, "concat=n={}:v=1:a=0[outv]", plan.segments.len());
+    filter
 }
 
 fn validate_request(request: &BasicMp4ExportRequest) -> Result<(), ExportError> {
@@ -287,18 +449,57 @@ fn validate_request(request: &BasicMp4ExportRequest) -> Result<(), ExportError> 
     if !request.source_start.is_non_negative() || !request.duration.is_positive() {
         return Err(ExportError::InvalidRange);
     }
-    if request.output.exists() {
-        return Err(ExportError::OutputExists(request.output.clone()));
+    validate_output_path(&request.output)
+}
+
+fn validate_output_path(output: &Path) -> Result<(), ExportError> {
+    if output.exists() {
+        return Err(ExportError::OutputExists(output.to_path_buf()));
     }
-    let parent = request
-        .output
+    let parent = output
         .parent()
         .filter(|parent| parent.is_dir())
-        .ok_or_else(|| ExportError::InvalidOutputParent(request.output.clone()))?;
+        .ok_or_else(|| ExportError::InvalidOutputParent(output.to_path_buf()))?;
     if parent.as_os_str().is_empty() {
-        return Err(ExportError::InvalidOutputParent(request.output.clone()));
+        return Err(ExportError::InvalidOutputParent(output.to_path_buf()));
     }
     Ok(())
+}
+
+fn validate_temporary_output(
+    ffprobe: &Path,
+    temporary: &Path,
+    final_output: &Path,
+) -> Result<ExportReport, ExportError> {
+    let metadata = FfprobeInspector::new(ffprobe).inspect(temporary)?;
+    let byte_length = fs::metadata(temporary)?.len();
+    if byte_length == 0 {
+        return Err(ExportError::InvalidOutput("file is empty"));
+    }
+    let duration = metadata
+        .duration
+        .ok_or(ExportError::InvalidOutput("duration is missing"))?;
+    if !duration.is_positive() {
+        return Err(ExportError::InvalidOutput("duration is not positive"));
+    }
+    let has_video = metadata
+        .streams
+        .iter()
+        .any(|stream| matches!(stream.kind, StreamKind::Video(_)));
+    if !has_video {
+        return Err(ExportError::InvalidOutput("video stream is missing"));
+    }
+    let has_audio = metadata
+        .streams
+        .iter()
+        .any(|stream| matches!(stream.kind, StreamKind::Audio(_)));
+    Ok(ExportReport {
+        output: final_output.to_path_buf(),
+        byte_length,
+        duration,
+        has_video,
+        has_audio,
+    })
 }
 
 fn format_timestamp(time: RationalTime) -> Result<String, ExportError> {
