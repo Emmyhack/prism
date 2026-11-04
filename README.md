@@ -41,6 +41,17 @@ Inspect a saved project to discover stable object IDs and exact clip timing:
 cargo run -p prism-cli -- inspect --project ./edit.prism
 ```
 
+Append another trimmed source range to an existing video track:
+
+```sh
+cargo run -p prism-cli -- add-video-clip \
+  --project ./edit.prism \
+  --track 22222222-2222-4222-8222-222222222222 \
+  --media ./source.mp4 \
+  --source-start 10/1 --timeline-start 10/1 --duration 5/1 \
+  --ffprobe /path/to/ffprobe
+```
+
 The command emits deterministic, versioned JSON. Use the reported sequence and
 track IDs with the export command:
 

@@ -33,6 +33,10 @@ fn main() -> ExitCode {
             );
             ExitCode::SUCCESS
         }
+        Ok(prism_cli::CliOutcome::ClipAdded { path, clip_id }) => {
+            println!("Updated {}: clip {clip_id}", path.display());
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("Prism: {error}");
             ExitCode::FAILURE

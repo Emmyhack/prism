@@ -59,6 +59,13 @@ pub enum CliOutcome {
         /// New video-track UUID.
         track_id: String,
     },
+    /// A clip was appended to an existing video track.
+    ClipAdded {
+        /// Updated project path.
+        path: PathBuf,
+        /// New clip UUID.
+        clip_id: String,
+    },
 }
 
 /// CLI parse and workflow failures.
@@ -127,8 +134,105 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOutcome, 
         Some("inspect") => run_inspect(&arguments),
         Some("create-project") => run_create_project(&arguments),
         Some("create-video-sequence") => run_create_video_sequence(&arguments),
+        Some("add-video-clip") => run_add_video_clip(&arguments),
         Some(_) | None => Err(CliError::Usage),
     }
+}
+
+fn run_add_video_clip(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
+    let [
+        command,
+        project_flag,
+        project_path,
+        track_flag,
+        track_value,
+        media_flag,
+        media_value,
+        source_flag,
+        source_value,
+        timeline_flag,
+        timeline_value,
+        duration_flag,
+        duration_value,
+        probe_flag,
+        probe_value,
+    ] = arguments
+    else {
+        return Err(CliError::Usage);
+    };
+    if command != "add-video-clip"
+        || project_flag != "--project"
+        || track_flag != "--track"
+        || media_flag != "--media"
+        || source_flag != "--source-start"
+        || timeline_flag != "--timeline-start"
+        || duration_flag != "--duration"
+        || probe_flag != "--ffprobe"
+    {
+        return Err(CliError::Usage);
+    }
+    let project_path = PathBuf::from(project_path);
+    let media_path = PathBuf::from(media_value);
+    let track_id = TrackId::from_uuid(parse_uuid(track_value.clone(), "--track")?);
+    let source_start = parse_exact_time(source_value.clone(), "--source-start")?;
+    let timeline_start = parse_exact_time(timeline_value.clone(), "--timeline-start")?;
+    let duration = parse_exact_time(duration_value.clone(), "--duration")?;
+    let metadata = FfprobeInspector::new(probe_value).inspect(&media_path)?;
+    if !metadata
+        .streams
+        .iter()
+        .any(|stream| matches!(stream.kind, StreamKind::Video(_)))
+    {
+        return Err(CliError::NoVideoStream);
+    }
+    let requested_end = source_start.checked_add(duration)?;
+    if !source_start.is_non_negative()
+        || !duration.is_positive()
+        || metadata
+            .duration
+            .is_none_or(|available| requested_end > available)
+    {
+        return Err(CliError::SourceRangeOutOfBounds);
+    }
+    let mut project = load(&project_path)?;
+    let sequence_id = project
+        .sequences
+        .values()
+        .find(|sequence| {
+            sequence
+                .tracks
+                .iter()
+                .any(|track| track.id == track_id && track.kind == TrackKind::Video)
+        })
+        .ok_or_else(|| CliError::Command("video track not found".to_owned()))?
+        .id;
+    let media_id = MediaAssetId::new();
+    let clip_id = ClipId::new();
+    CommandEngine::execute_transaction(
+        &mut project,
+        "Add video clip",
+        vec![
+            Command::ImportMedia {
+                id: media_id,
+                source_path: media_path.to_string_lossy().into_owned(),
+            },
+            Command::InsertClip {
+                sequence_id,
+                track_id,
+                id: clip_id,
+                media_id,
+                timeline_start,
+                source_start,
+                source_duration: duration,
+            },
+        ],
+    )
+    .map_err(|error| CliError::Command(error.to_string()))?;
+    save_atomic(&project, &project_path)?;
+    Ok(CliOutcome::ClipAdded {
+        path: project_path,
+        clip_id: clip_id.as_uuid().to_string(),
+    })
 }
 
 fn run_create_video_sequence(arguments: &[OsString]) -> Result<CliOutcome, CliError> {

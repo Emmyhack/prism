@@ -32,6 +32,10 @@ video and ranges beyond inspected duration before mutation. A successful request
 uses one command transaction to import media, create a sequence and video track,
 and insert the first clip, then atomically saves the updated project.
 
+Added `add-video-clip`, which probes a source range and appends it to an
+existing video track through the same validated import/insert transaction. The
+project is saved atomically only after the complete edit succeeds.
+
 ## Actual workflow verification
 
 The opt-in integration builds media, sequence, track, and clip state through the
@@ -46,17 +50,16 @@ reported sequence and track IDs against the command-built project.
 - Formatting passes.
 - Strict workspace Clippy passes with warnings denied.
 - 46 default tests pass.
-- Two media, two playback, three export-library, and two CLI actual-fixture tests
+- Two media, two playback, three export-library, and three CLI actual-fixture tests
   pass with explicit local `FFmpeg`/ffprobe executables.
 - The ordinary executable suite creates, inspects, and attempts to replace a
   project, confirming the replacement fails and original state remains intact.
 
 ## Limitations and next work
 
-The CLI cannot yet add clips to an existing sequence, move/trim/split clips,
-report progress, or cancel export.
+The CLI cannot yet move/trim/split clips, report progress, or cancel export.
 Inspection exposes source paths and is intended for trusted local project use;
 future permission-filtered scripting surfaces must not copy that policy blindly.
 The CLI inherits the video-only renderer and reference-codec licensing boundary.
-Next, add command-backed project creation and media/sequence/track/clip insertion
-without introducing a second editing implementation.
+Next, add command-backed move, trim, and split workflows without introducing a
+second editing implementation.
