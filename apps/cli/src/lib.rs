@@ -116,7 +116,7 @@ pub enum CliOutcome {
 pub enum CliError {
     /// No supported subcommand was supplied.
     #[error(
-        "usage: prism-cli create-project --project PATH --name NAME | prism-cli inspect --project PATH | prism-cli export-track --project PATH --sequence UUID --track UUID --output PATH --width PIXELS --height PIXELS --fps NUM/DEN --ffmpeg PATH --ffprobe PATH"
+        "usage: prism-cli <create-project|inspect|create-video-sequence|add-video-clip|move-video-clip|trim-video-clip|split-video-clip|delete-video-clip|script-transaction|export-track> ..."
     )]
     Usage,
     /// A flag was unknown or repeated.
