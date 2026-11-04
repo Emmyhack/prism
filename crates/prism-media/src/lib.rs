@@ -3,9 +3,10 @@
 //! The initial adapter invokes `ffprobe` as a reference implementation. Decode,
 //! playback, and export will use a separate library-backed worker architecture.
 
-use prism_timeline::{RationalTime, TimeError};
+use prism_timeline::{RationalTime, RoundingMode, TimeError};
 use serde::Deserialize;
-use std::{path::Path, path::PathBuf, process::Command};
+use sha2::{Digest, Sha256};
+use std::{collections::BTreeSet, fs::File, io::Read, path::Path, path::PathBuf, process::Command};
 use thiserror::Error;
 
 /// Failures while discovering or inspecting media capabilities.
@@ -17,6 +18,14 @@ pub enum MediaError {
     /// The inspector rejected or could not parse the input.
     #[error("media inspector failed with status {status}: {stderr}")]
     Inspector {
+        /// Process exit status when available.
+        status: i32,
+        /// Diagnostic output with lossy UTF-8 conversion.
+        stderr: String,
+    },
+    /// A reference decoder rejected the input or failed while decoding.
+    #[error("reference decoder failed with status {status}: {stderr}")]
+    Decoder {
         /// Process exit status when available.
         status: i32,
         /// Diagnostic output with lossy UTF-8 conversion.
@@ -39,7 +48,28 @@ pub enum MediaError {
     /// Inspector version output was not valid UTF-8.
     #[error("inspector version output was not UTF-8")]
     InvalidVersionOutput,
+    /// Reference decoding only accepts nonnegative sequence timestamps.
+    #[error("decode timestamp must not be negative")]
+    NegativeDecodeTimestamp,
+    /// Requested decoded-frame dimensions were invalid or exceeded the limit.
+    #[error("invalid decoded frame dimensions: {width}x{height}")]
+    InvalidFrameDimensions {
+        /// Requested width in pixels.
+        width: u32,
+        /// Requested height in pixels.
+        height: u32,
+    },
+    /// The decoder returned a truncated or unexpectedly large frame.
+    #[error("decoded RGBA frame had {actual} bytes; expected {expected}")]
+    InvalidFrameLength {
+        /// Expected byte count for tightly packed RGBA pixels.
+        expected: usize,
+        /// Actual byte count returned by the process.
+        actual: usize,
+    },
 }
+
+const MAX_REFERENCE_FRAME_BYTES: usize = 512 * 1024 * 1024;
 
 /// Runtime discovery report. This is not proof that a codec workflow works.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,10 +167,189 @@ pub enum FrameRateEvidence {
     Unknown,
 }
 
+/// Packet-level timing evidence observed across an inspected video stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PacketTimingEvidence {
+    /// Every observed positive duration and timestamp delta was identical.
+    ObservedConstant,
+    /// At least two observed positive durations or timestamp deltas differed.
+    ObservedVariable,
+    /// Too few usable packets were available to classify timing.
+    Insufficient,
+}
+
+/// Packet timing summary for one selected video stream.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PacketTimingReport {
+    /// Number of packets returned by the inspector.
+    pub packet_count: usize,
+    /// Distinct positive packet durations expressed in stream ticks.
+    pub distinct_duration_ticks: Vec<i64>,
+    /// Evidence derived from packet durations and presentation timestamps.
+    pub evidence: PacketTimingEvidence,
+}
+
+/// Full-file SHA-256 fingerprint for relinking and change detection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MediaFingerprint {
+    /// Lowercase hexadecimal SHA-256 digest.
+    pub sha256: String,
+    /// Number of bytes hashed.
+    pub byte_length: u64,
+}
+
+/// One tightly packed, top-to-bottom RGBA frame from the reference decoder.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecodedVideoFrame {
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Four bytes per pixel in red, green, blue, alpha order.
+    pub rgba: Vec<u8>,
+}
+
+impl DecodedVideoFrame {
+    /// Returns a lowercase SHA-256 digest of the decoded pixel bytes.
+    #[must_use]
+    pub fn sha256(&self) -> String {
+        format!("{:x}", Sha256::digest(&self.rgba))
+    }
+}
+
+/// Computes a deterministic full-file fingerprint in bounded memory.
+///
+/// # Errors
+///
+/// Returns [`MediaError::Process`] when the file cannot be opened or read.
+pub fn fingerprint(path: &Path) -> Result<MediaFingerprint, MediaError> {
+    let mut file = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+    let mut byte_length = 0_u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+        byte_length = byte_length
+            .checked_add(
+                u64::try_from(read).map_err(|error| {
+                    MediaError::Process(std::io::Error::other(error.to_string()))
+                })?,
+            )
+            .ok_or_else(|| MediaError::Process(std::io::Error::other("file length overflow")))?;
+    }
+    Ok(MediaFingerprint {
+        sha256: format!("{:x}", digest.finalize()),
+        byte_length,
+    })
+}
+
 /// `ffprobe` process adapter with no ambient shell invocation.
 #[derive(Clone, Debug)]
 pub struct FfprobeInspector {
     executable: PathBuf,
+}
+
+/// `FFmpeg` command-line adapter used to establish decode and seek test vectors.
+///
+/// This is intentionally separate from the future isolated, library-backed
+/// playback decoder and must not be used on the UI thread.
+#[derive(Clone, Debug)]
+pub struct FfmpegReferenceDecoder {
+    executable: PathBuf,
+}
+
+impl FfmpegReferenceDecoder {
+    /// Creates a decoder using an explicit executable path.
+    #[must_use]
+    pub fn new(executable: impl Into<PathBuf>) -> Self {
+        Self {
+            executable: executable.into(),
+        }
+    }
+
+    /// Decodes the first frame at or after an exact, nonnegative timestamp.
+    ///
+    /// `video_ordinal` is zero-based among video streams. The caller supplies
+    /// dimensions obtained from inspected metadata; returned bytes are checked
+    /// against those dimensions before a frame is constructed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] for invalid bounds, time conversion, process
+    /// failure, or output that is not one tightly packed RGBA frame.
+    pub fn decode_video_frame_rgba(
+        &self,
+        path: &Path,
+        video_ordinal: u32,
+        timestamp: RationalTime,
+        width: u32,
+        height: u32,
+    ) -> Result<DecodedVideoFrame, MediaError> {
+        let expected = checked_rgba_length(width, height)?;
+        let seek = format_seek_timestamp(timestamp)?;
+        let selection = format!("0:v:{video_ordinal}");
+        let output = Command::new(&self.executable)
+            .args(["-v", "error", "-ss", &seek, "-i"])
+            .arg(path)
+            .args([
+                "-map",
+                &selection,
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgba",
+                "pipe:1",
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(MediaError::Decoder {
+                status: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        if output.stdout.len() != expected {
+            return Err(MediaError::InvalidFrameLength {
+                expected,
+                actual: output.stdout.len(),
+            });
+        }
+        Ok(DecodedVideoFrame {
+            width,
+            height,
+            rgba: output.stdout,
+        })
+    }
+}
+
+fn checked_rgba_length(width: u32, height: u32) -> Result<usize, MediaError> {
+    let length = usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(4));
+    match length {
+        Some(length) if length > 0 && length <= MAX_REFERENCE_FRAME_BYTES => Ok(length),
+        _ => Err(MediaError::InvalidFrameDimensions { width, height }),
+    }
+}
+
+fn format_seek_timestamp(timestamp: RationalTime) -> Result<String, MediaError> {
+    let nanoseconds = timestamp.to_ticks(1_000_000_000, RoundingMode::NearestTiesAway)?;
+    if nanoseconds < 0 {
+        return Err(MediaError::NegativeDecodeTimestamp);
+    }
+    let seconds = nanoseconds / 1_000_000_000;
+    let subsecond = nanoseconds % 1_000_000_000;
+    Ok(format!("{seconds}.{subsecond:09}"))
 }
 
 impl FfprobeInspector {
@@ -194,6 +403,35 @@ impl FfprobeInspector {
         let raw: ProbeOutput = serde_json::from_slice(&output.stdout)?;
         raw.try_into()
     }
+
+    /// Inspects packet timestamps for one zero-based video-stream ordinal.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] for process, input, or JSON failures.
+    pub fn inspect_video_packet_timing(
+        &self,
+        path: &Path,
+        video_ordinal: u32,
+    ) -> Result<PacketTimingReport, MediaError> {
+        let selection = format!("v:{video_ordinal}");
+        let output = Command::new(&self.executable)
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                &selection,
+                "-show_entries",
+                "packet=pts,duration",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .output()?;
+        ensure_success(&output)?;
+        let raw: PacketOutput = serde_json::from_slice(&output.stdout)?;
+        Ok(analyze_packet_timing(&raw.packets))
+    }
 }
 
 fn ensure_success(output: &std::process::Output) -> Result<(), MediaError> {
@@ -243,6 +481,44 @@ struct ProbeStream {
 struct ProbeTags {
     rotate: Option<String>,
     timecode: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PacketOutput {
+    #[serde(default)]
+    packets: Vec<ProbePacket>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+struct ProbePacket {
+    pts: Option<i64>,
+    duration: Option<i64>,
+}
+
+fn analyze_packet_timing(packets: &[ProbePacket]) -> PacketTimingReport {
+    let durations = packets
+        .iter()
+        .filter_map(|packet| packet.duration)
+        .filter(|duration| *duration > 0)
+        .collect::<BTreeSet<_>>();
+    let deltas = packets
+        .windows(2)
+        .filter_map(|window| window[1].pts?.checked_sub(window[0].pts?))
+        .filter(|delta| *delta > 0)
+        .collect::<BTreeSet<_>>();
+    let usable_intervals = packets.len().saturating_sub(1);
+    let evidence = if usable_intervals == 0 || (durations.is_empty() && deltas.is_empty()) {
+        PacketTimingEvidence::Insufficient
+    } else if durations.len() > 1 || deltas.len() > 1 {
+        PacketTimingEvidence::ObservedVariable
+    } else {
+        PacketTimingEvidence::ObservedConstant
+    };
+    PacketTimingReport {
+        packet_count: packets.len(),
+        distinct_duration_ticks: durations.into_iter().collect(),
+        evidence,
+    }
 }
 
 impl TryFrom<ProbeOutput> for MediaMetadata {
@@ -413,7 +689,11 @@ fn parse_decimal_time(field: &'static str, value: &str) -> Result<RationalTime, 
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameRateEvidence, MediaMetadata, ProbeOutput, StreamKind, parse_decimal_time};
+    use super::{
+        FrameRateEvidence, MediaError, MediaMetadata, PacketTimingEvidence, ProbeOutput,
+        ProbePacket, StreamKind, analyze_packet_timing, checked_rgba_length, format_seek_timestamp,
+        parse_decimal_time,
+    };
     use prism_timeline::RationalTime;
 
     #[test]
@@ -448,6 +728,49 @@ mod tests {
             parse_decimal_time("duration", "0.033367")?,
             RationalTime::new(33_367, 1_000_000)?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn packet_timing_detects_observed_variation() {
+        let report = analyze_packet_timing(&[
+            ProbePacket {
+                pts: Some(0),
+                duration: Some(1_001),
+            },
+            ProbePacket {
+                pts: Some(1_001),
+                duration: Some(1_001),
+            },
+            ProbePacket {
+                pts: Some(2_002),
+                duration: Some(2_002),
+            },
+        ]);
+        assert_eq!(report.evidence, PacketTimingEvidence::ObservedVariable);
+        assert_eq!(report.distinct_duration_ticks, vec![1_001, 2_002]);
+    }
+
+    #[test]
+    fn seek_timestamp_uses_exact_nanosecond_rounding() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            format_seek_timestamp(RationalTime::new(1_001, 30_000)?)?,
+            "0.033366667"
+        );
+        assert!(matches!(
+            format_seek_timestamp(RationalTime::new(-1, 1)?),
+            Err(MediaError::NegativeDecodeTimestamp)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn decoded_frame_size_is_checked_and_bounded() -> Result<(), MediaError> {
+        assert_eq!(checked_rgba_length(320, 180)?, 230_400);
+        assert!(matches!(
+            checked_rgba_length(u32::MAX, u32::MAX),
+            Err(MediaError::InvalidFrameDimensions { .. })
+        ));
         Ok(())
     }
 }

@@ -128,6 +128,34 @@ impl RationalTime {
         let denominator = u64::from(self.timescale) * u64::from(other.timescale);
         normalize_wide(numerator, denominator)
     }
+
+    /// Converts this time to integer ticks at `target_timescale` using an
+    /// explicit rounding policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::InvalidTimebase`] for a zero target timescale or
+    /// [`TimeError::Overflow`] when the rounded tick count cannot fit in `i64`.
+    pub fn to_ticks(self, target_timescale: u32, rounding: RoundingMode) -> Result<i64, TimeError> {
+        if target_timescale == 0 {
+            return Err(TimeError::InvalidTimebase);
+        }
+        let numerator = i128::from(self.value) * i128::from(target_timescale);
+        let denominator = i128::from(self.timescale);
+        let quotient = numerator / denominator;
+        let remainder = numerator % denominator;
+        let rounded = match rounding {
+            RoundingMode::Floor if remainder < 0 => quotient - 1,
+            RoundingMode::Ceil if remainder > 0 => quotient + 1,
+            RoundingMode::NearestTiesAway
+                if remainder != 0 && remainder.abs() * 2 >= denominator =>
+            {
+                quotient + numerator.signum()
+            }
+            _ => quotient,
+        };
+        i64::try_from(rounded).map_err(|_| TimeError::Overflow)
+    }
 }
 
 fn normalize_wide(value: i128, timescale: u64) -> Result<RationalTime, TimeError> {
@@ -161,7 +189,7 @@ const fn gcd_u128(mut left: u128, mut right: u128) -> u128 {
 
 #[cfg(test)]
 mod tests {
-    use super::{RationalTime, TimeError};
+    use super::{RationalTime, RoundingMode, TimeError};
     use proptest::prelude::*;
 
     #[test]
@@ -185,6 +213,19 @@ mod tests {
     #[test]
     fn rejects_zero_timebase() {
         assert_eq!(RationalTime::new(1, 0), Err(TimeError::InvalidTimebase));
+    }
+
+    #[test]
+    fn integer_tick_conversion_uses_explicit_rounding() -> Result<(), TimeError> {
+        let positive = RationalTime::new(3, 2)?;
+        assert_eq!(positive.to_ticks(1, RoundingMode::Floor)?, 1);
+        assert_eq!(positive.to_ticks(1, RoundingMode::Ceil)?, 2);
+        assert_eq!(positive.to_ticks(1, RoundingMode::NearestTiesAway)?, 2);
+        let negative = RationalTime::new(-3, 2)?;
+        assert_eq!(negative.to_ticks(1, RoundingMode::Floor)?, -2);
+        assert_eq!(negative.to_ticks(1, RoundingMode::Ceil)?, -1);
+        assert_eq!(negative.to_ticks(1, RoundingMode::NearestTiesAway)?, -2);
+        Ok(())
     }
 
     proptest! {

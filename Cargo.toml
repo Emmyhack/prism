@@ -6,6 +6,7 @@ members = [
     "crates/prism-core",
     "crates/prism-project",
     "crates/prism-media",
+    "crates/prism-playback",
     "crates/prism-persistence",
     "crates/prism-timeline",
     "crates/prism-commands",
@@ -28,6 +29,7 @@ thiserror = "2.0"
 uuid = { version = "1.18", features = ["v4", "serde"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 proptest = "1.9"
+sha2 = "0.10"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

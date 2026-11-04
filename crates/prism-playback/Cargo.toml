@@ -1,0 +1,18 @@
+[package]
+name = "prism-playback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+prism-core = { path = "../prism-core" }
+prism-project = { path = "../prism-project" }
+prism-timeline = { path = "../prism-timeline" }
+thiserror.workspace = true
+
+[dev-dependencies]
+prism-media = { path = "../prism-media" }
+
+[lints]
+workspace = true
