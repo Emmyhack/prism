@@ -71,6 +71,8 @@ pub struct SingleTrackMp4ExportRequest {
     pub height: u32,
     /// Exact positive output frame rate.
     pub frame_rate: RationalTime,
+    /// Target video bitrate in kilobits per second.
+    pub video_bitrate_kbps: u32,
     /// New final output path. Existing files are never replaced.
     pub output: PathBuf,
 }
@@ -84,13 +86,14 @@ pub struct VideoAudioMp4ExportRequest {
     pub height: u32,
     /// Exact positive output frame rate.
     pub frame_rate: RationalTime,
+    /// Target video bitrate in kilobits per second.
+    pub video_bitrate_kbps: u32,
     /// New final output path. Existing files are never replaced.
     pub output: PathBuf,
 }
 
-/// Validated initial export presets. Codec and bitrate policy remain encoder
-/// adapter concerns; these presets currently define exact video geometry and
-/// frame rate only.
+/// Validated initial export presets with explicit geometry, frame rate, and
+/// video bitrate policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExportPreset {
     /// 1920×1080 at 30000/1001 fps.
@@ -113,14 +116,14 @@ impl ExportPreset {
         }
     }
 
-    /// Returns exact dimensions and frame rate for this preset.
+    /// Returns exact dimensions, frame rate, and target bitrate for this preset.
     #[must_use]
-    pub fn settings(self) -> (u32, u32, RationalTime) {
+    pub fn settings(self) -> (u32, u32, RationalTime, u32) {
         let frame_rate = RationalTime::new(30_000, 1_001)
             .unwrap_or_else(|_| unreachable!("built-in preset frame rate is valid"));
         match self {
-            Self::Youtube1080p => (1920, 1080, frame_rate),
-            Self::Youtube4k => (3840, 2160, frame_rate),
+            Self::Youtube1080p => (1920, 1080, frame_rate, 8_000),
+            Self::Youtube4k => (3840, 2160, frame_rate, 35_000),
         }
     }
 }
@@ -129,11 +132,12 @@ impl SingleTrackMp4ExportRequest {
     /// Creates a request from a validated preset and output path.
     #[must_use]
     pub fn from_preset(preset: ExportPreset, output: PathBuf) -> Self {
-        let (width, height, frame_rate) = preset.settings();
+        let (width, height, frame_rate, video_bitrate_kbps) = preset.settings();
         Self {
             width,
             height,
             frame_rate,
+            video_bitrate_kbps,
             output,
         }
     }
@@ -143,11 +147,12 @@ impl VideoAudioMp4ExportRequest {
     /// Creates a synchronized video/audio request from a preset and output.
     #[must_use]
     pub fn from_preset(preset: ExportPreset, output: PathBuf) -> Self {
-        let (width, height, frame_rate) = preset.settings();
+        let (width, height, frame_rate, video_bitrate_kbps) = preset.settings();
         Self {
             width,
             height,
             frame_rate,
+            video_bitrate_kbps,
             output,
         }
     }
@@ -596,6 +601,7 @@ impl BasicMp4Exporter {
         if request.width == 0
             || request.height == 0
             || !request.frame_rate.is_positive()
+            || request.video_bitrate_kbps == 0
             || u64::from(request.width)
                 .checked_mul(u64::from(request.height))
                 .is_none_or(|pixels| pixels > 134_217_728)
@@ -618,8 +624,8 @@ impl BasicMp4Exporter {
             )),
             OsString::from("-c:v"),
             OsString::from("mpeg4"),
-            OsString::from("-q:v"),
-            OsString::from("4"),
+            OsString::from("-b:v"),
+            OsString::from(format!("{}k", request.video_bitrate_kbps)),
             OsString::from("-movflags"),
             OsString::from("+faststart"),
             OsString::from("-f"),
@@ -694,6 +700,7 @@ impl BasicMp4Exporter {
         if request.width == 0
             || request.height == 0
             || !request.frame_rate.is_positive()
+            || request.video_bitrate_kbps == 0
             || u64::from(request.width)
                 .checked_mul(u64::from(request.height))
                 .is_none_or(|pixels| pixels > 134_217_728)
@@ -823,6 +830,7 @@ fn build_video_audio_ffmpeg_arguments(
             width: request.width,
             height: request.height,
             frame_rate: request.frame_rate,
+            video_bitrate_kbps: request.video_bitrate_kbps,
             output: output.to_path_buf(),
         },
     );
@@ -846,8 +854,8 @@ fn build_video_audio_ffmpeg_arguments(
         )),
         OsString::from("-c:v"),
         OsString::from("mpeg4"),
-        OsString::from("-q:v"),
-        OsString::from("4"),
+        OsString::from("-b:v"),
+        OsString::from(format!("{}k", request.video_bitrate_kbps)),
         OsString::from("-c:a"),
         OsString::from("aac"),
         OsString::from("-movflags"),
@@ -1110,9 +1118,10 @@ mod tests {
     fn export_presets_produce_exact_settings_and_reject_unknown_names()
     -> Result<(), Box<dyn std::error::Error>> {
         let preset = ExportPreset::parse("youtube-1080p")?;
-        let (width, height, frame_rate) = preset.settings();
+        let (width, height, frame_rate, bitrate) = preset.settings();
         assert_eq!((width, height), (1920, 1080));
         assert_eq!(frame_rate, RationalTime::new(30_000, 1_001)?);
+        assert_eq!(bitrate, 8_000);
         let request = SingleTrackMp4ExportRequest::from_preset(preset, PathBuf::from("out.mp4"));
         assert_eq!(request.width, 1920);
         let audio_request = VideoAudioMp4ExportRequest::from_preset(
@@ -1120,6 +1129,7 @@ mod tests {
             PathBuf::from("4k.mp4"),
         );
         assert_eq!((audio_request.width, audio_request.height), (3840, 2160));
+        assert_eq!(audio_request.video_bitrate_kbps, 35_000);
         assert!(matches!(
             ExportPreset::parse("unknown"),
             Err(ExportError::UnknownPreset(name)) if name == "unknown"
@@ -1219,6 +1229,7 @@ mod tests {
                     width: 320,
                     height: 180,
                     frame_rate: RationalTime::new(30, 1)?,
+                    video_bitrate_kbps: 1_000,
                     output: directory.join("output.mp4"),
                 },
                 Some(&cancellation),
@@ -1586,6 +1597,7 @@ mod tests {
                     width: 320,
                     height: 180,
                     frame_rate: RationalTime::new(30, 1)?,
+                    video_bitrate_kbps: 1_000,
                     output: directory.join("out.mp4"),
                 },
             );
@@ -1664,6 +1676,7 @@ mod tests {
                 width: 320,
                 height: 180,
                 frame_rate: RationalTime::new(30, 1)?,
+                video_bitrate_kbps: 1_000,
                 output: output.clone(),
             },
             &output,
@@ -1678,6 +1691,7 @@ mod tests {
         assert!(joined.contains("-map [outv]"));
         assert!(joined.contains("-map [outa]"));
         assert!(joined.contains("-c:a aac"));
+        assert!(joined.contains("-b:v 1000k"));
         fs::remove_dir_all(directory)?;
         Ok(())
     }

@@ -130,6 +130,7 @@ fn renders_single_track_clips_and_black_gaps() -> Result<(), Box<dyn std::error:
             width: 320,
             height: 180,
             frame_rate: RationalTime::new(30, 1)?,
+            video_bitrate_kbps: 1_000,
             output: output.clone(),
         },
     )?;
@@ -211,6 +212,7 @@ fn muxes_synchronized_video_and_audio_tracks() -> Result<(), Box<dyn std::error:
             width: 320,
             height: 180,
             frame_rate: RationalTime::new(30, 1)?,
+            video_bitrate_kbps: 1_000,
             output: output.clone(),
         },
     )?;
@@ -299,6 +301,7 @@ fn saved_project_reopens_with_identical_export_plan_and_timing()
             width: 320,
             height: 180,
             frame_rate: RationalTime::new(30, 1)?,
+            video_bitrate_kbps: 1_000,
             output: output.clone(),
         },
     )?;

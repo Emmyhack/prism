@@ -4,6 +4,7 @@ use std::{fs, process::Command};
 use uuid::Uuid;
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn creates_inspects_and_refuses_to_replace_project() -> Result<(), Box<dyn std::error::Error>> {
     let test_directory =
         std::env::temp_dir().join(format!("prism-cli-create-test-{}", Uuid::new_v4()));
