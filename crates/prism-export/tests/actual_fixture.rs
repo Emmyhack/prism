@@ -213,6 +213,7 @@ fn muxes_synchronized_video_and_audio_tracks() -> Result<(), Box<dyn std::error:
             height: 180,
             frame_rate: RationalTime::new(30, 1)?,
             video_bitrate_kbps: 1_000,
+            audio_bitrate_kbps: 192,
             output: output.clone(),
         },
     )?;

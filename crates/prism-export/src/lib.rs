@@ -88,6 +88,8 @@ pub struct VideoAudioMp4ExportRequest {
     pub frame_rate: RationalTime,
     /// Target video bitrate in kilobits per second.
     pub video_bitrate_kbps: u32,
+    /// Target AAC audio bitrate in kilobits per second.
+    pub audio_bitrate_kbps: u32,
     /// New final output path. Existing files are never replaced.
     pub output: PathBuf,
 }
@@ -126,6 +128,12 @@ impl ExportPreset {
             Self::Youtube4k => (3840, 2160, frame_rate, 35_000),
         }
     }
+
+    /// Returns the target AAC audio bitrate for this preset.
+    #[must_use]
+    pub const fn audio_bitrate_kbps(self) -> u32 {
+        192
+    }
 }
 
 impl SingleTrackMp4ExportRequest {
@@ -153,6 +161,7 @@ impl VideoAudioMp4ExportRequest {
             height,
             frame_rate,
             video_bitrate_kbps,
+            audio_bitrate_kbps: preset.audio_bitrate_kbps(),
             output,
         }
     }
@@ -701,6 +710,7 @@ impl BasicMp4Exporter {
             || request.height == 0
             || !request.frame_rate.is_positive()
             || request.video_bitrate_kbps == 0
+            || request.audio_bitrate_kbps == 0
             || u64::from(request.width)
                 .checked_mul(u64::from(request.height))
                 .is_none_or(|pixels| pixels > 134_217_728)
@@ -858,6 +868,8 @@ fn build_video_audio_ffmpeg_arguments(
         OsString::from(format!("{}k", request.video_bitrate_kbps)),
         OsString::from("-c:a"),
         OsString::from("aac"),
+        OsString::from("-b:a"),
+        OsString::from(format!("{}k", request.audio_bitrate_kbps)),
         OsString::from("-movflags"),
         OsString::from("+faststart"),
         OsString::from("-f"),
@@ -1598,6 +1610,7 @@ mod tests {
                     height: 180,
                     frame_rate: RationalTime::new(30, 1)?,
                     video_bitrate_kbps: 1_000,
+                    audio_bitrate_kbps: 192,
                     output: directory.join("out.mp4"),
                 },
             );
@@ -1677,6 +1690,7 @@ mod tests {
                 height: 180,
                 frame_rate: RationalTime::new(30, 1)?,
                 video_bitrate_kbps: 1_000,
+                audio_bitrate_kbps: 192,
                 output: output.clone(),
             },
             &output,
@@ -1692,6 +1706,7 @@ mod tests {
         assert!(joined.contains("-map [outa]"));
         assert!(joined.contains("-c:a aac"));
         assert!(joined.contains("-b:v 1000k"));
+        assert!(joined.contains("-b:a 192k"));
         fs::remove_dir_all(directory)?;
         Ok(())
     }

@@ -1954,6 +1954,7 @@ fn run_export_video_audio(arguments: Vec<OsString>) -> Result<CliOutcome, CliErr
                 height: parsed.height,
                 frame_rate: parsed.frame_rate,
                 video_bitrate_kbps: 8_000,
+                audio_bitrate_kbps: 192,
                 output: parsed.output,
             },
         )?,
