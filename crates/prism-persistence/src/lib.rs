@@ -194,6 +194,24 @@ pub fn save_autosave(project: &Project, active_path: &Path) -> Result<PathBuf, P
     Ok(autosave)
 }
 
+/// Validates an autosave and restores it to a new destination without
+/// replacing an existing project.
+///
+/// The source autosave is loaded through the same integrity and schema checks
+/// as an ordinary project. The destination is written with no-clobber backup
+/// semantics, so recovery cannot destroy an existing project by accident.
+///
+/// # Errors
+///
+/// Returns [`PersistenceError`] when the source fails integrity/schema
+/// validation or the destination already exists/cannot be written.
+pub fn recover_autosave(source: &Path, destination: &Path) -> Result<u64, PersistenceError> {
+    let project = load(source)?;
+    let revision = project.revision();
+    save_backup(&project, destination)?;
+    Ok(revision)
+}
+
 /// Report from one autosave retention pass.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AutosaveRetentionReport {
@@ -1111,8 +1129,8 @@ fn to_u64(value: i64, field: &'static str) -> Result<u64, PersistenceError> {
 mod tests {
     use super::{
         AutosaveScheduler, AutosaveSubmit, PersistenceError, initialize, list_autosaves, load,
-        load_from_connection, retain_autosaves, save_atomic, save_autosave, save_backup,
-        save_to_connection,
+        load_from_connection, recover_autosave, retain_autosaves, save_atomic, save_autosave,
+        save_backup, save_to_connection,
     };
     use prism_commands::{Command, CommandEngine};
     use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
@@ -1390,6 +1408,26 @@ mod tests {
             vec![5, 3, 2]
         );
         assert!(candidates.iter().all(|candidate| candidate.path.is_file()));
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_validates_autosave_and_never_clobbers_destination()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let project = sample_project()?;
+        let directory =
+            std::env::temp_dir().join(format!("prism-autosave-recovery-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory)?;
+        let source = directory.join("edit.prism.autosave.1");
+        let destination = directory.join("recovered.prism");
+        save_atomic(&project, &source)?;
+        assert_eq!(recover_autosave(&source, &destination)?, project.revision());
+        assert_eq!(load(&destination)?.id, project.id);
+        assert!(matches!(
+            recover_autosave(&source, &destination),
+            Err(PersistenceError::BackupExists(path)) if path == destination
+        ));
         std::fs::remove_dir_all(directory)?;
         Ok(())
     }

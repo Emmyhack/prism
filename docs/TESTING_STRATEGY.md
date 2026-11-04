@@ -98,6 +98,9 @@ The executable CLI workflow also creates and refuses to replace a revision-scope
 autosave.
 The CLI autosave-list workflow serializes recoverable candidates newest-first
 through the same persistence discovery boundary.
+Persistence and CLI recovery coverage validates a selected autosave through the
+normal SQLite integrity/schema loader, restores it with no-clobber semantics,
+and rejects a second recovery to the same destination.
 CLI parser and executable coverage also verifies preset-driven video export
 resolves the typed YouTube 1080p/4K settings before invoking the export engine.
 The same CLI integration invokes a fake explicit FFmpeg executable through the

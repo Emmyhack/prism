@@ -10,7 +10,9 @@ use prism_media::{
     FfmpegProxyGenerator, FfprobeInspector, MediaError, ProxyProfile, ProxyRequest, StreamKind,
 };
 use prism_persistence::save_atomic;
-use prism_persistence::{PersistenceError, list_autosaves, load, save_autosave, save_backup};
+use prism_persistence::{
+    PersistenceError, list_autosaves, load, recover_autosave, save_autosave, save_backup,
+};
 use prism_project::{Project, TrackKind, TransitionKind};
 use prism_recipe::RecipePermission;
 use prism_script::{
@@ -225,6 +227,13 @@ pub enum CliOutcome {
         /// Versioned candidate listing.
         json: String,
     },
+    /// An autosave was validated and restored to a new project path.
+    AutosaveRecovered {
+        /// Recovered project destination.
+        path: PathBuf,
+        /// Revision captured by the autosave.
+        revision: u64,
+    },
     /// A track lock state was changed and saved.
     TrackLockChanged {
         /// Updated project path.
@@ -291,7 +300,7 @@ pub enum CliOutcome {
 pub enum CliError {
     /// No supported subcommand was supplied.
     #[error(
-        "usage: prism-cli <create-project|inspect|create-video-sequence|add-video-clip|add-audio-clip|move-video-clip|trim-video-clip|split-video-clip|delete-video-clip|duplicate-video-clip|ripple-delete-video-clip|add-transition|delete-transition|generate-proxy|set-track-locked|set-track-visible|set-track-muted|reorder-track|add-marker|delete-marker|script-transaction|run-python-script|run-javascript-script|run-typescript-script|validate-recipe|backup-project|autosave-project|list-autosaves|export-track|export-preset-track|export-video-audio> ..."
+        "usage: prism-cli <create-project|inspect|create-video-sequence|add-video-clip|add-audio-clip|move-video-clip|trim-video-clip|split-video-clip|delete-video-clip|duplicate-video-clip|ripple-delete-video-clip|add-transition|delete-transition|generate-proxy|set-track-locked|set-track-visible|set-track-muted|reorder-track|add-marker|delete-marker|script-transaction|run-python-script|run-javascript-script|run-typescript-script|validate-recipe|backup-project|autosave-project|list-autosaves|recover-autosave|export-track|export-preset-track|export-video-audio> ..."
     )]
     Usage,
     /// A flag was unknown or repeated.
@@ -385,6 +394,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOutcome, 
         Some("backup-project") => run_backup_project(&arguments),
         Some("autosave-project") => run_autosave_project(&arguments),
         Some("list-autosaves") => run_list_autosaves(&arguments),
+        Some("recover-autosave") => run_recover_autosave(&arguments),
         Some(_) | None => Err(CliError::Usage),
     }
 }
@@ -968,6 +978,21 @@ fn run_list_autosaves(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
         .collect::<Vec<_>>();
     Ok(CliOutcome::AutosavesListed {
         json: serde_json::to_string_pretty(&summaries)?,
+    })
+}
+
+fn run_recover_autosave(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
+    let [command, source_flag, source_path, output_flag, output_path] = arguments else {
+        return Err(CliError::Usage);
+    };
+    if command != "recover-autosave" || source_flag != "--source" || output_flag != "--output" {
+        return Err(CliError::Usage);
+    }
+    let output = PathBuf::from(output_path);
+    let revision = recover_autosave(PathBuf::from(source_path).as_path(), &output)?;
+    Ok(CliOutcome::AutosaveRecovered {
+        path: output,
+        revision,
     })
 }
 

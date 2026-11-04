@@ -133,6 +133,13 @@ fn main() -> ExitCode {
             println!("Created autosave {} at revision {revision}", path.display());
             ExitCode::SUCCESS
         }
+        Ok(prism_cli::CliOutcome::AutosaveRecovered { path, revision }) => {
+            println!(
+                "Recovered autosave to {} at revision {revision}",
+                path.display()
+            );
+            ExitCode::SUCCESS
+        }
         Ok(prism_cli::CliOutcome::TrackLockChanged {
             path,
             track_id,
