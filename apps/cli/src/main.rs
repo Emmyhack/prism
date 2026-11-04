@@ -37,6 +37,19 @@ fn main() -> ExitCode {
             println!("Updated {}: clip {clip_id}", path.display());
             ExitCode::SUCCESS
         }
+        Ok(prism_cli::CliOutcome::ClipMoved {
+            path,
+            clip_id,
+            timeline_start,
+        }) => {
+            println!(
+                "Updated {}: moved clip {clip_id} to {}/{}",
+                path.display(),
+                timeline_start.value(),
+                timeline_start.timescale()
+            );
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("Prism: {error}");
             ExitCode::FAILURE

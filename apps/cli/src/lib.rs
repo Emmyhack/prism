@@ -66,6 +66,15 @@ pub enum CliOutcome {
         /// New clip UUID.
         clip_id: String,
     },
+    /// A clip was moved and the project was saved.
+    ClipMoved {
+        /// Updated project path.
+        path: PathBuf,
+        /// Moved clip UUID.
+        clip_id: String,
+        /// New exact timeline start.
+        timeline_start: RationalTime,
+    },
 }
 
 /// CLI parse and workflow failures.
@@ -135,8 +144,68 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOutcome, 
         Some("create-project") => run_create_project(&arguments),
         Some("create-video-sequence") => run_create_video_sequence(&arguments),
         Some("add-video-clip") => run_add_video_clip(&arguments),
+        Some("move-video-clip") => run_move_video_clip(&arguments),
         Some(_) | None => Err(CliError::Usage),
     }
+}
+
+fn run_move_video_clip(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
+    let [
+        command,
+        project_flag,
+        project_path,
+        track_flag,
+        track_value,
+        clip_flag,
+        clip_value,
+        timeline_flag,
+        timeline_value,
+    ] = arguments
+    else {
+        return Err(CliError::Usage);
+    };
+    if command != "move-video-clip"
+        || project_flag != "--project"
+        || track_flag != "--track"
+        || clip_flag != "--clip"
+        || timeline_flag != "--timeline-start"
+    {
+        return Err(CliError::Usage);
+    }
+    let project_path = PathBuf::from(project_path);
+    let track_id = TrackId::from_uuid(parse_uuid(track_value.clone(), "--track")?);
+    let clip_id = ClipId::from_uuid(parse_uuid(clip_value.clone(), "--clip")?);
+    let timeline_start = parse_exact_time(timeline_value.clone(), "--timeline-start")?;
+    let mut project = load(&project_path)?;
+    let sequence_id = project
+        .sequences
+        .values()
+        .find(|sequence| {
+            sequence.tracks.iter().any(|track| {
+                track.id == track_id
+                    && track.kind == TrackKind::Video
+                    && track.clips.iter().any(|clip| clip.id == clip_id)
+            })
+        })
+        .ok_or_else(|| CliError::Command("video track or clip not found".to_owned()))?
+        .id;
+    CommandEngine::execute_transaction(
+        &mut project,
+        "Move video clip",
+        vec![Command::MoveClip {
+            sequence_id,
+            track_id,
+            clip_id,
+            timeline_start,
+        }],
+    )
+    .map_err(|error| CliError::Command(error.to_string()))?;
+    save_atomic(&project, &project_path)?;
+    Ok(CliOutcome::ClipMoved {
+        path: project_path,
+        clip_id: clip_id.as_uuid().to_string(),
+        timeline_start,
+    })
 }
 
 fn run_add_video_clip(arguments: &[OsString]) -> Result<CliOutcome, CliError> {

@@ -52,6 +52,16 @@ cargo run -p prism-cli -- add-video-clip \
   --ffprobe /path/to/ffprobe
 ```
 
+Move an existing video clip without changing its source range:
+
+```sh
+cargo run -p prism-cli -- move-video-clip \
+  --project ./edit.prism \
+  --track 22222222-2222-4222-8222-222222222222 \
+  --clip 33333333-3333-4333-8333-333333333333 \
+  --timeline-start 15/1
+```
+
 The command emits deterministic, versioned JSON. Use the reported sequence and
 track IDs with the export command:
 

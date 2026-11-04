@@ -171,6 +171,7 @@ fn cli_inspects_media_and_commits_first_video_sequence() -> Result<(), Box<dyn s
 
 #[test]
 #[ignore = "requires PRISM_FFPROBE and the generated media fixture"]
+#[allow(clippy::too_many_lines)]
 fn cli_adds_a_second_video_clip_to_existing_track() -> Result<(), Box<dyn std::error::Error>> {
     let ffprobe =
         PathBuf::from(std::env::var_os("PRISM_FFPROBE").ok_or("PRISM_FFPROBE is not set")?);
@@ -234,6 +235,31 @@ fn cli_adds_a_second_video_clip_to_existing_track() -> Result<(), Box<dyn std::e
             .into_owned()
             .into());
     }
+    let appended_json: serde_json::Value = serde_json::from_slice(
+        &ProcessCommand::new(binary)
+            .args(["inspect", "--project"])
+            .arg(&project_path)
+            .output()?
+            .stdout,
+    )?;
+    let clip_id = appended_json["sequences"][0]["tracks"][0]["clips"][1]["id"]
+        .as_str()
+        .ok_or("missing appended clip id")?;
+    let moved = ProcessCommand::new(binary)
+        .args(["move-video-clip", "--project"])
+        .arg(&project_path)
+        .args([
+            "--track",
+            track_id,
+            "--clip",
+            clip_id,
+            "--timeline-start",
+            "1/2",
+        ])
+        .output()?;
+    if !moved.status.success() {
+        return Err(String::from_utf8_lossy(&moved.stderr).into_owned().into());
+    }
     let inspected = ProcessCommand::new(binary)
         .args(["inspect", "--project"])
         .arg(&project_path)
@@ -244,7 +270,7 @@ fn cli_adds_a_second_video_clip_to_existing_track() -> Result<(), Box<dyn std::e
         .ok_or("missing clips")?;
     assert_eq!(clips.len(), 2);
     assert_eq!(clips[1]["timelineStart"]["value"], 1);
-    assert_eq!(clips[1]["timelineStart"]["timescale"], 4);
+    assert_eq!(clips[1]["timelineStart"]["timescale"], 2);
     assert_eq!(clips[1]["sourceStart"]["value"], 1);
     assert_eq!(clips[1]["sourceStart"]["timescale"], 2);
     fs::remove_file(&project_path)?;

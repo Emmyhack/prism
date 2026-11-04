@@ -36,6 +36,10 @@ Added `add-video-clip`, which probes a source range and appends it to an
 existing video track through the same validated import/insert transaction. The
 project is saved atomically only after the complete edit succeeds.
 
+Added `move-video-clip`, which resolves an existing video clip by stable track
+and clip IDs, applies an exact timeline position through `MoveClip`, and saves
+the result atomically.
+
 ## Actual workflow verification
 
 The opt-in integration builds media, sequence, track, and clip state through the
@@ -57,9 +61,9 @@ reported sequence and track IDs against the command-built project.
 
 ## Limitations and next work
 
-The CLI cannot yet move/trim/split clips, report progress, or cancel export.
+The CLI cannot yet trim/split clips, report progress, or cancel export.
 Inspection exposes source paths and is intended for trusted local project use;
 future permission-filtered scripting surfaces must not copy that policy blindly.
 The CLI inherits the video-only renderer and reference-codec licensing boundary.
-Next, add command-backed move, trim, and split workflows without introducing a
-second editing implementation.
+Next, add command-backed trim and split workflows without introducing a second
+editing implementation.

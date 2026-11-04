@@ -53,6 +53,7 @@ The second real-media CLI test creates a project, probes actual media, commits
 media/sequence/track/clip creation as one revision, and verifies exact source
 start and duration through the inspection JSON contract.
 The third executable CLI test appends a second trimmed clip to the existing
-video track and verifies the new exact source and timeline positions.
+video track, moves it through a second command invocation, and verifies the
+new exact source and timeline positions.
 The local FFmpeg build is a reference tool, not an approved distribution
 dependency.
