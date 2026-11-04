@@ -66,7 +66,7 @@ reported sequence and track IDs against the command-built project.
 
 - Formatting passes.
 - Strict workspace Clippy passes with warnings denied.
-- 46 default tests pass.
+- 47 default tests pass.
 - Two media, two playback, three export-library, and three CLI actual-fixture tests
   pass with explicit local `FFmpeg`/ffprobe executables.
 - The ordinary executable suite creates, inspects, and attempts to replace a
