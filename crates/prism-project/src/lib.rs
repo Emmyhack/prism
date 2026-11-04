@@ -1,6 +1,6 @@
 //! Authoritative in-memory project model, independent of persistence formats.
 
-use prism_core::{ClipId, MediaAssetId, ProjectId, SequenceId, TrackId};
+use prism_core::{ClipId, MarkerId, MediaAssetId, ProjectId, SequenceId, TrackId, TransitionId};
 use prism_timeline::RationalTime;
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
@@ -94,6 +94,8 @@ impl Project {
         }
         let mut track_ids = BTreeSet::new();
         let mut clip_ids = BTreeSet::new();
+        let mut marker_ids = BTreeSet::new();
+        let mut transition_ids = BTreeSet::new();
         for (asset_key, asset) in &self.media {
             if *asset_key != asset.id {
                 return Err(ProjectValidationError::KeyMismatch { object: "media" }.into());
@@ -112,18 +114,23 @@ impl Project {
                 &self.media,
                 &mut track_ids,
                 &mut clip_ids,
+                &mut marker_ids,
+                &mut transition_ids,
             )?;
         }
         Ok(())
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_sequence(
     key: SequenceId,
     sequence: &Sequence,
     media: &BTreeMap<MediaAssetId, MediaAsset>,
     track_ids: &mut BTreeSet<TrackId>,
     clip_ids: &mut BTreeSet<ClipId>,
+    marker_ids: &mut BTreeSet<MarkerId>,
+    transition_ids: &mut BTreeSet<TransitionId>,
 ) -> Result<(), ProjectError> {
     if key != sequence.id {
         return Err(ProjectValidationError::KeyMismatch { object: "sequence" }.into());
@@ -131,11 +138,103 @@ fn validate_sequence(
     if sequence.name.trim().is_empty() {
         return Err(ProjectValidationError::EmptyName { object: "sequence" }.into());
     }
+    let mut previous_marker_time = None;
+    for marker in &sequence.markers {
+        if !marker_ids.insert(marker.id) {
+            return Err(ProjectValidationError::DuplicateId { object: "marker" }.into());
+        }
+        if marker.label.trim().is_empty() {
+            return Err(ProjectValidationError::EmptyName { object: "marker" }.into());
+        }
+        if !marker.time.is_non_negative() {
+            return Err(ProjectValidationError::NegativeMarkerTime {
+                marker_id: marker.id.as_uuid().to_string(),
+            }
+            .into());
+        }
+        if previous_marker_time.is_some_and(|previous| marker.time < previous) {
+            return Err(ProjectValidationError::MarkerOrder.into());
+        }
+        previous_marker_time = Some(marker.time);
+    }
     for track in &sequence.tracks {
         if !track_ids.insert(track.id) {
             return Err(ProjectValidationError::DuplicateId { object: "track" }.into());
         }
         validate_track(track, media, clip_ids)?;
+    }
+    let clip_ids_in_sequence = sequence
+        .tracks
+        .iter()
+        .flat_map(|track| track.clips.iter().map(|clip| clip.id))
+        .collect::<BTreeSet<_>>();
+    for transition in &sequence.transitions {
+        if !transition_ids.insert(transition.id) {
+            return Err(ProjectValidationError::DuplicateId {
+                object: "transition",
+            }
+            .into());
+        }
+        if !clip_ids_in_sequence.contains(&transition.outgoing_clip)
+            || !clip_ids_in_sequence.contains(&transition.incoming_clip)
+        {
+            return Err(ProjectValidationError::TransitionClipMissing {
+                transition_id: transition.id.as_uuid().to_string(),
+            }
+            .into());
+        }
+        let outgoing_track = sequence.tracks.iter().find(|track| {
+            track
+                .clips
+                .iter()
+                .any(|clip| clip.id == transition.outgoing_clip)
+        });
+        let incoming_track = sequence.tracks.iter().find(|track| {
+            track
+                .clips
+                .iter()
+                .any(|clip| clip.id == transition.incoming_clip)
+        });
+        let (Some(outgoing_track), Some(incoming_track)) = (outgoing_track, incoming_track) else {
+            return Err(ProjectValidationError::TransitionClipMissing {
+                transition_id: transition.id.as_uuid().to_string(),
+            }
+            .into());
+        };
+        let outgoing = outgoing_track
+            .clips
+            .iter()
+            .find(|clip| clip.id == transition.outgoing_clip)
+            .ok_or(ProjectValidationError::TransitionClipMissing {
+                transition_id: transition.id.as_uuid().to_string(),
+            })?;
+        let incoming = incoming_track
+            .clips
+            .iter()
+            .find(|clip| clip.id == transition.incoming_clip)
+            .ok_or(ProjectValidationError::TransitionClipMissing {
+                transition_id: transition.id.as_uuid().to_string(),
+            })?;
+        let adjacent = outgoing_track.id == incoming_track.id
+            && outgoing_track.kind == TrackKind::Video
+            && outgoing
+                .timeline_start
+                .checked_add(outgoing.source_duration)?
+                == incoming.timeline_start
+            && transition.duration <= outgoing.source_duration
+            && transition.duration <= incoming.source_duration;
+        if !adjacent {
+            return Err(ProjectValidationError::InvalidTransition {
+                transition_id: transition.id.as_uuid().to_string(),
+            }
+            .into());
+        }
+        if !transition.duration.is_positive() {
+            return Err(ProjectValidationError::NonPositiveTransitionDuration {
+                transition_id: transition.id.as_uuid().to_string(),
+            }
+            .into());
+        }
     }
     Ok(())
 }
@@ -212,8 +311,45 @@ pub struct Sequence {
     pub id: SequenceId,
     /// User-visible name.
     pub name: String,
+    /// Ordered timeline markers.
+    pub markers: Vec<Marker>,
+    /// Nondestructive transitions between adjacent clips.
+    pub transitions: Vec<Transition>,
     /// Ordered tracks.
     pub tracks: Vec<Track>,
+}
+
+/// A named exact-time marker on a sequence timeline.
+#[derive(Clone, Debug)]
+pub struct Marker {
+    /// Stable marker identifier.
+    pub id: MarkerId,
+    /// Exact sequence position.
+    pub time: RationalTime,
+    /// User-visible marker label.
+    pub label: String,
+}
+
+/// Supported timeline transition type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransitionKind {
+    /// Linear cross-dissolve.
+    Dissolve,
+}
+
+/// Nondestructive transition between two clips.
+#[derive(Clone, Debug)]
+pub struct Transition {
+    /// Stable transition identifier.
+    pub id: TransitionId,
+    /// Outgoing clip.
+    pub outgoing_clip: ClipId,
+    /// Incoming clip.
+    pub incoming_clip: ClipId,
+    /// Exact overlap duration.
+    pub duration: RationalTime,
+    /// Transition operation.
+    pub kind: TransitionKind,
 }
 
 /// Track media kind.
@@ -236,6 +372,10 @@ pub struct Track {
     pub clips: Vec<Clip>,
     /// Locked tracks reject editing mutations.
     pub locked: bool,
+    /// Visible tracks contribute video layers to preview and export.
+    pub visible: bool,
+    /// Muted tracks contribute no audio during preview and export.
+    pub muted: bool,
 }
 
 /// A nondestructive source range placed on a sequence.
@@ -326,14 +466,42 @@ pub enum ProjectValidationError {
         /// Invalid track identifier.
         track_id: String,
     },
+    /// A marker time was negative.
+    #[error("marker {marker_id} has a negative time")]
+    NegativeMarkerTime {
+        /// Marker identifier.
+        marker_id: String,
+    },
+    /// Markers were not stored in nondecreasing time order.
+    #[error("sequence markers are not ordered by time")]
+    MarkerOrder,
+    /// A transition references a clip absent from the sequence.
+    #[error("transition {transition_id} references a missing clip")]
+    TransitionClipMissing {
+        /// Transition identifier.
+        transition_id: String,
+    },
+    /// A transition duration was zero or negative.
+    #[error("transition {transition_id} has a non-positive duration")]
+    NonPositiveTransitionDuration {
+        /// Transition identifier.
+        transition_id: String,
+    },
+    /// Transition clips are not adjacent video clips or duration is too long.
+    #[error("transition {transition_id} is invalid for its clips")]
+    InvalidTransition {
+        /// Transition identifier.
+        transition_id: String,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Clip, MediaAsset, Project, ProjectError, ProjectValidationError, Sequence, Track, TrackKind,
+        Clip, Marker, MediaAsset, Project, ProjectError, ProjectValidationError, Sequence, Track,
+        TrackKind,
     };
-    use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
+    use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId};
     use prism_timeline::{RationalTime, TimeError};
 
     #[test]
@@ -345,6 +513,8 @@ mod tests {
             Sequence {
                 id: sequence_id,
                 name: "Main".to_owned(),
+                markers: Vec::new(),
+                transitions: Vec::new(),
                 tracks: vec![Track {
                     id: TrackId::new(),
                     kind: TrackKind::Video,
@@ -356,6 +526,8 @@ mod tests {
                         source_duration: RationalTime::new(1, 1)?,
                     }],
                     locked: false,
+                    visible: true,
+                    muted: false,
                 }],
             },
         );
@@ -385,6 +557,8 @@ mod tests {
             Sequence {
                 id: sequence_id,
                 name: "Main".to_owned(),
+                markers: Vec::new(),
+                transitions: Vec::new(),
                 tracks: vec![Track {
                     id: TrackId::new(),
                     kind: TrackKind::Video,
@@ -405,6 +579,8 @@ mod tests {
                         },
                     ],
                     locked: false,
+                    visible: true,
+                    muted: false,
                 }],
             },
         );
@@ -412,6 +588,52 @@ mod tests {
             project.validate(),
             Err(ProjectError::InvalidState(
                 ProjectValidationError::ClipOrderOrOverlap { .. }
+            ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn validator_rejects_invalid_marker_order_and_labels() -> Result<(), TimeError> {
+        let mut project = Project::new("Test");
+        let sequence_id = SequenceId::new();
+        let first = MarkerId::new();
+        let second = MarkerId::new();
+        project.sequences.insert(
+            sequence_id,
+            Sequence {
+                id: sequence_id,
+                name: "Main".to_owned(),
+                markers: vec![
+                    Marker {
+                        id: first,
+                        time: RationalTime::new(3, 1)?,
+                        label: "Later".to_owned(),
+                    },
+                    Marker {
+                        id: second,
+                        time: RationalTime::new(1, 1)?,
+                        label: "Earlier".to_owned(),
+                    },
+                ],
+                transitions: Vec::new(),
+                tracks: Vec::new(),
+            },
+        );
+        assert!(matches!(
+            project.validate(),
+            Err(ProjectError::InvalidState(
+                ProjectValidationError::MarkerOrder
+            ))
+        ));
+        if let Some(sequence) = project.sequences.get_mut(&sequence_id) {
+            sequence.markers[1].time = RationalTime::new(4, 1)?;
+            sequence.markers[1].label = " ".to_owned();
+        }
+        assert!(matches!(
+            project.validate(),
+            Err(ProjectError::InvalidState(
+                ProjectValidationError::EmptyName { object: "marker" }
             ))
         ));
         Ok(())

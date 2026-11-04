@@ -15,6 +15,9 @@ pub enum TimeError {
     /// Division by zero was requested.
     #[error("cannot divide time by zero")]
     DivisionByZero,
+    /// Snapping requires a strictly positive grid duration.
+    #[error("snap grid must be greater than zero")]
+    InvalidSnapGrid,
 }
 
 /// Exact rational time represented as `value / timescale` seconds.
@@ -156,6 +159,25 @@ impl RationalTime {
         };
         i64::try_from(rounded).map_err(|_| TimeError::Overflow)
     }
+
+    /// Snaps this time to the nearest multiple of a positive exact grid.
+    ///
+    /// Ties are resolved away from zero, matching [`RoundingMode::NearestTiesAway`].
+    /// The returned value remains rational and does not accumulate frame-rate
+    /// drift across repeated operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::InvalidSnapGrid`] for a nonpositive grid or
+    /// [`TimeError::Overflow`] when the snapped value is not representable.
+    pub fn snap_to_grid(self, grid: Self) -> Result<Self, TimeError> {
+        if !grid.is_positive() {
+            return Err(TimeError::InvalidSnapGrid);
+        }
+        let ticks = self.to_ticks(grid.timescale, RoundingMode::NearestTiesAway)?;
+        let value = grid.value.checked_mul(ticks).ok_or(TimeError::Overflow)?;
+        Self::new(value, grid.timescale)
+    }
 }
 
 fn normalize_wide(value: i128, timescale: u64) -> Result<RationalTime, TimeError> {
@@ -225,6 +247,25 @@ mod tests {
         assert_eq!(negative.to_ticks(1, RoundingMode::Floor)?, -2);
         assert_eq!(negative.to_ticks(1, RoundingMode::Ceil)?, -1);
         assert_eq!(negative.to_ticks(1, RoundingMode::NearestTiesAway)?, -2);
+        Ok(())
+    }
+
+    #[test]
+    fn snapping_uses_exact_grid_and_explicit_ties() -> Result<(), TimeError> {
+        let frame = RationalTime::new(1, 30)?;
+        assert_eq!(
+            RationalTime::new(14, 1_000)?.snap_to_grid(frame)?,
+            RationalTime::ZERO
+        );
+        assert_eq!(RationalTime::new(17, 1_000)?.snap_to_grid(frame)?, frame);
+        assert_eq!(
+            RationalTime::new(-17, 1_000)?.snap_to_grid(frame)?,
+            RationalTime::new(-1, 30)?
+        );
+        assert_eq!(
+            RationalTime::new(1, 2)?.snap_to_grid(RationalTime::ZERO),
+            Err(TimeError::InvalidSnapGrid)
+        );
         Ok(())
     }
 

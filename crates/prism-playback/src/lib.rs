@@ -43,6 +43,28 @@ pub struct VideoFramePlan {
     pub sources: Vec<VideoSourceRequest>,
 }
 
+/// A source selected from an unmuted audio track at one sequence timestamp.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioSourceRequest {
+    /// Track containing the selected clip.
+    pub track_id: TrackId,
+    /// Selected clip.
+    pub clip_id: ClipId,
+    /// Referenced media asset.
+    pub media_id: MediaAssetId,
+    /// Exact timestamp to request from the source decoder.
+    pub source_time: RationalTime,
+}
+
+/// Audio sources active at one exact sequence timestamp.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioFramePlan {
+    /// Requested sequence timestamp.
+    pub sequence_time: RationalTime,
+    /// At most one source per unmuted audio track, in stored track order.
+    pub sources: Vec<AudioSourceRequest>,
+}
+
 /// One scheduled decode operation derived from timeline evaluation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodeRequest {
@@ -243,7 +265,7 @@ pub fn evaluate_video_frame(
         .ok_or(EvaluationError::SequenceNotFound)?;
     let mut sources = Vec::new();
     for track in &sequence.tracks {
-        if track.kind != TrackKind::Video {
+        if track.kind != TrackKind::Video || !track.visible {
             continue;
         }
         for clip in &track.clips {
@@ -270,11 +292,58 @@ pub fn evaluate_video_frame(
     })
 }
 
+/// Resolves active clips on unmuted audio tracks at an exact sequence time.
+///
+/// # Errors
+///
+/// Returns [`EvaluationError`] for a missing sequence, negative timestamp, or
+/// unrepresentable exact-time arithmetic.
+pub fn evaluate_audio_frame(
+    project: &Project,
+    sequence_id: SequenceId,
+    sequence_time: RationalTime,
+) -> Result<AudioFramePlan, EvaluationError> {
+    if !sequence_time.is_non_negative() {
+        return Err(EvaluationError::NegativeTimestamp);
+    }
+    let sequence = project
+        .sequences
+        .get(&sequence_id)
+        .ok_or(EvaluationError::SequenceNotFound)?;
+    let mut sources = Vec::new();
+    for track in &sequence.tracks {
+        if track.kind != TrackKind::Audio || track.muted {
+            continue;
+        }
+        for clip in &track.clips {
+            if sequence_time < clip.timeline_start {
+                break;
+            }
+            let timeline_end = clip.timeline_start.checked_add(clip.source_duration)?;
+            if sequence_time >= timeline_end {
+                continue;
+            }
+            let offset = sequence_time.checked_sub(clip.timeline_start)?;
+            sources.push(AudioSourceRequest {
+                track_id: track.id,
+                clip_id: clip.id,
+                media_id: clip.media_id,
+                source_time: clip.source_start.checked_add(offset)?,
+            });
+            break;
+        }
+    }
+    Ok(AudioFramePlan {
+        sequence_time,
+        sources,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AsyncDecodeWorker, DecodeRequest, DecodeResult, EvaluationError, SubmitError,
-        VideoSourceRequest, evaluate_video_frame,
+        VideoSourceRequest, evaluate_audio_frame, evaluate_video_frame,
     };
     use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
     use prism_project::{Clip, MediaAsset, Project, Sequence, Track, TrackKind};
@@ -315,6 +384,8 @@ mod tests {
             Sequence {
                 id: sequence_id,
                 name: "Main".to_owned(),
+                markers: Vec::new(),
+                transitions: Vec::new(),
                 tracks: vec![
                     Track {
                         id: TrackId::new(),
@@ -336,6 +407,8 @@ mod tests {
                             },
                         ],
                         locked: false,
+                        visible: true,
+                        muted: false,
                     },
                     Track {
                         id: TrackId::new(),
@@ -348,6 +421,8 @@ mod tests {
                             source_duration: RationalTime::new(30, 1)?,
                         }],
                         locked: false,
+                        visible: true,
+                        muted: false,
                     },
                 ],
             },
@@ -415,6 +490,50 @@ mod tests {
             RationalTime::new(1, 2)?,
         )?;
         assert!(plan.sources.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn hidden_video_tracks_do_not_produce_sources() -> Result<(), Box<dyn std::error::Error>> {
+        let mut fixture = fixture()?;
+        fixture
+            .project
+            .sequences
+            .get_mut(&fixture.sequence_id)
+            .ok_or("missing sequence")?
+            .tracks[0]
+            .visible = false;
+        let plan = evaluate_video_frame(
+            &fixture.project,
+            fixture.sequence_id,
+            RationalTime::new(3, 2)?,
+        )?;
+        assert!(plan.sources.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn muted_audio_tracks_do_not_produce_sources() -> Result<(), Box<dyn std::error::Error>> {
+        let mut fixture = fixture()?;
+        let plan = evaluate_audio_frame(
+            &fixture.project,
+            fixture.sequence_id,
+            RationalTime::new(1, 1)?,
+        )?;
+        assert_eq!(plan.sources.len(), 1);
+        fixture
+            .project
+            .sequences
+            .get_mut(&fixture.sequence_id)
+            .ok_or("missing sequence")?
+            .tracks[1]
+            .muted = true;
+        let muted_plan = evaluate_audio_frame(
+            &fixture.project,
+            fixture.sequence_id,
+            RationalTime::new(1, 1)?,
+        )?;
+        assert!(muted_plan.sources.is_empty());
         Ok(())
     }
 

@@ -12,6 +12,7 @@ prism-export = { path = "../../crates/prism-export" }
 prism-media = { path = "../../crates/prism-media" }
 prism-persistence = { path = "../../crates/prism-persistence" }
 prism-project = { path = "../../crates/prism-project" }
+prism-recipe = { path = "../../crates/prism-recipe" }
 prism-script = { path = "../../crates/prism-script" }
 prism-timeline = { path = "../../crates/prism-timeline" }
 serde.workspace = true

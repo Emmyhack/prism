@@ -9,6 +9,7 @@ license.workspace = true
 prism-commands = { path = "../prism-commands" }
 prism-core = { path = "../prism-core" }
 prism-project = { path = "../prism-project" }
+prism-recipe = { path = "../prism-recipe" }
 prism-timeline = { path = "../prism-timeline" }
 serde.workspace = true
 serde_json.workspace = true

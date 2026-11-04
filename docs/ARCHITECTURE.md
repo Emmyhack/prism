@@ -30,16 +30,33 @@ DTOs convert explicitly at boundaries and cannot be used as domain objects.
 | `prism-core` | typed IDs and stable primitives | UI, media, serialization |
 | `prism-timeline` | exact time and timeline algorithms | UI, codecs |
 | `prism-project` | authoritative aggregate and invariants | UI, persistence formats |
-| `prism-persistence` | versioned SQLite schema and domain mapping | UI, language runtimes |
-| `prism-media` | capability discovery, metadata, and decode reference vectors | UI, project mutation |
+| `prism-persistence` | versioned SQLite schema and domain mapping, atomic saves/backups, autosave scheduling, retention, and candidate discovery | UI, language runtimes |
+| `prism-media` | capability discovery, metadata, decode reference vectors, deterministic thumbnails, and proxy profile/cache identity | UI, project mutation |
 | `prism-playback` | exact sequence-time evaluation into ordered source requests | UI, codecs, project mutation |
-| `prism-export` | validated encoding, temporary outputs, and atomic finalization | UI, project mutation |
+| `prism-export` | validated encoding, typed geometry/frame-rate presets, temporary outputs, and atomic finalization | UI, bitrate/codec policy, project mutation |
+| `prism-audio` | allocation-free routed track/bus mixing, fades/crossfades, peak/RMS/dBFS analysis, normalization, dynamics compression, limiting, stateful one-pole filtering and stereo delay, block resampling, and cache-ready waveform primitives | UI, device ownership, project mutation |
+| `prism-cache` | content-addressed derived-artifact keys, atomic writes, finalized lookup, bounded eviction, and bounded background write/eviction scheduling | UI, project mutation |
+| `prism-color` | validated SDR transfer functions, CPU grading, interpolated per-channel 1D and trilinear 3D LUTs, RGB/luma histograms, per-column waveform scope, and U/V vectorscope primitives | UI, GPU handles |
+| `prism-compositor` | backend-independent linear RGBA Normal/Multiply/Screen/Additive/Overlay blend and transition equations | UI, GPU handles, project mutation |
+| `prism-effects` | exact-time scalar automation curves | UI, persistence formats |
+| `prism-render` | deterministic render-graph dependency planning and explicit CPU pixel execution for source/blend/transition/output plus parameterized color gain, opacity, and blend modes | UI, GPU handles, codec I/O |
 | `prism-commands` | validation, transactions, events, undo | UI, language runtimes |
-| `prism-script` | versioned protocol DTOs and conversions | runtime-specific APIs |
+| `prism-script` | versioned protocol DTOs, bounded/cancellable command execution, supervised external worker process boundary, and capability authorization | runtime-specific APIs |
+| `prism-plugin` | versioned plugin manifests, capability validation, and safe deterministic local catalog discovery | runtime loading, UI |
+| `prism-recipe` | versioned recipe manifests and input validation | script execution, UI |
 | `prism-testing` | reusable fixtures and assertions | production applications |
+
+`apps/studio` currently provides a UI-independent application shell. It owns
+startup argument parsing and project-open summaries while depending only on the
+persistence boundary; a future graphical frontend can consume the same shell
+contracts without moving domain logic into toolkit callbacks.
 
 Future crates are introduced when their first real behavior exists, not merely
 to mirror a proposed directory tree.
+
+`prism-timeline` owns exact rational time, explicit rounding policies, checked
+arithmetic, and nearest-grid snapping. Snapping ties resolve away from zero;
+UI and codec layers cannot introduce floating-point timeline authority.
 
 ## Project schema proposal
 
@@ -47,6 +64,16 @@ Projects contain assets, bins, sequences, ordered typed tracks, clips referencin
 assets, transitions, effects, keyframes, captions, buses, color state, markers,
 and export configurations. Every object receives a typed UUID. Domain schema,
 persistence container, and scripting API versions are independent.
+
+Persistence exposes separate atomic active-save and no-clobber recovery-backup
+paths. Backup artifacts are versioned by callers and never replace the active
+project or an existing backup.
+
+The persistence crate also provides a bounded background autosave scheduler and
+a deterministic retention helper. The scheduler clones validated project
+snapshots, skips revisions already written by its worker, and reports
+completion; retention removes only matching revision artifacts and preserves
+the newest requested count. Neither owns domain mutation or media bytes.
 
 The initial `.prism` file is a versioned SQLite database for structured project
 state. Domain objects do not derive storage serialization; the persistence crate

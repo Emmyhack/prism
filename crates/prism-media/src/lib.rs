@@ -6,7 +6,16 @@
 use prism_timeline::{RationalTime, RoundingMode, TimeError};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, fs::File, io::Read, path::Path, path::PathBuf, process::Command};
+use std::{
+    collections::BTreeSet,
+    fs::{self, File},
+    io::Read,
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::Duration,
+};
 use thiserror::Error;
 
 /// Failures while discovering or inspecting media capabilities.
@@ -67,6 +76,35 @@ pub enum MediaError {
         /// Actual byte count returned by the process.
         actual: usize,
     },
+    /// A proxy profile contained invalid dimensions or codec identifiers.
+    #[error("invalid proxy profile: {reason}")]
+    InvalidProxyProfile {
+        /// Validation failure description.
+        reason: &'static str,
+    },
+    /// Proxy source is not a regular file.
+    #[error("proxy source is not a regular file: {0}")]
+    InvalidProxySource(PathBuf),
+    /// Proxy destination already exists and is never overwritten.
+    #[error("proxy destination already exists: {0}")]
+    ProxyDestinationExists(PathBuf),
+    /// Proxy output parent is unavailable.
+    #[error("proxy output parent is unavailable: {0}")]
+    InvalidProxyOutputParent(PathBuf),
+    /// Proxy generation was cancelled.
+    #[error("proxy generation cancelled")]
+    ProxyCancelled,
+    /// Proxy encoder failed.
+    #[error("proxy encoder failed with status {status}: {stderr}")]
+    ProxyEncoder {
+        /// Process exit status when available.
+        status: i32,
+        /// Captured diagnostic output.
+        stderr: String,
+    },
+    /// Proxy process succeeded but did not produce a file.
+    #[error("proxy encoder produced no output")]
+    ProxyOutputMissing,
 }
 
 const MAX_REFERENCE_FRAME_BYTES: usize = 512 * 1024 * 1024;
@@ -198,6 +236,232 @@ pub struct MediaFingerprint {
     pub byte_length: u64,
 }
 
+/// Deterministic proxy-generation settings.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProxyProfile {
+    /// Target width in pixels.
+    pub width: u32,
+    /// Target height in pixels.
+    pub height: u32,
+    /// Video codec identifier passed to the encoder.
+    pub video_codec: String,
+    /// Optional audio codec identifier.
+    pub audio_codec: Option<String>,
+    /// Cache artifact extension.
+    pub extension: String,
+}
+
+/// A nondestructive proxy-generation request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProxyRequest {
+    /// Original media source.
+    pub source: PathBuf,
+    /// No-clobber proxy destination.
+    pub output: PathBuf,
+    /// Encoding profile.
+    pub profile: ProxyProfile,
+}
+
+/// Explicit `FFmpeg` proxy generator.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FfmpegProxyGenerator {
+    executable: PathBuf,
+}
+
+impl FfmpegProxyGenerator {
+    /// Creates a generator using an explicitly configured `FFmpeg` executable.
+    #[must_use]
+    pub fn new(executable: impl Into<PathBuf>) -> Self {
+        Self {
+            executable: executable.into(),
+        }
+    }
+
+    /// Generates a proxy with temporary-output cleanup and no-clobber finalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] when validation, process execution, cancellation,
+    /// or finalization fails.
+    pub fn generate(
+        &self,
+        request: &ProxyRequest,
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<PathBuf, MediaError> {
+        if !request.source.is_file() {
+            return Err(MediaError::InvalidProxySource(request.source.clone()));
+        }
+        if request.output.exists() {
+            return Err(MediaError::ProxyDestinationExists(request.output.clone()));
+        }
+        if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Err(MediaError::ProxyCancelled);
+        }
+        let parent = request
+            .output
+            .parent()
+            .ok_or_else(|| MediaError::InvalidProxyOutputParent(request.output.clone()))?;
+        if !parent.is_dir() {
+            return Err(MediaError::InvalidProxyOutputParent(parent.to_path_buf()));
+        }
+        let temporary = request.output.with_file_name(format!(
+            ".{}.proxy-{}.tmp",
+            request
+                .output
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("proxy"),
+            std::process::id()
+        ));
+        let mut command = Command::new(&self.executable);
+        command
+            .args(["-v", "error", "-y", "-i"])
+            .arg(&request.source)
+            .args([
+                "-vf",
+                &format!("scale={}:{}", request.profile.width, request.profile.height),
+                "-c:v",
+            ])
+            .arg(&request.profile.video_codec);
+        if let Some(audio) = &request.profile.audio_codec {
+            command.args(["-c:a", audio]);
+        } else {
+            command.arg("-an");
+        }
+        command
+            .arg(&temporary)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|error| MediaError::ProxyEncoder {
+            status: -1,
+            stderr: error.to_string(),
+        })?;
+        let output = wait_proxy_child(&mut child, cancelled)?;
+        if !output.status.success() {
+            let _ = fs::remove_file(&temporary);
+            return Err(MediaError::ProxyEncoder {
+                status: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        if !temporary.is_file() {
+            return Err(MediaError::ProxyOutputMissing);
+        }
+        let result = fs::hard_link(&temporary, &request.output);
+        let _ = fs::remove_file(&temporary);
+        result.map_err(|error| {
+            if request.output.exists() {
+                MediaError::ProxyDestinationExists(request.output.clone())
+            } else {
+                MediaError::ProxyEncoder {
+                    status: -1,
+                    stderr: error.to_string(),
+                }
+            }
+        })?;
+        Ok(request.output.clone())
+    }
+}
+
+fn wait_proxy_child(
+    child: &mut Child,
+    cancelled: Option<&AtomicBool>,
+) -> Result<std::process::Output, MediaError> {
+    loop {
+        if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(MediaError::ProxyCancelled);
+        }
+        if child
+            .try_wait()
+            .map_err(|error| MediaError::ProxyEncoder {
+                status: -1,
+                stderr: error.to_string(),
+            })?
+            .is_some()
+        {
+            let status = child.wait().map_err(|error| MediaError::ProxyEncoder {
+                status: -1,
+                stderr: error.to_string(),
+            })?;
+            let mut stderr = Vec::new();
+            if let Some(mut stream) = child.stderr.take() {
+                stream
+                    .read_to_end(&mut stderr)
+                    .map_err(|error| MediaError::ProxyEncoder {
+                        status: -1,
+                        stderr: error.to_string(),
+                    })?;
+            }
+            return Ok(std::process::Output {
+                status,
+                stdout: Vec::new(),
+                stderr,
+            });
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+impl ProxyProfile {
+    /// Creates a validated proxy profile.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError::InvalidProxyProfile`] when dimensions or codec
+    /// identifiers are empty/unsafe.
+    pub fn new(
+        width: u32,
+        height: u32,
+        video_codec: impl Into<String>,
+        audio_codec: Option<String>,
+        extension: impl Into<String>,
+    ) -> Result<Self, MediaError> {
+        let profile = Self {
+            width,
+            height,
+            video_codec: video_codec.into(),
+            audio_codec,
+            extension: extension.into(),
+        };
+        if profile.width == 0 || profile.height == 0 {
+            return Err(MediaError::InvalidProxyProfile {
+                reason: "dimensions must be nonzero",
+            });
+        }
+        for value in std::iter::once(&profile.video_codec)
+            .chain(profile.audio_codec.as_ref())
+            .chain(std::iter::once(&profile.extension))
+        {
+            if value.is_empty()
+                || !value.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+                })
+            {
+                return Err(MediaError::InvalidProxyProfile {
+                    reason: "codec and extension identifiers must be filename-safe",
+                });
+            }
+        }
+        Ok(profile)
+    }
+
+    /// Returns canonical bytes for cache-key derivation.
+    #[must_use]
+    pub fn cache_parameters(&self) -> Vec<u8> {
+        format!(
+            "{}x{};v={};a={};ext={}",
+            self.width,
+            self.height,
+            self.video_codec,
+            self.audio_codec.as_deref().unwrap_or(""),
+            self.extension
+        )
+        .into_bytes()
+    }
+}
+
 /// One tightly packed, top-to-bottom RGBA frame from the reference decoder.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodedVideoFrame {
@@ -214,6 +478,70 @@ impl DecodedVideoFrame {
     #[must_use]
     pub fn sha256(&self) -> String {
         format!("{:x}", Sha256::digest(&self.rgba))
+    }
+
+    /// Creates a deterministic nearest-neighbor thumbnail in RGBA order.
+    ///
+    /// This CPU helper is intentionally simple and stable for cache fixtures;
+    /// quality filters and GPU scaling belong to later render backends.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError::InvalidFrameDimensions`] for invalid target or
+    /// source dimensions, or [`MediaError::InvalidFrameLength`] when the
+    /// source bytes do not match its declared dimensions.
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn thumbnail(&self, width: u32, height: u32) -> Result<Self, MediaError> {
+        let expected_source = checked_rgba_length(self.width, self.height)?;
+        if self.rgba.len() != expected_source {
+            return Err(MediaError::InvalidFrameLength {
+                expected: expected_source,
+                actual: self.rgba.len(),
+            });
+        }
+        let target_length = checked_rgba_length(width, height)?;
+        let mut rgba = vec![0_u8; target_length];
+        let source_width = u64::from(self.width);
+        let source_height = u64::from(self.height);
+        let target_width = u64::from(width);
+        let target_height = u64::from(height);
+        for y in 0..target_height {
+            let source_y = y * source_height / target_height;
+            for x in 0..target_width {
+                let source_x = x * source_width / target_width;
+                let source_index = ((source_y * source_width + source_x) * 4) as usize;
+                let target_index = ((y * target_width + x) * 4) as usize;
+                rgba[target_index..target_index + 4]
+                    .copy_from_slice(&self.rgba[source_index..source_index + 4]);
+            }
+        }
+        Ok(Self {
+            width,
+            height,
+            rgba,
+        })
+    }
+}
+
+impl MediaFingerprint {
+    /// Derives a content-addressed key for a media-derived artifact.
+    ///
+    /// The operation and parameters must describe every setting that affects
+    /// the artifact (for example, thumbnail dimensions or waveform rate).
+    #[must_use]
+    pub fn cache_key(
+        &self,
+        namespace: &str,
+        operation: &str,
+        parameters: &[u8],
+    ) -> prism_cache::CacheKey {
+        prism_cache::CacheKey::from_parts(namespace, self.sha256.as_bytes(), operation, parameters)
+    }
+
+    /// Derives the stable cache key for a proxy profile.
+    #[must_use]
+    pub fn proxy_cache_key(&self, profile: &ProxyProfile) -> prism_cache::CacheKey {
+        self.cache_key("proxy", "transcode", &profile.cache_parameters())
     }
 }
 
@@ -690,8 +1018,9 @@ fn parse_decimal_time(field: &'static str, value: &str) -> Result<RationalTime, 
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameRateEvidence, MediaError, MediaMetadata, PacketTimingEvidence, ProbeOutput,
-        ProbePacket, StreamKind, analyze_packet_timing, checked_rgba_length, format_seek_timestamp,
+        DecodedVideoFrame, FfmpegProxyGenerator, FrameRateEvidence, MediaError, MediaFingerprint,
+        MediaMetadata, PacketTimingEvidence, ProbeOutput, ProbePacket, ProxyProfile, ProxyRequest,
+        StreamKind, analyze_packet_timing, checked_rgba_length, format_seek_timestamp,
         parse_decimal_time,
     };
     use prism_timeline::RationalTime;
@@ -771,6 +1100,108 @@ mod tests {
             checked_rgba_length(u32::MAX, u32::MAX),
             Err(MediaError::InvalidFrameDimensions { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn thumbnail_resize_is_deterministic_and_validates_source() -> Result<(), MediaError> {
+        let frame = DecodedVideoFrame {
+            width: 2,
+            height: 2,
+            rgba: vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ],
+        };
+        let thumbnail = frame.thumbnail(1, 1)?;
+        assert_eq!(thumbnail.rgba, vec![255, 0, 0, 255]);
+        let malformed = DecodedVideoFrame {
+            rgba: vec![0, 1, 2],
+            ..frame
+        };
+        assert!(matches!(
+            malformed.thumbnail(1, 1),
+            Err(MediaError::InvalidFrameLength { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn media_fingerprint_derives_distinct_cache_keys() {
+        let fingerprint = MediaFingerprint {
+            sha256: "abc123".to_owned(),
+            byte_length: 6,
+        };
+        let thumbnail = fingerprint.cache_key("thumbnail", "rgba", b"320x180");
+        let waveform = fingerprint.cache_key("waveform", "peak-rms", b"48000");
+        assert_ne!(thumbnail, waveform);
+        assert_eq!(
+            thumbnail,
+            fingerprint.cache_key("thumbnail", "rgba", b"320x180")
+        );
+    }
+
+    #[test]
+    fn proxy_profiles_validate_and_partition_cache_keys() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let fingerprint = MediaFingerprint {
+            sha256: "abc123".to_owned(),
+            byte_length: 6,
+        };
+        let profile = ProxyProfile::new(960, 540, "h264", Some("aac".to_owned()), "mp4")?;
+        let changed = ProxyProfile::new(640, 360, "h264", Some("aac".to_owned()), "mp4")?;
+        assert_ne!(
+            fingerprint.proxy_cache_key(&profile),
+            fingerprint.proxy_cache_key(&changed)
+        );
+        assert!(matches!(
+            ProxyProfile::new(0, 360, "h264", None, "mp4"),
+            Err(MediaError::InvalidProxyProfile { .. })
+        ));
+        assert!(matches!(
+            ProxyProfile::new(960, 540, "h264", None, "../mp4"),
+            Err(MediaError::InvalidProxyProfile { .. })
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn proxy_generator_finalizes_output_and_honors_cancellation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::AtomicBool;
+        let directory =
+            std::env::temp_dir().join(format!("prism-proxy-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory)?;
+        let source = directory.join("source.mov");
+        let script = directory.join("fake-ffmpeg.sh");
+        let output = directory.join("proxy.mp4");
+        std::fs::write(&source, b"source")?;
+        std::fs::write(&script, b"#!/bin/sh\nlast=''\nfor arg in \"$@\"; do last=\"$arg\"; done\nprintf proxy > \"$last\"\n")?;
+        let mut permissions = std::fs::metadata(&script)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions)?;
+        let profile = ProxyProfile::new(320, 180, "h264", None, "mp4")?;
+        let request = ProxyRequest {
+            source,
+            output: output.clone(),
+            profile,
+        };
+        let generated = FfmpegProxyGenerator::new(&script).generate(&request, None)?;
+        assert_eq!(generated, output);
+        assert_eq!(std::fs::read(&output)?, b"proxy");
+        let cancelled = AtomicBool::new(true);
+        let second = ProxyRequest {
+            source: request.source.clone(),
+            output: directory.join("cancelled.mp4"),
+            profile: request.profile.clone(),
+        };
+        assert!(matches!(
+            FfmpegProxyGenerator::new(&script).generate(&second, Some(&cancelled)),
+            Err(MediaError::ProxyCancelled)
+        ));
+        std::fs::remove_dir_all(directory)?;
         Ok(())
     }
 }

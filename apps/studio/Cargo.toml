@@ -5,5 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[dependencies]
+prism-persistence = { path = "../../crates/prism-persistence" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
 [lints]
 workspace = true

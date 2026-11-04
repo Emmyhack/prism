@@ -29,6 +29,8 @@ fn timeline_trim_and_placement_select_expected_source_frame()
         Sequence {
             id: sequence_id,
             name: "Main".to_owned(),
+            markers: Vec::new(),
+            transitions: Vec::new(),
             tracks: vec![Track {
                 id: TrackId::new(),
                 kind: TrackKind::Video,
@@ -40,6 +42,8 @@ fn timeline_trim_and_placement_select_expected_source_frame()
                     source_duration: RationalTime::new(3, 4)?,
                 }],
                 locked: false,
+                visible: true,
+                muted: false,
             }],
         },
     );
@@ -84,6 +88,8 @@ fn evaluated_frame_is_decoded_off_thread() -> Result<(), Box<dyn std::error::Err
         Sequence {
             id: sequence_id,
             name: "Main".to_owned(),
+            markers: Vec::new(),
+            transitions: Vec::new(),
             tracks: vec![Track {
                 id: TrackId::new(),
                 kind: TrackKind::Video,
@@ -95,6 +101,8 @@ fn evaluated_frame_is_decoded_off_thread() -> Result<(), Box<dyn std::error::Err
                     source_duration: RationalTime::new(1, 1)?,
                 }],
                 locked: false,
+                visible: true,
+                muted: false,
             }],
         },
     );

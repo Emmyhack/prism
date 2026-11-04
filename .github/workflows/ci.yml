@@ -22,3 +22,16 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-targets
+
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: PYTHONPATH=packages/prism-python-sdk/src python -m unittest discover -s packages/prism-python-sdk/tests
+      - run: npm test --prefix packages/prism-js-sdk

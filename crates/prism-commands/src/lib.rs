@@ -1,7 +1,9 @@
 //! Typed, validated project mutations shared by every interface.
 
-use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
-use prism_project::{Clip, MediaAsset, Project, Sequence, Track, TrackKind};
+use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
+use prism_project::{
+    Clip, Marker, MediaAsset, Project, Sequence, Track, TrackKind, Transition, TransitionKind,
+};
 use prism_timeline::RationalTime;
 use thiserror::Error;
 
@@ -22,6 +24,46 @@ pub enum Command {
         /// User-visible sequence name.
         name: String,
     },
+    /// Adds a named exact-time marker to a sequence.
+    AddMarker {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Stable marker identifier.
+        id: MarkerId,
+        /// Exact sequence position.
+        time: RationalTime,
+        /// User-visible marker label.
+        label: String,
+    },
+    /// Removes a marker from a sequence.
+    DeleteMarker {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Marker to remove.
+        marker_id: MarkerId,
+    },
+    /// Adds a transition between adjacent clips.
+    AddTransition {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Stable transition identifier.
+        id: TransitionId,
+        /// Outgoing clip.
+        outgoing_clip: ClipId,
+        /// Incoming clip.
+        incoming_clip: ClipId,
+        /// Exact overlap duration.
+        duration: RationalTime,
+        /// Transition operation.
+        kind: TransitionKind,
+    },
+    /// Removes a sequence transition.
+    DeleteTransition {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Transition to remove.
+        transition_id: TransitionId,
+    },
     /// Adds a track to an existing sequence.
     CreateTrack {
         /// Owning sequence.
@@ -30,6 +72,42 @@ pub enum Command {
         id: TrackId,
         /// Accepted media kind.
         kind: TrackKind,
+    },
+    /// Changes whether a track accepts editing mutations.
+    SetTrackLocked {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Track to lock or unlock.
+        track_id: TrackId,
+        /// New lock state.
+        locked: bool,
+    },
+    /// Changes whether a track contributes video layers.
+    SetTrackVisible {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Track to update.
+        track_id: TrackId,
+        /// New visibility state.
+        visible: bool,
+    },
+    /// Changes whether a track contributes audio.
+    SetTrackMuted {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Track to update.
+        track_id: TrackId,
+        /// New mute state.
+        muted: bool,
+    },
+    /// Moves a track to another position in its sequence's ordered track list.
+    ReorderTrack {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Track to move.
+        track_id: TrackId,
+        /// Zero-based destination index.
+        destination_index: usize,
     },
     /// Places a source range on a track at normal speed.
     InsertClip {
@@ -47,6 +125,19 @@ pub enum Command {
         source_start: RationalTime,
         /// Positive source duration.
         source_duration: RationalTime,
+    },
+    /// Duplicates a clip's source range at a new timeline position.
+    DuplicateClip {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Owning track.
+        track_id: TrackId,
+        /// Existing clip to duplicate.
+        clip_id: ClipId,
+        /// Stable ID assigned to the duplicate.
+        new_clip_id: ClipId,
+        /// New sequence position for the duplicate.
+        timeline_start: RationalTime,
     },
     /// Moves a clip on its current track.
     MoveClip {
@@ -96,6 +187,15 @@ pub enum Command {
         /// Clip to remove.
         clip_id: ClipId,
     },
+    /// Removes a clip and closes the resulting gap on its track.
+    RippleDelete {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Owning track.
+        track_id: TrackId,
+        /// Clip to remove.
+        clip_id: ClipId,
+    },
 }
 
 /// Event emitted only after a successful state transition.
@@ -111,6 +211,34 @@ pub enum Event {
         /// Created sequence.
         id: SequenceId,
     },
+    /// A marker was added.
+    MarkerAdded {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Added marker identifier.
+        id: MarkerId,
+    },
+    /// A marker was removed.
+    MarkerDeleted {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Removed marker identifier.
+        id: MarkerId,
+    },
+    /// A transition was added.
+    TransitionAdded {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Added transition identifier.
+        id: TransitionId,
+    },
+    /// A transition was removed.
+    TransitionDeleted {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Removed transition identifier.
+        id: TransitionId,
+    },
     /// A track was created.
     TrackCreated {
         /// Owning sequence.
@@ -118,11 +246,48 @@ pub enum Event {
         /// Created track.
         id: TrackId,
     },
+    /// A track lock state changed.
+    TrackLockChanged {
+        /// Track whose lock state changed.
+        track_id: TrackId,
+        /// New lock state.
+        locked: bool,
+    },
+    /// A track visibility state changed.
+    TrackVisibilityChanged {
+        /// Track whose visibility changed.
+        track_id: TrackId,
+        /// New visibility state.
+        visible: bool,
+    },
+    /// A track mute state changed.
+    TrackMuteChanged {
+        /// Track whose mute state changed.
+        track_id: TrackId,
+        /// New mute state.
+        muted: bool,
+    },
+    /// A track changed position within its sequence.
+    TrackReordered {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Track that moved.
+        track_id: TrackId,
+        /// New zero-based index.
+        destination_index: usize,
+    },
     /// A clip was inserted.
     ClipInserted {
         /// Owning track.
         track_id: TrackId,
         /// Inserted clip.
+        id: ClipId,
+    },
+    /// A clip was duplicated.
+    ClipDuplicated {
+        /// Original clip identifier.
+        source_id: ClipId,
+        /// New duplicate identifier.
         id: ClipId,
     },
     /// A clip was moved.
@@ -148,6 +313,13 @@ pub enum Event {
     ClipDeleted {
         /// Removed clip.
         id: ClipId,
+    },
+    /// A clip was removed and later clips shifted left by its duration.
+    ClipRippleDeleted {
+        /// Removed clip.
+        id: ClipId,
+        /// Number of clips shifted.
+        shifted_count: usize,
     },
 }
 
@@ -177,6 +349,15 @@ pub enum CommandError {
     /// A track ID was not found.
     #[error("track not found")]
     TrackNotFound,
+    /// A marker ID was not found.
+    #[error("marker not found")]
+    MarkerNotFound,
+    /// A transition ID was not found.
+    #[error("transition not found")]
+    TransitionNotFound,
+    /// A track destination index was outside the sequence's current range.
+    #[error("track destination index is out of range")]
+    InvalidTrackIndex,
     /// A clip ID was not found.
     #[error("clip not found")]
     ClipNotFound,
@@ -197,6 +378,9 @@ pub enum CommandError {
     /// Two clips would occupy intersecting ranges on one track.
     #[error("clip overlaps another clip on the track")]
     ClipOverlap,
+    /// Transition clips are not adjacent or the duration exceeds a clip.
+    #[error("transition clips must be adjacent and contain the transition duration")]
+    InvalidTransition,
     /// A stable ID already exists.
     #[error("object identifier already exists")]
     DuplicateId,
@@ -356,15 +540,66 @@ impl CommandEngine {
         Ok(events)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn apply(project: &mut Project, command: Command) -> Result<Event, CommandError> {
         match command {
             Command::ImportMedia { id, source_path } => import_media(project, id, source_path),
             Command::CreateSequence { id, name } => create_sequence(project, id, name),
+            Command::AddMarker {
+                sequence_id,
+                id,
+                time,
+                label,
+            } => add_marker(project, sequence_id, id, time, label),
+            Command::DeleteMarker {
+                sequence_id,
+                marker_id,
+            } => delete_marker(project, sequence_id, marker_id),
+            Command::AddTransition {
+                sequence_id,
+                id,
+                outgoing_clip,
+                incoming_clip,
+                duration,
+                kind,
+            } => add_transition(
+                project,
+                sequence_id,
+                id,
+                outgoing_clip,
+                incoming_clip,
+                duration,
+                kind,
+            ),
+            Command::DeleteTransition {
+                sequence_id,
+                transition_id,
+            } => delete_transition(project, sequence_id, transition_id),
             Command::CreateTrack {
                 sequence_id,
                 id,
                 kind,
             } => create_track(project, sequence_id, id, kind),
+            Command::SetTrackLocked {
+                sequence_id,
+                track_id,
+                locked,
+            } => set_track_locked(project, sequence_id, track_id, locked),
+            Command::SetTrackVisible {
+                sequence_id,
+                track_id,
+                visible,
+            } => set_track_visible(project, sequence_id, track_id, visible),
+            Command::SetTrackMuted {
+                sequence_id,
+                track_id,
+                muted,
+            } => set_track_muted(project, sequence_id, track_id, muted),
+            Command::ReorderTrack {
+                sequence_id,
+                track_id,
+                destination_index,
+            } => reorder_track(project, sequence_id, track_id, destination_index),
             Command::InsertClip {
                 sequence_id,
                 track_id,
@@ -384,6 +619,20 @@ impl CommandEngine {
                     source_start,
                     source_duration,
                 },
+            ),
+            Command::DuplicateClip {
+                sequence_id,
+                track_id,
+                clip_id,
+                new_clip_id,
+                timeline_start,
+            } => duplicate_clip(
+                project,
+                sequence_id,
+                track_id,
+                clip_id,
+                new_clip_id,
+                timeline_start,
             ),
             Command::MoveClip {
                 sequence_id,
@@ -426,6 +675,11 @@ impl CommandEngine {
                 track_id,
                 clip_id,
             } => delete_clip(project, sequence_id, track_id, clip_id),
+            Command::RippleDelete {
+                sequence_id,
+                track_id,
+                clip_id,
+            } => ripple_delete(project, sequence_id, track_id, clip_id),
         }
     }
 }
@@ -463,10 +717,158 @@ fn create_sequence(
         Sequence {
             id,
             name,
+            markers: Vec::new(),
+            transitions: Vec::new(),
             tracks: Vec::new(),
         },
     );
     Ok(Event::SequenceCreated { id })
+}
+
+fn add_marker(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    id: MarkerId,
+    time: RationalTime,
+    label: String,
+) -> Result<Event, CommandError> {
+    if !time.is_non_negative() {
+        return Err(CommandError::InvalidTime {
+            field: "marker_time",
+            constraint: "non-negative",
+        });
+    }
+    if label.trim().is_empty() {
+        return Err(CommandError::EmptyField { field: "label" });
+    }
+    if project
+        .sequences
+        .values()
+        .any(|sequence| sequence.markers.iter().any(|marker| marker.id == id))
+    {
+        return Err(CommandError::DuplicateId);
+    }
+    let sequence = project
+        .sequences
+        .get_mut(&sequence_id)
+        .ok_or(CommandError::SequenceNotFound)?;
+    let marker = Marker { id, time, label };
+    let index = sequence
+        .markers
+        .partition_point(|existing| existing.time <= time);
+    sequence.markers.insert(index, marker);
+    Ok(Event::MarkerAdded { sequence_id, id })
+}
+
+fn delete_marker(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    marker_id: MarkerId,
+) -> Result<Event, CommandError> {
+    let sequence = project
+        .sequences
+        .get_mut(&sequence_id)
+        .ok_or(CommandError::SequenceNotFound)?;
+    let index = sequence
+        .markers
+        .iter()
+        .position(|marker| marker.id == marker_id)
+        .ok_or(CommandError::MarkerNotFound)?;
+    sequence.markers.remove(index);
+    Ok(Event::MarkerDeleted {
+        sequence_id,
+        id: marker_id,
+    })
+}
+
+fn add_transition(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    id: TransitionId,
+    outgoing_clip: ClipId,
+    incoming_clip: ClipId,
+    duration: RationalTime,
+    kind: TransitionKind,
+) -> Result<Event, CommandError> {
+    if !duration.is_positive() {
+        return Err(CommandError::InvalidTime {
+            field: "transition_duration",
+            constraint: "positive",
+        });
+    }
+    if project.sequences.values().any(|sequence| {
+        sequence
+            .transitions
+            .iter()
+            .any(|transition| transition.id == id)
+    }) {
+        return Err(CommandError::DuplicateId);
+    }
+    let sequence = project
+        .sequences
+        .get_mut(&sequence_id)
+        .ok_or(CommandError::SequenceNotFound)?;
+    let track = sequence
+        .tracks
+        .iter()
+        .find(|track| {
+            track.kind == TrackKind::Video
+                && track.clips.iter().any(|clip| clip.id == outgoing_clip)
+                && track.clips.iter().any(|clip| clip.id == incoming_clip)
+        })
+        .ok_or(CommandError::ClipNotFound)?;
+    let outgoing = track
+        .clips
+        .iter()
+        .find(|clip| clip.id == outgoing_clip)
+        .ok_or(CommandError::ClipNotFound)?;
+    let incoming = track
+        .clips
+        .iter()
+        .find(|clip| clip.id == incoming_clip)
+        .ok_or(CommandError::ClipNotFound)?;
+    let outgoing_end = outgoing
+        .timeline_start
+        .checked_add(outgoing.source_duration)
+        .map_err(|_| CommandError::InvalidTime {
+            field: "transition_boundary",
+            constraint: "representable",
+        })?;
+    if incoming.timeline_start != outgoing_end
+        || duration > outgoing.source_duration
+        || duration > incoming.source_duration
+    {
+        return Err(CommandError::InvalidTransition);
+    }
+    sequence.transitions.push(Transition {
+        id,
+        outgoing_clip,
+        incoming_clip,
+        duration,
+        kind,
+    });
+    Ok(Event::TransitionAdded { sequence_id, id })
+}
+
+fn delete_transition(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    transition_id: TransitionId,
+) -> Result<Event, CommandError> {
+    let sequence = project
+        .sequences
+        .get_mut(&sequence_id)
+        .ok_or(CommandError::SequenceNotFound)?;
+    let index = sequence
+        .transitions
+        .iter()
+        .position(|transition| transition.id == transition_id)
+        .ok_or(CommandError::TransitionNotFound)?;
+    sequence.transitions.remove(index);
+    Ok(Event::TransitionDeleted {
+        sequence_id,
+        id: transition_id,
+    })
 }
 
 fn create_track(
@@ -487,8 +889,72 @@ fn create_track(
         kind,
         clips: Vec::new(),
         locked: false,
+        visible: true,
+        muted: false,
     });
     Ok(Event::TrackCreated { sequence_id, id })
+}
+
+fn set_track_locked(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    track_id: TrackId,
+    locked: bool,
+) -> Result<Event, CommandError> {
+    let track = find_track_mut(project, sequence_id, track_id)?;
+    track.locked = locked;
+    Ok(Event::TrackLockChanged { track_id, locked })
+}
+
+fn set_track_visible(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    track_id: TrackId,
+    visible: bool,
+) -> Result<Event, CommandError> {
+    let track = find_track_mut(project, sequence_id, track_id)?;
+    track.visible = visible;
+    Ok(Event::TrackVisibilityChanged { track_id, visible })
+}
+
+fn set_track_muted(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    track_id: TrackId,
+    muted: bool,
+) -> Result<Event, CommandError> {
+    let track = find_track_mut(project, sequence_id, track_id)?;
+    track.muted = muted;
+    Ok(Event::TrackMuteChanged { track_id, muted })
+}
+
+fn reorder_track(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    track_id: TrackId,
+    destination_index: usize,
+) -> Result<Event, CommandError> {
+    let sequence = project
+        .sequences
+        .get_mut(&sequence_id)
+        .ok_or(CommandError::SequenceNotFound)?;
+    let current_index = sequence
+        .tracks
+        .iter()
+        .position(|track| track.id == track_id)
+        .ok_or(CommandError::TrackNotFound)?;
+    if destination_index >= sequence.tracks.len() {
+        return Err(CommandError::InvalidTrackIndex);
+    }
+    if current_index != destination_index {
+        let track = sequence.tracks.remove(current_index);
+        sequence.tracks.insert(destination_index, track);
+    }
+    Ok(Event::TrackReordered {
+        sequence_id,
+        track_id,
+        destination_index,
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -535,6 +1001,41 @@ fn insert_clip(project: &mut Project, location: ClipLocation) -> Result<Event, C
     Ok(Event::ClipInserted {
         track_id: location.track_id,
         id: location.id,
+    })
+}
+
+fn duplicate_clip(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    track_id: TrackId,
+    clip_id: ClipId,
+    new_clip_id: ClipId,
+    timeline_start: RationalTime,
+) -> Result<Event, CommandError> {
+    let (media_id, source_start, source_duration) = {
+        let track = find_track_mut(project, sequence_id, track_id)?;
+        track
+            .clips
+            .iter()
+            .find(|clip| clip.id == clip_id)
+            .map(|clip| (clip.media_id, clip.source_start, clip.source_duration))
+            .ok_or(CommandError::ClipNotFound)?
+    };
+    insert_clip(
+        project,
+        ClipLocation {
+            sequence_id,
+            track_id,
+            id: new_clip_id,
+            media_id,
+            timeline_start,
+            source_start,
+            source_duration,
+        },
+    )?;
+    Ok(Event::ClipDuplicated {
+        source_id: clip_id,
+        id: new_clip_id,
     })
 }
 
@@ -678,6 +1179,41 @@ fn delete_clip(
     Ok(Event::ClipDeleted { id: clip_id })
 }
 
+fn ripple_delete(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    track_id: TrackId,
+    clip_id: ClipId,
+) -> Result<Event, CommandError> {
+    let track = find_track_mut(project, sequence_id, track_id)?;
+    ensure_track_editable(track)?;
+    let index = track
+        .clips
+        .iter()
+        .position(|clip| clip.id == clip_id)
+        .ok_or(CommandError::ClipNotFound)?;
+    let removed = track.clips.remove(index);
+    let mut shifted_count = 0;
+    for clip in track
+        .clips
+        .iter_mut()
+        .filter(|clip| clip.timeline_start > removed.timeline_start)
+    {
+        clip.timeline_start = clip
+            .timeline_start
+            .checked_sub(removed.source_duration)
+            .map_err(|_| CommandError::InvalidTime {
+                field: "timeline_start",
+                constraint: "representable",
+            })?;
+        shifted_count += 1;
+    }
+    Ok(Event::ClipRippleDeleted {
+        id: clip_id,
+        shifted_count,
+    })
+}
+
 fn ensure_track_editable(track: &Track) -> Result<(), CommandError> {
     if track.locked {
         return Err(CommandError::TrackLocked);
@@ -751,9 +1287,9 @@ fn ensure_range_available(
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, CommandEngine, CommandError};
-    use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
-    use prism_project::{Project, TrackKind};
+    use super::{Command, CommandEngine, CommandError, Event};
+    use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
+    use prism_project::{Project, TrackKind, TransitionKind};
     use prism_timeline::{RationalTime, TimeError};
 
     #[test]
@@ -775,6 +1311,7 @@ mod tests {
     fn creates_sequence_and_track_through_commands() -> Result<(), CommandError> {
         let mut project = Project::new("Test");
         let sequence_id = SequenceId::new();
+        let track_id = TrackId::new();
         CommandEngine::execute(
             &mut project,
             Command::CreateSequence {
@@ -786,12 +1323,464 @@ mod tests {
             &mut project,
             Command::CreateTrack {
                 sequence_id,
-                id: TrackId::new(),
+                id: track_id,
                 kind: TrackKind::Video,
             },
         )?;
-        assert_eq!(project.revision(), 2);
+        CommandEngine::execute(
+            &mut project,
+            Command::SetTrackLocked {
+                sequence_id,
+                track_id,
+                locked: true,
+            },
+        )?;
+        assert!(project.sequences[&sequence_id].tracks[0].locked);
+        assert_eq!(project.revision(), 3);
         assert_eq!(project.sequences[&sequence_id].tracks.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn reorders_tracks_with_stable_ids() -> Result<(), CommandError> {
+        let mut project = Project::new("Test");
+        let sequence_id = SequenceId::new();
+        let first = TrackId::new();
+        let second = TrackId::new();
+        CommandEngine::execute(
+            &mut project,
+            Command::CreateSequence {
+                id: sequence_id,
+                name: "Main".to_owned(),
+            },
+        )?;
+        for id in [first, second] {
+            CommandEngine::execute(
+                &mut project,
+                Command::CreateTrack {
+                    sequence_id,
+                    id,
+                    kind: TrackKind::Video,
+                },
+            )?;
+        }
+        let event = CommandEngine::execute(
+            &mut project,
+            Command::ReorderTrack {
+                sequence_id,
+                track_id: first,
+                destination_index: 1,
+            },
+        )?;
+        assert_eq!(
+            event,
+            vec![Event::TrackReordered {
+                sequence_id,
+                track_id: first,
+                destination_index: 1,
+            }]
+        );
+        assert_eq!(
+            project.sequences[&sequence_id]
+                .tracks
+                .iter()
+                .map(|track| track.id)
+                .collect::<Vec<_>>(),
+            vec![second, first]
+        );
+        assert!(matches!(
+            CommandEngine::execute(
+                &mut project,
+                Command::ReorderTrack {
+                    sequence_id,
+                    track_id: first,
+                    destination_index: 2,
+                }
+            ),
+            Err(CommandError::InvalidTrackIndex)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn updates_track_visibility_and_mute_state() -> Result<(), CommandError> {
+        let mut project = Project::new("Test");
+        let sequence_id = SequenceId::new();
+        let track_id = TrackId::new();
+        CommandEngine::execute(
+            &mut project,
+            Command::CreateSequence {
+                id: sequence_id,
+                name: "Main".to_owned(),
+            },
+        )?;
+        CommandEngine::execute(
+            &mut project,
+            Command::CreateTrack {
+                sequence_id,
+                id: track_id,
+                kind: TrackKind::Video,
+            },
+        )?;
+        CommandEngine::execute(
+            &mut project,
+            Command::SetTrackVisible {
+                sequence_id,
+                track_id,
+                visible: false,
+            },
+        )?;
+        CommandEngine::execute(
+            &mut project,
+            Command::SetTrackMuted {
+                sequence_id,
+                track_id,
+                muted: true,
+            },
+        )?;
+        let track = &project.sequences[&sequence_id].tracks[0];
+        assert!(!track.visible);
+        assert!(track.muted);
+        Ok(())
+    }
+
+    #[test]
+    fn markers_are_sorted_and_removable() -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Test");
+        let sequence_id = SequenceId::new();
+        CommandEngine::execute(
+            &mut project,
+            Command::CreateSequence {
+                id: sequence_id,
+                name: "Main".to_owned(),
+            },
+        )?;
+        let late = MarkerId::new();
+        let early = MarkerId::new();
+        let late_time = RationalTime::new(10, 1)?;
+        let early_time = RationalTime::new(2, 1)?;
+        CommandEngine::execute(
+            &mut project,
+            Command::AddMarker {
+                sequence_id,
+                id: late,
+                time: late_time,
+                label: "Late".to_owned(),
+            },
+        )?;
+        CommandEngine::execute(
+            &mut project,
+            Command::AddMarker {
+                sequence_id,
+                id: early,
+                time: early_time,
+                label: "Early".to_owned(),
+            },
+        )?;
+        assert_eq!(
+            project.sequences[&sequence_id]
+                .markers
+                .iter()
+                .map(|marker| marker.id)
+                .collect::<Vec<_>>(),
+            vec![early, late]
+        );
+        CommandEngine::execute(
+            &mut project,
+            Command::DeleteMarker {
+                sequence_id,
+                marker_id: early,
+            },
+        )?;
+        assert_eq!(project.sequences[&sequence_id].markers.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn markers_reject_invalid_values() -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Test");
+        let sequence_id = SequenceId::new();
+        CommandEngine::execute(
+            &mut project,
+            Command::CreateSequence {
+                id: sequence_id,
+                name: "Main".to_owned(),
+            },
+        )?;
+        let id = MarkerId::new();
+        let negative_time = RationalTime::new(-1, 1)?;
+        assert!(matches!(
+            CommandEngine::execute(
+                &mut project,
+                Command::AddMarker {
+                    sequence_id,
+                    id,
+                    time: negative_time,
+                    label: "x".to_owned()
+                }
+            ),
+            Err(CommandError::InvalidTime { .. })
+        ));
+        assert!(matches!(
+            CommandEngine::execute(
+                &mut project,
+                Command::AddMarker {
+                    sequence_id,
+                    id,
+                    time: RationalTime::ZERO,
+                    label: " ".to_owned()
+                }
+            ),
+            Err(CommandError::EmptyField { field: "label" })
+        ));
+        CommandEngine::execute(
+            &mut project,
+            Command::AddMarker {
+                sequence_id,
+                id,
+                time: RationalTime::ZERO,
+                label: "x".to_owned(),
+            },
+        )?;
+        assert!(matches!(
+            CommandEngine::execute(
+                &mut project,
+                Command::AddMarker {
+                    sequence_id,
+                    id,
+                    time: RationalTime::ZERO,
+                    label: "duplicate".to_owned()
+                }
+            ),
+            Err(CommandError::DuplicateId)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_clip_reuses_source_range_at_requested_position()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Test");
+        let media_id = MediaAssetId::new();
+        let sequence_id = SequenceId::new();
+        let track_id = TrackId::new();
+        let clip_id = ClipId::new();
+        let duplicate_id = ClipId::new();
+        CommandEngine::execute_transaction(
+            &mut project,
+            "Build",
+            vec![
+                Command::ImportMedia {
+                    id: media_id,
+                    source_path: "source.mov".to_owned(),
+                },
+                Command::CreateSequence {
+                    id: sequence_id,
+                    name: "Main".to_owned(),
+                },
+                Command::CreateTrack {
+                    sequence_id,
+                    id: track_id,
+                    kind: TrackKind::Video,
+                },
+                Command::InsertClip {
+                    sequence_id,
+                    track_id,
+                    id: clip_id,
+                    media_id,
+                    timeline_start: RationalTime::ZERO,
+                    source_start: RationalTime::new(5, 1)?,
+                    source_duration: RationalTime::new(2, 1)?,
+                },
+            ],
+        )?;
+        let event = CommandEngine::execute(
+            &mut project,
+            Command::DuplicateClip {
+                sequence_id,
+                track_id,
+                clip_id,
+                new_clip_id: duplicate_id,
+                timeline_start: RationalTime::new(4, 1)?,
+            },
+        )?;
+        assert_eq!(
+            event,
+            vec![Event::ClipDuplicated {
+                source_id: clip_id,
+                id: duplicate_id
+            }]
+        );
+        let clips = &project.sequences[&sequence_id].tracks[0].clips;
+        assert_eq!(clips.len(), 2);
+        assert_eq!(clips[1].timeline_start, RationalTime::new(4, 1)?);
+        assert_eq!(clips[1].source_start, RationalTime::new(5, 1)?);
+        Ok(())
+    }
+
+    #[test]
+    fn ripple_delete_closes_gap_without_touching_source_ranges()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Test");
+        let media_id = MediaAssetId::new();
+        let sequence_id = SequenceId::new();
+        let track_id = TrackId::new();
+        let first = ClipId::new();
+        let removed = ClipId::new();
+        let later = ClipId::new();
+        CommandEngine::execute_transaction(
+            &mut project,
+            "Build",
+            vec![
+                Command::ImportMedia {
+                    id: media_id,
+                    source_path: "source.mov".to_owned(),
+                },
+                Command::CreateSequence {
+                    id: sequence_id,
+                    name: "Main".to_owned(),
+                },
+                Command::CreateTrack {
+                    sequence_id,
+                    id: track_id,
+                    kind: TrackKind::Video,
+                },
+                Command::InsertClip {
+                    sequence_id,
+                    track_id,
+                    id: first,
+                    media_id,
+                    timeline_start: RationalTime::ZERO,
+                    source_start: RationalTime::ZERO,
+                    source_duration: RationalTime::new(2, 1)?,
+                },
+                Command::InsertClip {
+                    sequence_id,
+                    track_id,
+                    id: removed,
+                    media_id,
+                    timeline_start: RationalTime::new(2, 1)?,
+                    source_start: RationalTime::new(8, 1)?,
+                    source_duration: RationalTime::new(3, 1)?,
+                },
+                Command::InsertClip {
+                    sequence_id,
+                    track_id,
+                    id: later,
+                    media_id,
+                    timeline_start: RationalTime::new(5, 1)?,
+                    source_start: RationalTime::new(20, 1)?,
+                    source_duration: RationalTime::new(1, 1)?,
+                },
+            ],
+        )?;
+        let events = CommandEngine::execute(
+            &mut project,
+            Command::RippleDelete {
+                sequence_id,
+                track_id,
+                clip_id: removed,
+            },
+        )?;
+        assert_eq!(
+            events,
+            vec![Event::ClipRippleDeleted {
+                id: removed,
+                shifted_count: 1
+            }]
+        );
+        let clips = &project.sequences[&sequence_id].tracks[0].clips;
+        let later_clip = clips
+            .iter()
+            .find(|clip| clip.id == later)
+            .ok_or("missing later clip")?;
+        assert_eq!(later_clip.timeline_start, RationalTime::new(2, 1)?);
+        assert_eq!(later_clip.source_start, RationalTime::new(20, 1)?);
+        Ok(())
+    }
+
+    #[test]
+    fn transitions_require_adjacent_video_clips() -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Test");
+        let media_id = MediaAssetId::new();
+        let sequence_id = SequenceId::new();
+        let track_id = TrackId::new();
+        let outgoing = ClipId::new();
+        let incoming = ClipId::new();
+        CommandEngine::execute_transaction(
+            &mut project,
+            "Build",
+            vec![
+                Command::ImportMedia {
+                    id: media_id,
+                    source_path: "source.mov".to_owned(),
+                },
+                Command::CreateSequence {
+                    id: sequence_id,
+                    name: "Main".to_owned(),
+                },
+                Command::CreateTrack {
+                    sequence_id,
+                    id: track_id,
+                    kind: TrackKind::Video,
+                },
+                Command::InsertClip {
+                    sequence_id,
+                    track_id,
+                    id: outgoing,
+                    media_id,
+                    timeline_start: RationalTime::ZERO,
+                    source_start: RationalTime::ZERO,
+                    source_duration: RationalTime::new(2, 1)?,
+                },
+                Command::InsertClip {
+                    sequence_id,
+                    track_id,
+                    id: incoming,
+                    media_id,
+                    timeline_start: RationalTime::new(2, 1)?,
+                    source_start: RationalTime::new(2, 1)?,
+                    source_duration: RationalTime::new(2, 1)?,
+                },
+            ],
+        )?;
+        let transition_id = TransitionId::new();
+        let events = CommandEngine::execute(
+            &mut project,
+            Command::AddTransition {
+                sequence_id,
+                id: transition_id,
+                outgoing_clip: outgoing,
+                incoming_clip: incoming,
+                duration: RationalTime::new(1, 2)?,
+                kind: TransitionKind::Dissolve,
+            },
+        )?;
+        assert_eq!(
+            events,
+            vec![Event::TransitionAdded {
+                sequence_id,
+                id: transition_id
+            }]
+        );
+        assert_eq!(
+            project.sequences[&sequence_id].transitions[0].duration,
+            RationalTime::new(1, 2)?
+        );
+        let deleted = CommandEngine::execute(
+            &mut project,
+            Command::DeleteTransition {
+                sequence_id,
+                transition_id,
+            },
+        )?;
+        assert_eq!(
+            deleted,
+            vec![Event::TransitionDeleted {
+                sequence_id,
+                id: transition_id
+            }]
+        );
         Ok(())
     }
 
@@ -922,6 +1911,96 @@ mod tests {
         assert!(matches!(overlap, Err(CommandError::ClipOverlap)));
         let track = &project.sequences[&sequence_id].tracks[0];
         assert_eq!(track.clips[1].timeline_start, second);
+        Ok(())
+    }
+
+    #[test]
+    fn locked_tracks_reject_all_clip_mutations() -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Test");
+        let sequence_id = SequenceId::new();
+        let track_id = TrackId::new();
+        let media_id = MediaAssetId::new();
+        let clip_id = ClipId::new();
+        let duration = RationalTime::new(4, 1)?;
+        CommandEngine::execute_transaction(
+            &mut project,
+            "Create locked timeline",
+            vec![
+                Command::ImportMedia {
+                    id: media_id,
+                    source_path: "/media/source.mov".to_owned(),
+                },
+                Command::CreateSequence {
+                    id: sequence_id,
+                    name: "Main".to_owned(),
+                },
+                Command::CreateTrack {
+                    sequence_id,
+                    id: track_id,
+                    kind: TrackKind::Video,
+                },
+                Command::InsertClip {
+                    sequence_id,
+                    track_id,
+                    id: clip_id,
+                    media_id,
+                    timeline_start: RationalTime::ZERO,
+                    source_start: RationalTime::ZERO,
+                    source_duration: duration,
+                },
+                Command::SetTrackLocked {
+                    sequence_id,
+                    track_id,
+                    locked: true,
+                },
+            ],
+        )?;
+
+        let commands = [
+            Command::InsertClip {
+                sequence_id,
+                track_id,
+                id: ClipId::new(),
+                media_id,
+                timeline_start: RationalTime::new(5, 1)?,
+                source_start: RationalTime::ZERO,
+                source_duration: duration,
+            },
+            Command::MoveClip {
+                sequence_id,
+                track_id,
+                clip_id,
+                timeline_start: RationalTime::new(1, 1)?,
+            },
+            Command::TrimClip {
+                sequence_id,
+                track_id,
+                clip_id,
+                timeline_start: RationalTime::ZERO,
+                source_start: RationalTime::ZERO,
+                source_duration: RationalTime::new(2, 1)?,
+            },
+            Command::SplitClip {
+                sequence_id,
+                track_id,
+                clip_id,
+                right_clip_id: ClipId::new(),
+                timeline_position: RationalTime::new(2, 1)?,
+            },
+            Command::DeleteClip {
+                sequence_id,
+                track_id,
+                clip_id,
+            },
+        ];
+        for command in commands {
+            assert!(matches!(
+                CommandEngine::execute(&mut project, command),
+                Err(CommandError::TrackLocked)
+            ));
+        }
+        assert_eq!(project.revision(), 1);
+        assert_eq!(project.sequences[&sequence_id].tracks[0].clips.len(), 1);
         Ok(())
     }
 

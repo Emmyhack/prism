@@ -96,6 +96,10 @@ pub enum TrackTag {}
 pub enum ClipTag {}
 /// Marker for a media asset identifier.
 pub enum MediaAssetTag {}
+/// Marker for a sequence marker identifier.
+pub enum MarkerTag {}
+/// Marker for a sequence transition identifier.
+pub enum TransitionTag {}
 
 /// Project identifier.
 pub type ProjectId = Id<ProjectTag>;
@@ -107,3 +111,7 @@ pub type TrackId = Id<TrackTag>;
 pub type ClipId = Id<ClipTag>;
 /// Media asset identifier.
 pub type MediaAssetId = Id<MediaAssetTag>;
+/// Sequence marker identifier.
+pub type MarkerId = Id<MarkerTag>;
+/// Stable identifier for a sequence transition.
+pub type TransitionId = Id<TransitionTag>;

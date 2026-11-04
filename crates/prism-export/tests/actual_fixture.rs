@@ -3,7 +3,8 @@
 use prism_commands::{Command, CommandEngine};
 use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
 use prism_export::{
-    BasicMp4ExportRequest, BasicMp4Exporter, SingleTrackMp4ExportRequest, plan_single_video_track,
+    BasicMp4ExportRequest, BasicMp4Exporter, SingleTrackMp4ExportRequest,
+    VideoAudioMp4ExportRequest, plan_single_video_track,
 };
 use prism_media::{FfmpegReferenceDecoder, FfprobeInspector, StreamKind};
 use prism_persistence::{load, save_atomic};
@@ -93,6 +94,8 @@ fn renders_single_track_clips_and_black_gaps() -> Result<(), Box<dyn std::error:
         Sequence {
             id: sequence_id,
             name: "Main".to_owned(),
+            markers: Vec::new(),
+            transitions: Vec::new(),
             tracks: vec![Track {
                 id: track_id,
                 kind: TrackKind::Video,
@@ -113,6 +116,8 @@ fn renders_single_track_clips_and_black_gaps() -> Result<(), Box<dyn std::error:
                     },
                 ],
                 locked: false,
+                visible: true,
+                muted: false,
             }],
         },
     );
@@ -138,6 +143,87 @@ fn renders_single_track_clips_and_black_gaps() -> Result<(), Box<dyn std::error:
     let clip = decoder.decode_video_frame_rgba(&output, 0, RationalTime::new(3, 10)?, 320, 180)?;
     assert_ne!(gap.sha256(), clip.sha256());
 
+    fs::remove_file(&output)?;
+    fs::remove_dir(&test_directory)?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires PRISM_FFMPEG, PRISM_FFPROBE, and the generated media fixture"]
+fn muxes_synchronized_video_and_audio_tracks() -> Result<(), Box<dyn std::error::Error>> {
+    let ffmpeg = PathBuf::from(std::env::var_os("PRISM_FFMPEG").ok_or("PRISM_FFMPEG is not set")?);
+    let ffprobe =
+        PathBuf::from(std::env::var_os("PRISM_FFPROBE").ok_or("PRISM_FFPROBE is not set")?);
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/media/av-ntsc-48k.mp4");
+    let test_directory =
+        std::env::temp_dir().join(format!("prism-av-export-test-{}", Uuid::new_v4()));
+    fs::create_dir(&test_directory)?;
+    let output = test_directory.join("combined.mp4");
+    let media_id = MediaAssetId::new();
+    let sequence_id = SequenceId::new();
+    let video_track_id = TrackId::new();
+    let audio_track_id = TrackId::new();
+    let source_start = RationalTime::new(1, 10)?;
+    let source_duration = RationalTime::new(1, 2)?;
+    let clip = |kind, track_id| Track {
+        id: track_id,
+        kind,
+        clips: vec![Clip {
+            id: ClipId::new(),
+            media_id,
+            timeline_start: RationalTime::ZERO,
+            source_start,
+            source_duration,
+        }],
+        locked: false,
+        visible: true,
+        muted: false,
+    };
+    let mut project = Project::new("Combined export");
+    project.media.insert(
+        media_id,
+        MediaAsset {
+            id: media_id,
+            source_path: fixture.to_string_lossy().into_owned(),
+        },
+    );
+    project.sequences.insert(
+        sequence_id,
+        Sequence {
+            id: sequence_id,
+            name: "Main".to_owned(),
+            markers: Vec::new(),
+            transitions: Vec::new(),
+            tracks: vec![
+                clip(TrackKind::Video, video_track_id),
+                clip(TrackKind::Audio, audio_track_id),
+            ],
+        },
+    );
+    project.validate()?;
+    let report = BasicMp4Exporter::new(ffmpeg, ffprobe.clone()).export_single_video_audio_track(
+        &project,
+        sequence_id,
+        video_track_id,
+        audio_track_id,
+        &VideoAudioMp4ExportRequest {
+            width: 320,
+            height: 180,
+            frame_rate: RationalTime::new(30, 1)?,
+            output: output.clone(),
+        },
+    )?;
+    assert!(report.has_video);
+    assert!(report.has_audio);
+    assert!(report.byte_length > 0);
+    let inspected = FfprobeInspector::new(ffprobe).inspect(&output)?;
+    assert!(
+        inspected
+            .streams
+            .iter()
+            .any(|stream| matches!(stream.kind, StreamKind::Audio(_)))
+    );
     fs::remove_file(&output)?;
     fs::remove_dir(&test_directory)?;
     Ok(())

@@ -361,6 +361,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
+name = "prism-audio"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "prism-cache"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "prism-cli"
 version = "0.1.0"
 dependencies = [
@@ -370,12 +385,20 @@ dependencies = [
  "prism-media",
  "prism-persistence",
  "prism-project",
+ "prism-recipe",
  "prism-script",
  "prism-timeline",
  "serde",
  "serde_json",
  "thiserror",
  "uuid",
+]
+
+[[package]]
+name = "prism-color"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]
@@ -389,10 +412,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-compositor"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "prism-core"
 version = "0.1.0"
 dependencies = [
  "uuid",
+]
+
+[[package]]
+name = "prism-effects"
+version = "0.1.0"
+dependencies = [
+ "prism-timeline",
+ "thiserror",
 ]
 
 [[package]]
@@ -413,6 +451,7 @@ dependencies = [
 name = "prism-media"
 version = "0.1.0"
 dependencies = [
+ "prism-cache",
  "prism-timeline",
  "serde",
  "serde_json",
@@ -445,11 +484,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-plugin"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "prism-project"
 version = "0.1.0"
 dependencies = [
  "prism-core",
  "prism-timeline",
+ "thiserror",
+]
+
+[[package]]
+name = "prism-recipe"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "prism-render"
+version = "0.1.0"
+dependencies = [
+ "prism-compositor",
  "thiserror",
 ]
 
@@ -460,6 +525,7 @@ dependencies = [
  "prism-commands",
  "prism-core",
  "prism-project",
+ "prism-recipe",
  "prism-timeline",
  "serde",
  "serde_json",
@@ -470,6 +536,12 @@ dependencies = [
 [[package]]
 name = "prism-studio"
 version = "0.1.0"
+dependencies = [
+ "prism-persistence",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "prism-testing"
