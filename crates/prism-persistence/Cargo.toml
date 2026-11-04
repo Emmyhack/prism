@@ -1,0 +1,20 @@
+[package]
+name = "prism-persistence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+prism-core = { path = "../prism-core" }
+prism-project = { path = "../prism-project" }
+prism-timeline = { path = "../prism-timeline" }
+rusqlite.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+prism-commands = { path = "../prism-commands" }

@@ -1,0 +1,19 @@
+[package]
+name = "prism-script"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+prism-commands = { path = "../prism-commands" }
+prism-core = { path = "../prism-core" }
+prism-project = { path = "../prism-project" }
+prism-timeline = { path = "../prism-timeline" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

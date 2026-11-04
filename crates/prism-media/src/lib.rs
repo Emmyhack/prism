@@ -1,0 +1,453 @@
+//! Typed media capability and metadata inspection boundaries.
+//!
+//! The initial adapter invokes `ffprobe` as a reference implementation. Decode,
+//! playback, and export will use a separate library-backed worker architecture.
+
+use prism_timeline::{RationalTime, TimeError};
+use serde::Deserialize;
+use std::{path::Path, path::PathBuf, process::Command};
+use thiserror::Error;
+
+/// Failures while discovering or inspecting media capabilities.
+#[derive(Debug, Error)]
+pub enum MediaError {
+    /// The configured inspector process could not start.
+    #[error("failed to start media inspector: {0}")]
+    Process(#[from] std::io::Error),
+    /// The inspector rejected or could not parse the input.
+    #[error("media inspector failed with status {status}: {stderr}")]
+    Inspector {
+        /// Process exit status when available.
+        status: i32,
+        /// Diagnostic output with lossy UTF-8 conversion.
+        stderr: String,
+    },
+    /// Inspector output did not match the pinned JSON contract.
+    #[error("invalid inspector JSON: {0}")]
+    Json(#[from] serde_json::Error),
+    /// A rational metadata field was malformed.
+    #[error("invalid rational value for {field}: {value}")]
+    InvalidRational {
+        /// Metadata field name.
+        field: &'static str,
+        /// Invalid raw value.
+        value: String,
+    },
+    /// Exact time conversion failed.
+    #[error("invalid exact time: {0}")]
+    Time(#[from] TimeError),
+    /// Inspector version output was not valid UTF-8.
+    #[error("inspector version output was not UTF-8")]
+    InvalidVersionOutput,
+}
+
+/// Runtime discovery report. This is not proof that a codec workflow works.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeCapabilities {
+    /// First version-output line.
+    pub ffprobe_version: String,
+    /// Build configuration reported by `FFmpeg`, if present.
+    pub build_configuration: Option<String>,
+}
+
+/// Metadata extracted from one media source without decoding full streams.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MediaMetadata {
+    /// Container/demuxer names reported by the inspector.
+    pub format_names: Vec<String>,
+    /// Exact container duration when available.
+    pub duration: Option<RationalTime>,
+    /// Ordered media streams.
+    pub streams: Vec<StreamMetadata>,
+}
+
+/// Metadata common to all media streams.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamMetadata {
+    /// Container stream index.
+    pub index: u32,
+    /// Codec identifier reported by `FFmpeg`.
+    pub codec: Option<String>,
+    /// Exact stream timebase when meaningful.
+    pub time_base: Option<RationalTime>,
+    /// Stream-specific metadata.
+    pub kind: StreamKind,
+}
+
+/// Stream-specific metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StreamKind {
+    /// Visual stream.
+    Video(VideoMetadata),
+    /// Sampled audio stream.
+    Audio(AudioMetadata),
+    /// Subtitle, data, attachment, or unknown stream type.
+    Other {
+        /// Raw `FFmpeg` stream type.
+        codec_type: Option<String>,
+    },
+}
+
+/// Video stream metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VideoMetadata {
+    /// Encoded width in pixels.
+    pub width: Option<u32>,
+    /// Encoded height in pixels.
+    pub height: Option<u32>,
+    /// Pixel format identifier.
+    pub pixel_format: Option<String>,
+    /// Nominal/container frame rate.
+    pub nominal_frame_rate: Option<RationalTime>,
+    /// Average frame rate across the inspected stream.
+    pub average_frame_rate: Option<RationalTime>,
+    /// Evidence-based VFR classification, not a decoder guarantee.
+    pub frame_rate_evidence: FrameRateEvidence,
+    /// Color primaries identifier.
+    pub color_primaries: Option<String>,
+    /// Transfer function identifier.
+    pub color_transfer: Option<String>,
+    /// Matrix/color-space identifier.
+    pub color_space: Option<String>,
+    /// Rotation metadata in degrees when present.
+    pub rotation_degrees: Option<i32>,
+    /// Embedded source timecode when present.
+    pub timecode: Option<String>,
+}
+
+/// Audio stream metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioMetadata {
+    /// Sample rate in Hz.
+    pub sample_rate: Option<u32>,
+    /// Channel count.
+    pub channels: Option<u32>,
+    /// `FFmpeg` channel-layout identifier.
+    pub channel_layout: Option<String>,
+}
+
+/// What header-level rate metadata suggests about variable frame rate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameRateEvidence {
+    /// Nominal and average rates differ.
+    VariableLikely,
+    /// Nominal and average rates are present and equal.
+    ConstantLikely,
+    /// Insufficient metadata; packet timestamp analysis is required.
+    Unknown,
+}
+
+/// `ffprobe` process adapter with no ambient shell invocation.
+#[derive(Clone, Debug)]
+pub struct FfprobeInspector {
+    executable: PathBuf,
+}
+
+impl FfprobeInspector {
+    /// Creates an inspector using an explicit executable path.
+    #[must_use]
+    pub fn new(executable: impl Into<PathBuf>) -> Self {
+        Self {
+            executable: executable.into(),
+        }
+    }
+
+    /// Reports the installed tool version and build configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] when the process cannot run or reports failure.
+    pub fn capabilities(&self) -> Result<RuntimeCapabilities, MediaError> {
+        let output = Command::new(&self.executable).arg("-version").output()?;
+        ensure_success(&output)?;
+        let stdout =
+            String::from_utf8(output.stdout).map_err(|_| MediaError::InvalidVersionOutput)?;
+        let mut lines = stdout.lines();
+        let version = lines.next().unwrap_or_default().to_owned();
+        let configuration = lines
+            .find_map(|line| line.strip_prefix("configuration: "))
+            .map(str::to_owned);
+        Ok(RuntimeCapabilities {
+            ffprobe_version: version,
+            build_configuration: configuration,
+        })
+    }
+
+    /// Inspects container and stream metadata without decoding full media.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] for process, input, JSON, or exact-time failures.
+    pub fn inspect(&self, path: &Path) -> Result<MediaMetadata, MediaError> {
+        let output = Command::new(&self.executable)
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=format_name,duration:stream=index,codec_type,codec_name,width,height,pix_fmt,r_frame_rate,avg_frame_rate,time_base,sample_rate,channels,channel_layout,color_space,color_transfer,color_primaries:stream_tags=rotate,timecode",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .output()?;
+        ensure_success(&output)?;
+        let raw: ProbeOutput = serde_json::from_slice(&output.stdout)?;
+        raw.try_into()
+    }
+}
+
+fn ensure_success(output: &std::process::Output) -> Result<(), MediaError> {
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(MediaError::Inspector {
+        status: output.status.code().unwrap_or(-1),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct ProbeOutput {
+    #[serde(default)]
+    streams: Vec<ProbeStream>,
+    format: Option<ProbeFormat>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProbeFormat {
+    format_name: Option<String>,
+    duration: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProbeStream {
+    index: u32,
+    codec_name: Option<String>,
+    codec_type: Option<String>,
+    width: Option<u32>,
+    height: Option<u32>,
+    pix_fmt: Option<String>,
+    r_frame_rate: Option<String>,
+    avg_frame_rate: Option<String>,
+    time_base: Option<String>,
+    sample_rate: Option<String>,
+    channels: Option<u32>,
+    channel_layout: Option<String>,
+    color_space: Option<String>,
+    color_transfer: Option<String>,
+    color_primaries: Option<String>,
+    tags: Option<ProbeTags>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProbeTags {
+    rotate: Option<String>,
+    timecode: Option<String>,
+}
+
+impl TryFrom<ProbeOutput> for MediaMetadata {
+    type Error = MediaError;
+
+    fn try_from(raw: ProbeOutput) -> Result<Self, Self::Error> {
+        let format_names = raw
+            .format
+            .as_ref()
+            .and_then(|format| format.format_name.as_deref())
+            .map(|names| names.split(',').map(str::to_owned).collect())
+            .unwrap_or_default();
+        let duration = raw
+            .format
+            .and_then(|format| format.duration)
+            .map(|value| parse_decimal_time("format.duration", &value))
+            .transpose()?;
+        let streams = raw
+            .streams
+            .into_iter()
+            .map(StreamMetadata::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            format_names,
+            duration,
+            streams,
+        })
+    }
+}
+
+impl TryFrom<ProbeStream> for StreamMetadata {
+    type Error = MediaError;
+
+    fn try_from(raw: ProbeStream) -> Result<Self, Self::Error> {
+        let time_base = parse_optional_fraction("stream.time_base", raw.time_base.as_deref())?;
+        let kind = match raw.codec_type.as_deref() {
+            Some("video") => {
+                let nominal =
+                    parse_optional_fraction("stream.r_frame_rate", raw.r_frame_rate.as_deref())?;
+                let average = parse_optional_fraction(
+                    "stream.avg_frame_rate",
+                    raw.avg_frame_rate.as_deref(),
+                )?;
+                StreamKind::Video(VideoMetadata {
+                    width: raw.width,
+                    height: raw.height,
+                    pixel_format: raw.pix_fmt,
+                    nominal_frame_rate: nominal,
+                    average_frame_rate: average,
+                    frame_rate_evidence: classify_frame_rate(nominal, average),
+                    color_primaries: raw.color_primaries,
+                    color_transfer: raw.color_transfer,
+                    color_space: raw.color_space,
+                    rotation_degrees: raw
+                        .tags
+                        .as_ref()
+                        .and_then(|tags| tags.rotate.as_deref())
+                        .and_then(|value| value.parse().ok()),
+                    timecode: raw.tags.and_then(|tags| tags.timecode),
+                })
+            }
+            Some("audio") => StreamKind::Audio(AudioMetadata {
+                sample_rate: raw
+                    .sample_rate
+                    .as_deref()
+                    .and_then(|value| value.parse().ok()),
+                channels: raw.channels,
+                channel_layout: raw.channel_layout,
+            }),
+            _ => StreamKind::Other {
+                codec_type: raw.codec_type,
+            },
+        };
+        Ok(Self {
+            index: raw.index,
+            codec: raw.codec_name,
+            time_base,
+            kind,
+        })
+    }
+}
+
+fn classify_frame_rate(
+    nominal: Option<RationalTime>,
+    average: Option<RationalTime>,
+) -> FrameRateEvidence {
+    match (nominal, average) {
+        (Some(left), Some(right)) if left == right => FrameRateEvidence::ConstantLikely,
+        (Some(_), Some(_)) => FrameRateEvidence::VariableLikely,
+        _ => FrameRateEvidence::Unknown,
+    }
+}
+
+fn parse_optional_fraction(
+    field: &'static str,
+    value: Option<&str>,
+) -> Result<Option<RationalTime>, MediaError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some((numerator, denominator)) = value.split_once('/') else {
+        return Err(MediaError::InvalidRational {
+            field,
+            value: value.to_owned(),
+        });
+    };
+    let numerator = numerator
+        .parse::<i64>()
+        .map_err(|_| MediaError::InvalidRational {
+            field,
+            value: value.to_owned(),
+        })?;
+    let denominator = denominator
+        .parse::<u32>()
+        .map_err(|_| MediaError::InvalidRational {
+            field,
+            value: value.to_owned(),
+        })?;
+    if denominator == 0 {
+        return Ok(None);
+    }
+    Ok(Some(RationalTime::new(numerator, denominator)?))
+}
+
+fn parse_decimal_time(field: &'static str, value: &str) -> Result<RationalTime, MediaError> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if fraction.len() > 9 || whole.starts_with('-') {
+        return Err(MediaError::InvalidRational {
+            field,
+            value: value.to_owned(),
+        });
+    }
+    let exponent = u32::try_from(fraction.len()).map_err(|_| MediaError::InvalidRational {
+        field,
+        value: value.to_owned(),
+    })?;
+    let scale = 10_u32
+        .checked_pow(exponent)
+        .ok_or_else(|| MediaError::InvalidRational {
+            field,
+            value: value.to_owned(),
+        })?;
+    let whole = whole
+        .parse::<i64>()
+        .map_err(|_| MediaError::InvalidRational {
+            field,
+            value: value.to_owned(),
+        })?;
+    let fraction = if fraction.is_empty() {
+        0
+    } else {
+        fraction
+            .parse::<i64>()
+            .map_err(|_| MediaError::InvalidRational {
+                field,
+                value: value.to_owned(),
+            })?
+    };
+    let ticks = whole
+        .checked_mul(i64::from(scale))
+        .and_then(|integer| integer.checked_add(fraction))
+        .ok_or_else(|| MediaError::InvalidRational {
+            field,
+            value: value.to_owned(),
+        })?;
+    Ok(RationalTime::new(ticks, scale)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FrameRateEvidence, MediaMetadata, ProbeOutput, StreamKind, parse_decimal_time};
+    use prism_timeline::RationalTime;
+
+    #[test]
+    fn parses_probe_json_without_float_time() -> Result<(), Box<dyn std::error::Error>> {
+        let raw: ProbeOutput = serde_json::from_str(
+            r#"{
+                "streams":[{
+                    "index":0,"codec_name":"h264","codec_type":"video",
+                    "width":1920,"height":1080,"pix_fmt":"yuv420p",
+                    "r_frame_rate":"30000/1001","avg_frame_rate":"24000/1001",
+                    "time_base":"1/90000"
+                }],
+                "format":{"format_name":"mov,mp4","duration":"1.250000"}
+            }"#,
+        )?;
+        let metadata = MediaMetadata::try_from(raw)?;
+        assert_eq!(metadata.duration, Some(RationalTime::new(5, 4)?));
+        let StreamKind::Video(video) = &metadata.streams[0].kind else {
+            return Err("expected video stream".into());
+        };
+        assert_eq!(video.frame_rate_evidence, FrameRateEvidence::VariableLikely);
+        assert_eq!(
+            video.nominal_frame_rate,
+            Some(RationalTime::new(30_000, 1_001)?)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn decimal_duration_is_exact() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            parse_decimal_time("duration", "0.033367")?,
+            RationalTime::new(33_367, 1_000_000)?
+        );
+        Ok(())
+    }
+}

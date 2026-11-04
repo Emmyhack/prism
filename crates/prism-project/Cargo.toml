@@ -1,0 +1,14 @@
+[package]
+name = "prism-project"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+prism-core = { path = "../prism-core" }
+prism-timeline = { path = "../prism-timeline" }
+thiserror.workspace = true
+
+[lints]
+workspace = true
