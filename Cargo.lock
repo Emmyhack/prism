@@ -370,6 +370,7 @@ dependencies = [
  "prism-media",
  "prism-persistence",
  "prism-project",
+ "prism-script",
  "prism-timeline",
  "serde",
  "serde_json",
