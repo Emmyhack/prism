@@ -265,6 +265,15 @@ Create the deterministic autosave for the current project revision:
 cargo run -p prism-cli -- autosave-project --project ./edit.prism
 ```
 
+List revision-scoped autosaves and recover a selected candidate into a new
+project without replacing an existing destination:
+
+```sh
+cargo run -p prism-cli -- list-autosaves --project ./edit.prism
+cargo run -p prism-cli -- recover-autosave \
+  --source ./edit.prism.autosave.7 --output ./recovered.prism
+```
+
 The command emits deterministic, versioned JSON. Use the reported sequence and
 track IDs with the export command:
 
