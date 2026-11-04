@@ -43,3 +43,7 @@ The JavaScript SDK slice in `packages/prism-js-sdk` exposes equivalent
 `RationalTime`, `moveClip`, and `transaction` helpers as an ESM package. Both
 SDKs intentionally emit the same protocol objects rather than maintaining
 separate editing semantics.
+
+The TypeScript declarations in `packages/prism-typescript-definitions` expose
+the same operation and transaction types, including literal API-version and
+operation discriminants for editor autocomplete and compiler diagnostics.
