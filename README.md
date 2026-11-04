@@ -62,6 +62,16 @@ cargo run -p prism-cli -- move-video-clip \
   --timeline-start 15/1
 ```
 
+Trim and reposition an existing video clip:
+
+```sh
+cargo run -p prism-cli -- trim-video-clip \
+  --project ./edit.prism \
+  --track 22222222-2222-4222-8222-222222222222 \
+  --clip 33333333-3333-4333-8333-333333333333 \
+  --timeline-start 15/1 --source-start 2/1 --duration 5/1
+```
+
 The command emits deterministic, versioned JSON. Use the reported sequence and
 track IDs with the export command:
 

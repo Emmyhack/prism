@@ -50,6 +50,10 @@ fn main() -> ExitCode {
             );
             ExitCode::SUCCESS
         }
+        Ok(prism_cli::CliOutcome::ClipTrimmed { path, clip_id }) => {
+            println!("Updated {}: trimmed clip {clip_id}", path.display());
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("Prism: {error}");
             ExitCode::FAILURE

@@ -260,6 +260,25 @@ fn cli_adds_a_second_video_clip_to_existing_track() -> Result<(), Box<dyn std::e
     if !moved.status.success() {
         return Err(String::from_utf8_lossy(&moved.stderr).into_owned().into());
     }
+    let trimmed = ProcessCommand::new(binary)
+        .args(["trim-video-clip", "--project"])
+        .arg(&project_path)
+        .args([
+            "--track",
+            track_id,
+            "--clip",
+            clip_id,
+            "--timeline-start",
+            "3/4",
+            "--source-start",
+            "1/4",
+            "--duration",
+            "1/8",
+        ])
+        .output()?;
+    if !trimmed.status.success() {
+        return Err(String::from_utf8_lossy(&trimmed.stderr).into_owned().into());
+    }
     let inspected = ProcessCommand::new(binary)
         .args(["inspect", "--project"])
         .arg(&project_path)
@@ -269,10 +288,12 @@ fn cli_adds_a_second_video_clip_to_existing_track() -> Result<(), Box<dyn std::e
         .as_array()
         .ok_or("missing clips")?;
     assert_eq!(clips.len(), 2);
-    assert_eq!(clips[1]["timelineStart"]["value"], 1);
-    assert_eq!(clips[1]["timelineStart"]["timescale"], 2);
+    assert_eq!(clips[1]["timelineStart"]["value"], 3);
+    assert_eq!(clips[1]["timelineStart"]["timescale"], 4);
     assert_eq!(clips[1]["sourceStart"]["value"], 1);
-    assert_eq!(clips[1]["sourceStart"]["timescale"], 2);
+    assert_eq!(clips[1]["sourceStart"]["timescale"], 4);
+    assert_eq!(clips[1]["sourceDuration"]["value"], 1);
+    assert_eq!(clips[1]["sourceDuration"]["timescale"], 8);
     fs::remove_file(&project_path)?;
     fs::remove_dir(&test_directory)?;
     Ok(())
