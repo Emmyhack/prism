@@ -62,6 +62,8 @@ pub struct ExportPresetTrackArgs {
     pub track_id: TrackId,
     /// Named geometry/frame-rate preset.
     pub preset: ExportPreset,
+    /// Optional target video bitrate override in kilobits per second.
+    pub video_bitrate_kbps: Option<u32>,
     /// New MP4 destination.
     pub output: PathBuf,
     /// Explicit encoder executable.
@@ -1935,7 +1937,10 @@ fn run_export_track(arguments: Vec<OsString>) -> Result<CliOutcome, CliError> {
 fn run_export_preset_track(arguments: Vec<OsString>) -> Result<CliOutcome, CliError> {
     let parsed = parse_export_preset_track(arguments)?;
     let project = load(&parsed.project)?;
-    let request = SingleTrackMp4ExportRequest::from_preset(parsed.preset, parsed.output);
+    let mut request = SingleTrackMp4ExportRequest::from_preset(parsed.preset, parsed.output);
+    if let Some(video_bitrate_kbps) = parsed.video_bitrate_kbps {
+        request.video_bitrate_kbps = video_bitrate_kbps;
+    }
     Ok(CliOutcome::Exported(
         BasicMp4Exporter::new(&parsed.ffmpeg, &parsed.ffprobe).export_single_video_track(
             &project,
@@ -2230,6 +2235,7 @@ struct ParsedPresetValues {
     sequence: Option<OsString>,
     track: Option<OsString>,
     preset: Option<OsString>,
+    video_bitrate_kbps: Option<OsString>,
     output: Option<OsString>,
     ffmpeg: Option<OsString>,
     ffprobe: Option<OsString>,
@@ -2242,6 +2248,7 @@ impl ParsedPresetValues {
             "--sequence" => &mut self.sequence,
             "--track" => &mut self.track,
             "--preset" => &mut self.preset,
+            "--video-bitrate-kbps" => &mut self.video_bitrate_kbps,
             "--output" => &mut self.output,
             "--ffmpeg" => &mut self.ffmpeg,
             "--ffprobe" => &mut self.ffprobe,
@@ -2269,6 +2276,10 @@ impl ParsedPresetValues {
             )?),
             track_id: TrackId::from_uuid(parse_uuid(required(self.track, "--track")?, "--track")?),
             preset,
+            video_bitrate_kbps: self
+                .video_bitrate_kbps
+                .map(|value| parse_positive_u32(value, "--video-bitrate-kbps"))
+                .transpose()?,
             output: PathBuf::from(required(self.output, "--output")?),
             ffmpeg: PathBuf::from(required(self.ffmpeg, "--ffmpeg")?),
             ffprobe: PathBuf::from(required(self.ffprobe, "--ffprobe")?),
@@ -2549,7 +2560,6 @@ mod tests {
         assert_eq!(parsed.height, 1080);
         assert_eq!(parsed.frame_rate, RationalTime::new(30_000, 1_001)?);
         assert_eq!(parsed.video_bitrate_kbps, 8_000);
-        assert_eq!(parsed.video_bitrate_kbps, 8_000);
         assert_eq!(
             parsed.sequence_id.as_uuid().to_string(),
             "11111111-1111-4111-8111-111111111111"
@@ -2569,6 +2579,8 @@ mod tests {
             "22222222-2222-4222-8222-222222222222",
             "--preset",
             "youtube-1080p",
+            "--video-bitrate-kbps",
+            "6000",
             "--output",
             "finish.mp4",
             "--ffmpeg",
@@ -2579,6 +2591,7 @@ mod tests {
         .into_iter()
         .map(OsString::from);
         let parsed = parse_export_preset_track(arguments)?;
+        assert_eq!(parsed.video_bitrate_kbps, Some(6_000));
         assert_eq!(parsed.preset, prism_export::ExportPreset::Youtube1080p);
         assert_eq!(parsed.output, std::path::PathBuf::from("finish.mp4"));
         Ok(())
