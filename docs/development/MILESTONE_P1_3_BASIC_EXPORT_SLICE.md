@@ -40,12 +40,18 @@ gaps, renders it at 320×180 and 30 fps, and verifies a video-only duration with
 one frame of the exact 4/5-second plan. Decoded gap and clip frames have distinct
 pixel hashes, proving the black gap was rendered rather than skipped.
 
+A third integration creates media, sequence, track, and clips exclusively through
+the command engine, saves the project atomically, and reloads it through the
+SQLite adapter. Stable IDs, revision, and the entire export plan compare equal
+before and after reopening. Rendering the reopened project completes within one
+30 fps frame of the exact plan duration.
+
 ## Verification
 
 - Formatting passes.
 - Strict workspace Clippy passes with warnings denied.
 - 41 default tests pass.
-- Two media, two playback, and two export actual-fixture tests pass with explicit
+- Two media, two playback, and three export actual-fixture tests pass with explicit
   local `FFmpeg`/ffprobe executables.
 
 ## Limitations and next work
@@ -54,5 +60,5 @@ This slice renders one video track, not a composited multitrack sequence, and
 does not carry audio from clips. It has no progress reporting, cancellation,
 hardware encoding, presets, effects, color transforms, or codec capability
 negotiation. The installed Homebrew build remains a local GPL-enabled reference
-tool and is not approved for distribution. Next, prove saved/reopened project
-state produces the same export plan and finalized output timing.
+tool and is not approved for distribution. Next, expose this verified workflow
+through a non-interactive CLI command while keeping all edits in the command API.

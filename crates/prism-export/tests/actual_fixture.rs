@@ -1,8 +1,12 @@
 //! Opt-in basic MP4 export verification against the generated fixture.
 
+use prism_commands::{Command, CommandEngine};
 use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
-use prism_export::{BasicMp4ExportRequest, BasicMp4Exporter, SingleTrackMp4ExportRequest};
+use prism_export::{
+    BasicMp4ExportRequest, BasicMp4Exporter, SingleTrackMp4ExportRequest, plan_single_video_track,
+};
 use prism_media::{FfmpegReferenceDecoder, FfprobeInspector, StreamKind};
+use prism_persistence::{load, save_atomic};
 use prism_project::{Clip, MediaAsset, Project, Sequence, Track, TrackKind};
 use prism_timeline::RationalTime;
 use std::{fs, path::PathBuf};
@@ -135,6 +139,93 @@ fn renders_single_track_clips_and_black_gaps() -> Result<(), Box<dyn std::error:
     assert_ne!(gap.sha256(), clip.sha256());
 
     fs::remove_file(&output)?;
+    fs::remove_dir(&test_directory)?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires PRISM_FFMPEG, PRISM_FFPROBE, and the generated media fixture"]
+fn saved_project_reopens_with_identical_export_plan_and_timing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ffmpeg = PathBuf::from(std::env::var_os("PRISM_FFMPEG").ok_or("PRISM_FFMPEG is not set")?);
+    let ffprobe =
+        PathBuf::from(std::env::var_os("PRISM_FFPROBE").ok_or("PRISM_FFPROBE is not set")?);
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/media/av-ntsc-48k.mp4");
+    let test_directory =
+        std::env::temp_dir().join(format!("prism-reopen-export-test-{}", Uuid::new_v4()));
+    fs::create_dir(&test_directory)?;
+    let project_path = test_directory.join("workflow.prism");
+    let output = test_directory.join("reopened.mp4");
+    let mut project = Project::new("Saved export workflow");
+    let media_id = MediaAssetId::new();
+    let sequence_id = SequenceId::new();
+    let track_id = TrackId::new();
+    CommandEngine::execute_transaction(
+        &mut project,
+        "Build export timeline",
+        vec![
+            Command::ImportMedia {
+                id: media_id,
+                source_path: fixture.to_string_lossy().into_owned(),
+            },
+            Command::CreateSequence {
+                id: sequence_id,
+                name: "Main".to_owned(),
+            },
+            Command::CreateTrack {
+                sequence_id,
+                id: track_id,
+                kind: TrackKind::Video,
+            },
+            Command::InsertClip {
+                sequence_id,
+                track_id,
+                id: ClipId::new(),
+                media_id,
+                timeline_start: RationalTime::ZERO,
+                source_start: RationalTime::ZERO,
+                source_duration: RationalTime::new(1, 5)?,
+            },
+            Command::InsertClip {
+                sequence_id,
+                track_id,
+                id: ClipId::new(),
+                media_id,
+                timeline_start: RationalTime::new(1, 5)?,
+                source_start: RationalTime::new(1, 2)?,
+                source_duration: RationalTime::new(1, 5)?,
+            },
+        ],
+    )?;
+    let original_plan = plan_single_video_track(&project, sequence_id, track_id)?;
+    save_atomic(&project, &project_path)?;
+    let reopened = load(&project_path)?;
+    let reopened_plan = plan_single_video_track(&reopened, sequence_id, track_id)?;
+    assert_eq!(reopened_plan, original_plan);
+    assert_eq!(reopened.revision(), project.revision());
+
+    let report = BasicMp4Exporter::new(ffmpeg, ffprobe).export_single_video_track(
+        &reopened,
+        sequence_id,
+        track_id,
+        &SingleTrackMp4ExportRequest {
+            width: 320,
+            height: 180,
+            frame_rate: RationalTime::new(30, 1)?,
+            output: output.clone(),
+        },
+    )?;
+    assert!(report.duration >= original_plan.duration);
+    assert!(
+        report.duration
+            <= original_plan
+                .duration
+                .checked_add(RationalTime::new(1, 30)?)?
+    );
+
+    fs::remove_file(&output)?;
+    fs::remove_file(&project_path)?;
     fs::remove_dir(&test_directory)?;
     Ok(())
 }

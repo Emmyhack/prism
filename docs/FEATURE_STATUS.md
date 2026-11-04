@@ -13,6 +13,6 @@ ready, Blocked. "Implemented" never implies the later states.
 | Persistence | Tested | SQLite v1 round trip, forward-version refusal, SQLite/domain integrity checks and Unix atomic-save path tested; migrations/autosave pending |
 | Media inspection and reference decode | In development | Typed ffprobe inspection, packet timing, fingerprinting, and exact-seek RGBA reference vectors verified against one synthetic MP4/AAC fixture; production decoder worker pending |
 | Timeline playback evaluation | In development | Exact source planning drives a bounded background decoder and reproduces a pinned real frame; queue backpressure and stale-generation suppression tested; presentation pending |
-| Export | In development | Validated MP4 output supports one source range or one video track with exact trims and black gaps; audio mixing, cancellation, presets, effects, and production codec packaging pending |
+| Export | In development | Validated MP4 output supports one source range or one video track with exact trims and black gaps; command-built saved/reopened projects preserve export plans and timing; audio mixing, cancellation, presets, effects, and production codec packaging pending |
 | Studio UI | Planned | Toolkit decision provisional; binary is truthful stub |
 | Python/JS/TS runtimes | Planned | Architecture only |

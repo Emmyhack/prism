@@ -388,8 +388,10 @@ dependencies = [
 name = "prism-export"
 version = "0.1.0"
 dependencies = [
+ "prism-commands",
  "prism-core",
  "prism-media",
+ "prism-persistence",
  "prism-project",
  "prism-timeline",
  "thiserror",

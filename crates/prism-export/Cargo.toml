@@ -15,3 +15,7 @@ uuid.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+prism-commands = { path = "../prism-commands" }
+prism-persistence = { path = "../prism-persistence" }
