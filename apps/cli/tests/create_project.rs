@@ -87,9 +87,33 @@ fn creates_inspects_and_refuses_to_replace_project() -> Result<(), Box<dyn std::
         .output()?;
     assert!(!autosave_refused.status.success());
 
+    let recovered_path = test_directory.join("recovered.prism");
+    let recovered = Command::new(binary)
+        .args(["recover-autosave", "--source"])
+        .arg(&autosave_path)
+        .args(["--output"])
+        .arg(&recovered_path)
+        .output()?;
+    assert!(recovered.status.success());
+    let recovered_inspection = Command::new(binary)
+        .args(["inspect", "--project"])
+        .arg(&recovered_path)
+        .output()?;
+    assert!(recovered_inspection.status.success());
+    let recovered_json: serde_json::Value = serde_json::from_slice(&recovered_inspection.stdout)?;
+    assert_eq!(recovered_json["name"], "Created by CLI");
+    let recovery_refused = Command::new(binary)
+        .args(["recover-autosave", "--source"])
+        .arg(&autosave_path)
+        .args(["--output"])
+        .arg(&recovered_path)
+        .output()?;
+    assert!(!recovery_refused.status.success());
+
     fs::remove_file(&project_path)?;
     fs::remove_file(&backup_path)?;
     fs::remove_file(autosave_path)?;
+    fs::remove_file(recovered_path)?;
     fs::remove_dir(&test_directory)?;
     Ok(())
 }
