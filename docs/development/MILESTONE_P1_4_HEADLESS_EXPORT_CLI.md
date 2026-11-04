@@ -46,6 +46,9 @@ through `TrimClip` in one validated transaction and saves atomically.
 Added `split-video-clip`, which creates a stable right-side clip ID and divides
 an existing clip at an exact timeline position through `SplitClip`.
 
+Added `delete-video-clip`, which removes an existing video clip by stable IDs
+through `DeleteClip` and atomically persists the remaining project state.
+
 ## Actual workflow verification
 
 The opt-in integration builds media, sequence, track, and clip state through the

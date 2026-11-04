@@ -91,6 +91,13 @@ pub enum CliOutcome {
         /// Newly created right clip UUID.
         right_clip_id: String,
     },
+    /// A clip was deleted and the project was saved.
+    ClipDeleted {
+        /// Updated project path.
+        path: PathBuf,
+        /// Deleted clip UUID.
+        clip_id: String,
+    },
 }
 
 /// CLI parse and workflow failures.
@@ -163,8 +170,62 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOutcome, 
         Some("move-video-clip") => run_move_video_clip(&arguments),
         Some("trim-video-clip") => run_trim_video_clip(&arguments),
         Some("split-video-clip") => run_split_video_clip(&arguments),
+        Some("delete-video-clip") => run_delete_video_clip(&arguments),
         Some(_) | None => Err(CliError::Usage),
     }
+}
+
+fn run_delete_video_clip(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
+    let [
+        command,
+        project_flag,
+        project_path,
+        track_flag,
+        track_value,
+        clip_flag,
+        clip_value,
+    ] = arguments
+    else {
+        return Err(CliError::Usage);
+    };
+    if command != "delete-video-clip"
+        || project_flag != "--project"
+        || track_flag != "--track"
+        || clip_flag != "--clip"
+    {
+        return Err(CliError::Usage);
+    }
+    let project_path = PathBuf::from(project_path);
+    let track_id = TrackId::from_uuid(parse_uuid(track_value.clone(), "--track")?);
+    let clip_id = ClipId::from_uuid(parse_uuid(clip_value.clone(), "--clip")?);
+    let mut project = load(&project_path)?;
+    let sequence_id = project
+        .sequences
+        .values()
+        .find(|sequence| {
+            sequence.tracks.iter().any(|track| {
+                track.id == track_id
+                    && track.kind == TrackKind::Video
+                    && track.clips.iter().any(|clip| clip.id == clip_id)
+            })
+        })
+        .ok_or_else(|| CliError::Command("video track or clip not found".to_owned()))?
+        .id;
+    CommandEngine::execute_transaction(
+        &mut project,
+        "Delete video clip",
+        vec![Command::DeleteClip {
+            sequence_id,
+            track_id,
+            clip_id,
+        }],
+    )
+    .map_err(|error| CliError::Command(error.to_string()))?;
+    save_atomic(&project, &project_path)?;
+    Ok(CliOutcome::ClipDeleted {
+        path: project_path,
+        clip_id: clip_id.as_uuid().to_string(),
+    })
 }
 
 fn run_split_video_clip(arguments: &[OsString]) -> Result<CliOutcome, CliError> {

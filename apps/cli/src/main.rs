@@ -65,6 +65,10 @@ fn main() -> ExitCode {
             );
             ExitCode::SUCCESS
         }
+        Ok(prism_cli::CliOutcome::ClipDeleted { path, clip_id }) => {
+            println!("Updated {}: deleted clip {clip_id}", path.display());
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("Prism: {error}");
             ExitCode::FAILURE

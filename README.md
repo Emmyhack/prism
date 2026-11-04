@@ -82,6 +82,15 @@ cargo run -p prism-cli -- split-video-clip \
   --timeline-position 13/16
 ```
 
+Delete an existing video clip by stable IDs:
+
+```sh
+cargo run -p prism-cli -- delete-video-clip \
+  --project ./edit.prism \
+  --track 22222222-2222-4222-8222-222222222222 \
+  --clip 33333333-3333-4333-8333-333333333333
+```
+
 The command emits deterministic, versioned JSON. Use the reported sequence and
 track IDs with the export command:
 
