@@ -222,6 +222,11 @@ fn run_script_transaction(arguments: &[OsString]) -> Result<CliOutcome, CliError
             project.revision()
         )));
     }
+    if transaction.label.trim().is_empty() {
+        return Err(CliError::Command(
+            "transaction label must not be empty".to_owned(),
+        ));
+    }
     let event_count = if transaction.dry_run {
         CommandEngine::validate_transaction(&project, transaction.commands)
             .map_err(|error| CliError::Command(error.to_string()))?
