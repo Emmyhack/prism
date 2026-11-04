@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prism-python-sdk"
+version = "0.1.0"
+description = "Python authoring SDK for Prism's versioned editing protocol"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["src"]

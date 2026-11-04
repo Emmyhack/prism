@@ -34,3 +34,7 @@ cargo run -p prism-cli -- script-transaction \
 The `expectedRevision` must match the loaded project. Set `dryRun` to `false`
 only after reviewing the validated operation; committed requests are persisted
 through the same command engine used by the visual editor.
+
+The initial Python SDK slice in `packages/prism-python-sdk` builds this envelope
+with exact `RationalTime` values. It is a protocol authoring layer; execution,
+permissions, and worker isolation remain Prism application responsibilities.
