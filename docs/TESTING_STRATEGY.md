@@ -12,7 +12,7 @@ CI must execute `fmt`, Clippy with warnings denied, unit/integration tests, SDK
 conformance, dependency advisories, and license policy. Platform-native smoke
 jobs are required before support claims.
 
-Current result (2026-11-04): forty-one default tests pass, including the first
+Current result (2026-11-04): forty-four default tests pass, including the first
 generated rational-time property test. Strict Clippy and formatting are required;
 broader property, integration, fuzz, regression, and media tests remain. Two
 media integration tests and two playback integration tests pass against an actual
@@ -40,5 +40,8 @@ A third export integration builds a timeline exclusively through validated
 commands, atomically saves and reopens the SQLite project, compares the complete
 export plan for equality, and renders the reopened state within one frame of its
 exact planned duration.
+The executable-level CLI integration launches the compiled binary against a
+command-built saved project, selects stable typed IDs, and independently probes
+the resulting MP4. Parser tests reject missing, duplicate, and malformed options.
 The local FFmpeg build is a reference tool, not an approved distribution
 dependency.

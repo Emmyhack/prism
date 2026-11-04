@@ -6,7 +6,17 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-prism-project = { path = "../../crates/prism-project" }
+prism-core = { path = "../../crates/prism-core" }
+prism-export = { path = "../../crates/prism-export" }
+prism-persistence = { path = "../../crates/prism-persistence" }
+prism-timeline = { path = "../../crates/prism-timeline" }
+thiserror.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+prism-commands = { path = "../../crates/prism-commands" }
+prism-media = { path = "../../crates/prism-media" }
+prism-project = { path = "../../crates/prism-project" }

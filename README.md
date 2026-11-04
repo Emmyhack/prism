@@ -1,8 +1,9 @@
 # Prism
 
 Prism is a professional, cross-platform, programmable nonlinear video editor
-implemented in Rust. The project is in **Phase 0: architecture and foundation**.
-It is not yet capable of editing or exporting media.
+implemented in Rust. The project is in **Phase 1: functional editing foundation**.
+It has tested core editing, persistence, reference decoding, and constrained
+single-video-track MP4 export paths, but it is not yet a usable desktop editor.
 
 ## Current foundation
 
@@ -10,7 +11,30 @@ It is not yet capable of editing or exporting media.
 - typed project-object identifiers and a UI-independent domain model;
 - a typed command boundary used by all future interfaces;
 - a versioned, language-neutral scripting protocol boundary;
+- atomic SQLite project save/reopen;
+- exact timeline evaluation with bounded background decode scheduling;
+- validated reference MP4 export for one video track with explicit black gaps;
+- a non-interactive saved-project track export command;
 - architecture, security, testing, and milestone documentation.
+
+## Headless track export
+
+The current CLI exports one video track from a validated saved project. IDs are
+the stable UUIDs stored in the project. Encoder and probe paths are explicit
+because the distributable codec configuration is not yet approved.
+
+```sh
+cargo run -p prism-cli -- export-track \
+  --project ./edit.prism \
+  --sequence 11111111-1111-4111-8111-111111111111 \
+  --track 22222222-2222-4222-8222-222222222222 \
+  --output ./finish.mp4 \
+  --width 1920 --height 1080 --fps 30000/1001 \
+  --ffmpeg /path/to/ffmpeg --ffprobe /path/to/ffprobe
+```
+
+This path currently emits video only. It does not yet provide audio mixing,
+effects, progress, cancellation, overwrite, or a production codec bundle.
 
 ## Prerequisites
 
