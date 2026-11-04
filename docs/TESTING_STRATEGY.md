@@ -15,12 +15,14 @@ jobs are required before support claims.
 Current result (2026-11-04): thirty-seven default tests pass, including the first
 generated rational-time property test. Strict Clippy and formatting are required;
 broader property, integration, fuzz, regression, and media tests remain. Two
-media integration tests and one playback integration test pass against an actual
+media integration tests and two playback integration tests pass against an actual
 synthetic MP4/AAC fixture using explicitly supplied local ffprobe and FFmpeg executables. They
 verify header metadata, packet-level timing evidence, the fixture's full-file
 SHA-256 fingerprint, and pinned RGBA frame hashes at two exact seek timestamps.
 The playback test additionally proves that timeline placement and source trim
-resolve to the expected pinned source frame.
+resolve to the expected pinned source frame. A second playback test sends that
+evaluated request through the background scheduler and verifies the decoded
+result without performing media work on the calling thread.
 Deterministic concurrency tests coordinate the asynchronous decode worker with
 channels rather than timing assumptions. They verify successful delivery,
 bounded request backpressure, and suppression of queued and in-flight results

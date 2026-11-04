@@ -12,7 +12,7 @@ ready, Blocked. "Implemented" never implies the later states.
 | Script protocol | In development | Exact-time DTOs for current commands, API/revision checks and dry-run intent; no runtime |
 | Persistence | Tested | SQLite v1 round trip, forward-version refusal, SQLite/domain integrity checks and Unix atomic-save path tested; migrations/autosave pending |
 | Media inspection and reference decode | In development | Typed ffprobe inspection, packet timing, fingerprinting, and exact-seek RGBA reference vectors verified against one synthetic MP4/AAC fixture; production decoder worker pending |
-| Timeline playback evaluation | In development | Exact video source planning and a bounded codec-independent async worker are tested, including queue backpressure and stale-generation suppression; presentation pending |
+| Timeline playback evaluation | In development | Exact source planning drives a bounded background decoder and reproduces a pinned real frame; queue backpressure and stale-generation suppression tested; presentation pending |
 | Export | Planned | No implementation |
 | Studio UI | Planned | Toolkit decision provisional; binary is truthful stub |
 | Python/JS/TS runtimes | Planned | Architecture only |

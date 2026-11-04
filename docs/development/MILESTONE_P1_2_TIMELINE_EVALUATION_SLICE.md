@@ -29,12 +29,18 @@ evaluates sequence time 1/2, and verifies the resulting source request is exactl
 1/2. The reference decoder then produces the already pinned RGBA frame hash for
 that source timestamp.
 
+A second integration routes an evaluated 1/2-second source request through the
+bounded asynchronous scheduler. The dedicated worker invokes the reference
+decoder and returns the same pinned RGBA hash, proving the current project-to-
+background-decode path without claiming interactive playback or process-level
+isolation.
+
 ## Verification
 
 - Formatting passes.
 - Strict workspace Clippy passes with warnings denied.
 - 37 default tests pass.
-- Two media and one playback actual-fixture tests pass with explicitly supplied
+- Two media and two playback actual-fixture tests pass with explicitly supplied
   local `FFmpeg`/ffprobe executables.
 
 ## Limitations and next work
