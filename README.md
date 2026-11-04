@@ -288,8 +288,12 @@ cargo run -p prism-cli -- export-track \
   --track 22222222-2222-4222-8222-222222222222 \
   --output ./finish.mp4 \
   --width 1920 --height 1080 --fps 30000/1001 \
+  --video-bitrate-kbps 8000 \
   --ffmpeg /path/to/ffmpeg --ffprobe /path/to/ffprobe
 ```
+
+The synchronized `export-video-audio` command accepts the same video bitrate
+option plus `--audio-bitrate-kbps` for explicit AAC bitrate control.
 
 This path currently emits video only. It does not yet provide audio mixing,
 effects, progress, cancellation, overwrite, or a production codec bundle.

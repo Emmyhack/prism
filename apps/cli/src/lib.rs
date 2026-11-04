@@ -43,6 +43,8 @@ pub struct ExportTrackArgs {
     pub height: u32,
     /// Exact output frame rate.
     pub frame_rate: RationalTime,
+    /// Target video bitrate in kilobits per second.
+    pub video_bitrate_kbps: u32,
     /// Explicit encoder executable.
     pub ffmpeg: PathBuf,
     /// Explicit validation-probe executable.
@@ -87,6 +89,10 @@ pub struct ExportVideoAudioArgs {
     pub height: u32,
     /// Exact output frame rate.
     pub frame_rate: RationalTime,
+    /// Target video bitrate in kilobits per second.
+    pub video_bitrate_kbps: u32,
+    /// Target AAC audio bitrate in kilobits per second.
+    pub audio_bitrate_kbps: u32,
     /// Explicit encoder executable.
     pub ffmpeg: PathBuf,
     /// Explicit validation-probe executable.
@@ -1919,7 +1925,7 @@ fn run_export_track(arguments: Vec<OsString>) -> Result<CliOutcome, CliError> {
                 width: parsed.width,
                 height: parsed.height,
                 frame_rate: parsed.frame_rate,
-                video_bitrate_kbps: 8_000,
+                video_bitrate_kbps: parsed.video_bitrate_kbps,
                 output: parsed.output,
             },
         )?,
@@ -1953,8 +1959,8 @@ fn run_export_video_audio(arguments: Vec<OsString>) -> Result<CliOutcome, CliErr
                 width: parsed.width,
                 height: parsed.height,
                 frame_rate: parsed.frame_rate,
-                video_bitrate_kbps: 8_000,
-                audio_bitrate_kbps: 192,
+                video_bitrate_kbps: parsed.video_bitrate_kbps,
+                audio_bitrate_kbps: parsed.audio_bitrate_kbps,
                 output: parsed.output,
             },
         )?,
@@ -2213,6 +2219,7 @@ struct ParsedValues {
     width: Option<OsString>,
     height: Option<OsString>,
     fps: Option<OsString>,
+    video_bitrate_kbps: Option<OsString>,
     ffmpeg: Option<OsString>,
     ffprobe: Option<OsString>,
 }
@@ -2279,6 +2286,8 @@ struct ParsedVideoAudioValues {
     width: Option<OsString>,
     height: Option<OsString>,
     fps: Option<OsString>,
+    video_bitrate_kbps: Option<OsString>,
+    audio_bitrate_kbps: Option<OsString>,
     ffmpeg: Option<OsString>,
     ffprobe: Option<OsString>,
 }
@@ -2294,6 +2303,8 @@ impl ParsedVideoAudioValues {
             "--width" => &mut self.width,
             "--height" => &mut self.height,
             "--fps" => &mut self.fps,
+            "--video-bitrate-kbps" => &mut self.video_bitrate_kbps,
+            "--audio-bitrate-kbps" => &mut self.audio_bitrate_kbps,
             "--ffmpeg" => &mut self.ffmpeg,
             "--ffprobe" => &mut self.ffprobe,
             _ => return Err(CliError::InvalidOption(flag.to_owned())),
@@ -2323,6 +2334,14 @@ impl ParsedVideoAudioValues {
             width: parse_u32(required(self.width, "--width")?, "--width")?,
             height: parse_u32(required(self.height, "--height")?, "--height")?,
             frame_rate: parse_rate(required(self.fps, "--fps")?)?,
+            video_bitrate_kbps: parse_positive_u32(
+                required(self.video_bitrate_kbps, "--video-bitrate-kbps")?,
+                "--video-bitrate-kbps",
+            )?,
+            audio_bitrate_kbps: parse_positive_u32(
+                required(self.audio_bitrate_kbps, "--audio-bitrate-kbps")?,
+                "--audio-bitrate-kbps",
+            )?,
             ffmpeg: PathBuf::from(required(self.ffmpeg, "--ffmpeg")?),
             ffprobe: PathBuf::from(required(self.ffprobe, "--ffprobe")?),
         })
@@ -2339,6 +2358,7 @@ impl ParsedValues {
             "--width" => &mut self.width,
             "--height" => &mut self.height,
             "--fps" => &mut self.fps,
+            "--video-bitrate-kbps" => &mut self.video_bitrate_kbps,
             "--ffmpeg" => &mut self.ffmpeg,
             "--ffprobe" => &mut self.ffprobe,
             _ => return Err(CliError::InvalidOption(flag.to_owned())),
@@ -2361,6 +2381,10 @@ impl ParsedValues {
             width: parse_u32(required(self.width, "--width")?, "--width")?,
             height: parse_u32(required(self.height, "--height")?, "--height")?,
             frame_rate: parse_rate(required(self.fps, "--fps")?)?,
+            video_bitrate_kbps: parse_positive_u32(
+                required(self.video_bitrate_kbps, "--video-bitrate-kbps")?,
+                "--video-bitrate-kbps",
+            )?,
             ffmpeg: PathBuf::from(required(self.ffmpeg, "--ffmpeg")?),
             ffprobe: PathBuf::from(required(self.ffprobe, "--ffprobe")?),
         })
@@ -2385,6 +2409,17 @@ fn parse_u32(value: OsString, option: &'static str) -> Result<u32, CliError> {
     value
         .parse()
         .map_err(|_| CliError::InvalidValue { option, value })
+}
+
+fn parse_positive_u32(value: OsString, option: &'static str) -> Result<u32, CliError> {
+    let parsed = parse_u32(value, option)?;
+    if parsed == 0 {
+        return Err(CliError::InvalidValue {
+            option,
+            value: "0".to_owned(),
+        });
+    }
+    Ok(parsed)
 }
 
 fn parse_usize(value: &OsString, option: &'static str) -> Result<usize, CliError> {
@@ -2462,6 +2497,8 @@ mod tests {
             "1080",
             "--fps",
             "30000/1001",
+            "--video-bitrate-kbps",
+            "8000",
             "--ffmpeg",
             "/tools/ffmpeg",
             "--ffprobe",
@@ -2491,6 +2528,10 @@ mod tests {
             "1080",
             "--fps",
             "30000/1001",
+            "--video-bitrate-kbps",
+            "8000",
+            "--audio-bitrate-kbps",
+            "192",
             "--ffmpeg",
             "/tools/ffmpeg",
             "--ffprobe",
@@ -2507,6 +2548,8 @@ mod tests {
         assert_eq!(parsed.width, 1920);
         assert_eq!(parsed.height, 1080);
         assert_eq!(parsed.frame_rate, RationalTime::new(30_000, 1_001)?);
+        assert_eq!(parsed.video_bitrate_kbps, 8_000);
+        assert_eq!(parsed.video_bitrate_kbps, 8_000);
         assert_eq!(
             parsed.sequence_id.as_uuid().to_string(),
             "11111111-1111-4111-8111-111111111111"
@@ -2547,6 +2590,8 @@ mod tests {
         assert_eq!(parsed.width, 1920);
         assert_eq!(parsed.height, 1080);
         assert_eq!(parsed.frame_rate, RationalTime::new(30_000, 1_001)?);
+        assert_eq!(parsed.video_bitrate_kbps, 8_000);
+        assert_eq!(parsed.audio_bitrate_kbps, 192);
         assert_eq!(
             parsed.audio_track_id.as_uuid().to_string(),
             "33333333-3333-4333-8333-333333333333"
@@ -2582,6 +2627,24 @@ mod tests {
             parse_export_track(arguments),
             Err(CliError::InvalidValue {
                 option: "--fps",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_export_bitrate() {
+        let mut arguments = valid_arguments();
+        let index = arguments
+            .iter()
+            .position(|argument| argument == "--video-bitrate-kbps");
+        assert!(index.is_some());
+        let index = index.unwrap_or_default() + 1;
+        arguments[index] = OsString::from("0");
+        assert!(matches!(
+            parse_export_track(arguments),
+            Err(CliError::InvalidValue {
+                option: "--video-bitrate-kbps",
                 ..
             })
         ));
