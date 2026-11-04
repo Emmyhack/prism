@@ -59,5 +59,7 @@ The same executable workflow submits a versioned JSON transaction in dry-run
 mode and verifies that validation succeeds without an additional project save,
 then commits a second transaction and verifies the persisted revision and exact
 timeline position after reopening.
+The stale dry-run request is then rejected after the committed revision
+advances.
 The local FFmpeg build is a reference tool, not an approved distribution
 dependency.

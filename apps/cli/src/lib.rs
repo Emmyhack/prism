@@ -213,10 +213,14 @@ fn run_script_transaction(arguments: &[OsString]) -> Result<CliOutcome, CliError
     let transaction = request
         .into_transaction()
         .map_err(|error| CliError::Command(error.to_string()))?;
-    if transaction.expected_revision != expected_revision {
-        return Err(CliError::Command(
-            "request revision changed during parsing".to_owned(),
-        ));
+    if transaction.expected_revision != expected_revision
+        || project.revision() != transaction.expected_revision
+    {
+        return Err(CliError::Command(format!(
+            "revision conflict: expected {}, actual {}",
+            transaction.expected_revision,
+            project.revision()
+        )));
     }
     let event_count = if transaction.dry_run {
         CommandEngine::validate_transaction(&project, transaction.commands)

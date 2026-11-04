@@ -398,6 +398,14 @@ fn cli_adds_a_second_video_clip_to_existing_track() -> Result<(), Box<dyn std::e
         committed_json["sequences"][0]["tracks"][0]["clips"][0]["timelineStart"]["timescale"],
         8
     );
+    let stale = ProcessCommand::new(binary)
+        .args(["script-transaction", "--project"])
+        .arg(&project_path)
+        .args(["--request"])
+        .arg(&request_path)
+        .output()?;
+    assert!(!stale.status.success());
+    assert!(String::from_utf8(stale.stderr)?.contains("revision conflict"));
     fs::remove_file(&request_path)?;
     fs::remove_file(&commit_request_path)?;
     fs::remove_file(&project_path)?;
