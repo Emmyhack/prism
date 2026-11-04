@@ -385,6 +385,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-export"
+version = "0.1.0"
+dependencies = [
+ "prism-media",
+ "prism-timeline",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "prism-media"
 version = "0.1.0"
 dependencies = [

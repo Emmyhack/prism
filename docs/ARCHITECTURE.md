@@ -33,6 +33,7 @@ DTOs convert explicitly at boundaries and cannot be used as domain objects.
 | `prism-persistence` | versioned SQLite schema and domain mapping | UI, language runtimes |
 | `prism-media` | capability discovery, metadata, and decode reference vectors | UI, project mutation |
 | `prism-playback` | exact sequence-time evaluation into ordered source requests | UI, codecs, project mutation |
+| `prism-export` | validated encoding, temporary outputs, and atomic finalization | UI, project mutation |
 | `prism-commands` | validation, transactions, events, undo | UI, language runtimes |
 | `prism-script` | versioned protocol DTOs and conversions | runtime-specific APIs |
 | `prism-testing` | reusable fixtures and assertions | production applications |
