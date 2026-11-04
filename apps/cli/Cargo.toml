@@ -9,7 +9,10 @@ license.workspace = true
 prism-core = { path = "../../crates/prism-core" }
 prism-export = { path = "../../crates/prism-export" }
 prism-persistence = { path = "../../crates/prism-persistence" }
+prism-project = { path = "../../crates/prism-project" }
 prism-timeline = { path = "../../crates/prism-timeline" }
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 
@@ -19,4 +22,3 @@ workspace = true
 [dev-dependencies]
 prism-commands = { path = "../../crates/prism-commands" }
 prism-media = { path = "../../crates/prism-media" }
-prism-project = { path = "../../crates/prism-project" }

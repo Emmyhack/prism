@@ -55,6 +55,29 @@ fn cli_loads_saved_project_and_exports_selected_track() -> Result<(), Box<dyn st
     )?;
     save_atomic(&project, &project_path)?;
 
+    let inspection = ProcessCommand::new(env!("CARGO_BIN_EXE_prism-cli"))
+        .arg("inspect")
+        .arg("--project")
+        .arg(&project_path)
+        .output()?;
+    if !inspection.status.success() {
+        return Err(format!(
+            "CLI inspection failed: {}",
+            String::from_utf8_lossy(&inspection.stderr)
+        )
+        .into());
+    }
+    let inspection: serde_json::Value = serde_json::from_slice(&inspection.stdout)?;
+    assert_eq!(inspection["formatVersion"], 1);
+    assert_eq!(
+        inspection["sequences"][0]["id"],
+        sequence_id.as_uuid().to_string()
+    );
+    assert_eq!(
+        inspection["sequences"][0]["tracks"][0]["id"],
+        track_id.as_uuid().to_string()
+    );
+
     let process = ProcessCommand::new(env!("CARGO_BIN_EXE_prism-cli"))
         .arg("export-track")
         .arg("--project")

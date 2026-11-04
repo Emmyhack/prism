@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     match prism_cli::run(std::env::args_os().skip(1)) {
-        Ok(report) => {
+        Ok(prism_cli::CliOutcome::Exported(report)) => {
             println!(
                 "Exported {} bytes to {} (duration {}/{})",
                 report.byte_length,
@@ -12,6 +12,10 @@ fn main() -> ExitCode {
                 report.duration.value(),
                 report.duration.timescale()
             );
+            ExitCode::SUCCESS
+        }
+        Ok(prism_cli::CliOutcome::Inspected(json)) => {
+            println!("{json}");
             ExitCode::SUCCESS
         }
         Err(error) => {

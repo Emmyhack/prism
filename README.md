@@ -19,6 +19,15 @@ single-video-track MP4 export paths, but it is not yet a usable desktop editor.
 
 ## Headless track export
 
+Inspect a saved project to discover stable object IDs and exact clip timing:
+
+```sh
+cargo run -p prism-cli -- inspect --project ./edit.prism
+```
+
+The command emits deterministic, versioned JSON. Use the reported sequence and
+track IDs with the export command:
+
 The current CLI exports one video track from a validated saved project. IDs are
 the stable UUIDs stored in the project. Encoder and probe paths are explicit
 because the distributable codec configuration is not yet approved.

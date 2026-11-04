@@ -3,7 +3,9 @@
 use prism_core::{SequenceId, TrackId};
 use prism_export::{BasicMp4Exporter, ExportError, ExportReport, SingleTrackMp4ExportRequest};
 use prism_persistence::{PersistenceError, load};
+use prism_project::{Project, TrackKind};
 use prism_timeline::{RationalTime, TimeError};
+use serde::Serialize;
 use std::{ffi::OsString, path::PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
@@ -31,12 +33,21 @@ pub struct ExportTrackArgs {
     pub ffprobe: PathBuf,
 }
 
+/// Successful CLI operation.
+#[derive(Debug)]
+pub enum CliOutcome {
+    /// A finalized media export.
+    Exported(ExportReport),
+    /// Versioned project inspection JSON.
+    Inspected(String),
+}
+
 /// CLI parse and workflow failures.
 #[derive(Debug, Error)]
 pub enum CliError {
     /// No supported subcommand was supplied.
     #[error(
-        "usage: prism-cli export-track --project PATH --sequence UUID --track UUID --output PATH --width PIXELS --height PIXELS --fps NUM/DEN --ffmpeg PATH --ffprobe PATH"
+        "usage: prism-cli inspect --project PATH | prism-cli export-track --project PATH --sequence UUID --track UUID --output PATH --width PIXELS --height PIXELS --fps NUM/DEN --ffmpeg PATH --ffprobe PATH"
     )]
     Usage,
     /// A flag was unknown or repeated.
@@ -65,6 +76,9 @@ pub enum CliError {
     /// Validated export failed.
     #[error("could not export track: {0}")]
     Export(#[from] ExportError),
+    /// Inspection JSON serialization failed.
+    #[error("could not serialize project inspection: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 /// Parses and runs one CLI invocation, excluding the executable name.
@@ -72,10 +86,19 @@ pub enum CliError {
 /// # Errors
 ///
 /// Returns [`CliError`] for invalid arguments, project loading, or export.
-pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<ExportReport, CliError> {
+pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOutcome, CliError> {
+    let arguments = arguments.into_iter().collect::<Vec<_>>();
+    match arguments.first().and_then(|argument| argument.to_str()) {
+        Some("export-track") => run_export_track(arguments),
+        Some("inspect") => run_inspect(&arguments),
+        Some(_) | None => Err(CliError::Usage),
+    }
+}
+
+fn run_export_track(arguments: Vec<OsString>) -> Result<CliOutcome, CliError> {
     let parsed = parse_export_track(arguments)?;
     let project = load(&parsed.project)?;
-    Ok(
+    Ok(CliOutcome::Exported(
         BasicMp4Exporter::new(&parsed.ffmpeg, &parsed.ffprobe).export_single_video_track(
             &project,
             parsed.sequence_id,
@@ -87,7 +110,135 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<ExportReport
                 output: parsed.output,
             },
         )?,
-    )
+    ))
+}
+
+fn run_inspect(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
+    let [command, flag, path] = arguments else {
+        return Err(CliError::Usage);
+    };
+    if command != "inspect" || flag != "--project" {
+        return Err(CliError::Usage);
+    }
+    let project = load(&PathBuf::from(path))?;
+    Ok(CliOutcome::Inspected(serde_json::to_string_pretty(
+        &ProjectInspection::from(&project),
+    )?))
+}
+
+/// Version of the CLI inspection JSON contract.
+pub const INSPECTION_FORMAT_VERSION: u32 = 1;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectInspection {
+    format_version: u32,
+    project_id: String,
+    name: String,
+    schema_version: u32,
+    revision: u64,
+    media: Vec<MediaInspection>,
+    sequences: Vec<SequenceInspection>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaInspection {
+    id: String,
+    source_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SequenceInspection {
+    id: String,
+    name: String,
+    tracks: Vec<TrackInspection>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrackInspection {
+    id: String,
+    kind: &'static str,
+    locked: bool,
+    clips: Vec<ClipInspection>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClipInspection {
+    id: String,
+    media_id: String,
+    timeline_start: TimeInspection,
+    source_start: TimeInspection,
+    source_duration: TimeInspection,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct TimeInspection {
+    value: i64,
+    timescale: u32,
+}
+
+impl From<RationalTime> for TimeInspection {
+    fn from(time: RationalTime) -> Self {
+        Self {
+            value: time.value(),
+            timescale: time.timescale(),
+        }
+    }
+}
+
+impl From<&Project> for ProjectInspection {
+    fn from(project: &Project) -> Self {
+        Self {
+            format_version: INSPECTION_FORMAT_VERSION,
+            project_id: project.id.as_uuid().to_string(),
+            name: project.name.clone(),
+            schema_version: project.schema_version,
+            revision: project.revision(),
+            media: project
+                .media
+                .values()
+                .map(|media| MediaInspection {
+                    id: media.id.as_uuid().to_string(),
+                    source_path: media.source_path.clone(),
+                })
+                .collect(),
+            sequences: project
+                .sequences
+                .values()
+                .map(|sequence| SequenceInspection {
+                    id: sequence.id.as_uuid().to_string(),
+                    name: sequence.name.clone(),
+                    tracks: sequence
+                        .tracks
+                        .iter()
+                        .map(|track| TrackInspection {
+                            id: track.id.as_uuid().to_string(),
+                            kind: match track.kind {
+                                TrackKind::Video => "video",
+                                TrackKind::Audio => "audio",
+                            },
+                            locked: track.locked,
+                            clips: track
+                                .clips
+                                .iter()
+                                .map(|clip| ClipInspection {
+                                    id: clip.id.as_uuid().to_string(),
+                                    media_id: clip.media_id.as_uuid().to_string(),
+                                    timeline_start: clip.timeline_start.into(),
+                                    source_start: clip.source_start.into(),
+                                    source_duration: clip.source_duration.into(),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Parses the supported non-interactive export command.
@@ -211,7 +362,9 @@ fn parse_rate(value: OsString) -> Result<RationalTime, CliError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliError, parse_export_track};
+    use super::{CliError, ProjectInspection, parse_export_track};
+    use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
+    use prism_project::{Clip, MediaAsset, Project, Sequence, Track, TrackKind};
     use prism_timeline::RationalTime;
     use std::ffi::OsString;
 
@@ -286,5 +439,55 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn inspection_json_preserves_ids_order_and_exact_times()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Inspection");
+        let media_id = MediaAssetId::new();
+        let sequence_id = SequenceId::new();
+        let track_id = TrackId::new();
+        let clip_id = ClipId::new();
+        project.media.insert(
+            media_id,
+            MediaAsset {
+                id: media_id,
+                source_path: "source.mp4".to_owned(),
+            },
+        );
+        project.sequences.insert(
+            sequence_id,
+            Sequence {
+                id: sequence_id,
+                name: "Main".to_owned(),
+                tracks: vec![Track {
+                    id: track_id,
+                    kind: TrackKind::Video,
+                    locked: false,
+                    clips: vec![Clip {
+                        id: clip_id,
+                        media_id,
+                        timeline_start: RationalTime::new(1_001, 30_000)?,
+                        source_start: RationalTime::new(1, 2)?,
+                        source_duration: RationalTime::new(3, 4)?,
+                    }],
+                }],
+            },
+        );
+        project.validate()?;
+        let json = serde_json::to_value(ProjectInspection::from(&project))?;
+        assert_eq!(json["formatVersion"], 1);
+        assert_eq!(json["projectId"], project.id.as_uuid().to_string());
+        assert_eq!(json["media"][0]["id"], media_id.as_uuid().to_string());
+        assert_eq!(
+            json["sequences"][0]["id"],
+            sequence_id.as_uuid().to_string()
+        );
+        assert_eq!(json["sequences"][0]["tracks"][0]["kind"], "video");
+        let time = &json["sequences"][0]["tracks"][0]["clips"][0]["timelineStart"];
+        assert_eq!(time["value"], 1_001);
+        assert_eq!(time["timescale"], 30_000);
+        Ok(())
     }
 }
