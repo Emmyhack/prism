@@ -43,6 +43,9 @@ the result atomically.
 Added `trim-video-clip`, which updates sequence placement and source range
 through `TrimClip` in one validated transaction and saves atomically.
 
+Added `split-video-clip`, which creates a stable right-side clip ID and divides
+an existing clip at an exact timeline position through `SplitClip`.
+
 ## Actual workflow verification
 
 The opt-in integration builds media, sequence, track, and clip state through the
@@ -64,9 +67,9 @@ reported sequence and track IDs against the command-built project.
 
 ## Limitations and next work
 
-The CLI cannot yet split clips, report progress, or cancel export.
+The CLI cannot yet report progress or cancel export.
 Inspection exposes source paths and is intended for trusted local project use;
 future permission-filtered scripting surfaces must not copy that policy blindly.
 The CLI inherits the video-only renderer and reference-codec licensing boundary.
-Next, add command-backed split workflows without introducing a second editing
+Next, add progress/cancellation surfaces without introducing a second editing
 implementation.

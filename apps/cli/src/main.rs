@@ -54,6 +54,17 @@ fn main() -> ExitCode {
             println!("Updated {}: trimmed clip {clip_id}", path.display());
             ExitCode::SUCCESS
         }
+        Ok(prism_cli::CliOutcome::ClipSplit {
+            path,
+            clip_id,
+            right_clip_id,
+        }) => {
+            println!(
+                "Updated {}: split clip {clip_id}; right clip {right_clip_id}",
+                path.display()
+            );
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("Prism: {error}");
             ExitCode::FAILURE

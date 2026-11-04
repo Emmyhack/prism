@@ -279,6 +279,21 @@ fn cli_adds_a_second_video_clip_to_existing_track() -> Result<(), Box<dyn std::e
     if !trimmed.status.success() {
         return Err(String::from_utf8_lossy(&trimmed.stderr).into_owned().into());
     }
+    let split = ProcessCommand::new(binary)
+        .args(["split-video-clip", "--project"])
+        .arg(&project_path)
+        .args([
+            "--track",
+            track_id,
+            "--clip",
+            clip_id,
+            "--timeline-position",
+            "13/16",
+        ])
+        .output()?;
+    if !split.status.success() {
+        return Err(String::from_utf8_lossy(&split.stderr).into_owned().into());
+    }
     let inspected = ProcessCommand::new(binary)
         .args(["inspect", "--project"])
         .arg(&project_path)
@@ -287,13 +302,19 @@ fn cli_adds_a_second_video_clip_to_existing_track() -> Result<(), Box<dyn std::e
     let clips = json["sequences"][0]["tracks"][0]["clips"]
         .as_array()
         .ok_or("missing clips")?;
-    assert_eq!(clips.len(), 2);
+    assert_eq!(clips.len(), 3);
     assert_eq!(clips[1]["timelineStart"]["value"], 3);
     assert_eq!(clips[1]["timelineStart"]["timescale"], 4);
     assert_eq!(clips[1]["sourceStart"]["value"], 1);
     assert_eq!(clips[1]["sourceStart"]["timescale"], 4);
     assert_eq!(clips[1]["sourceDuration"]["value"], 1);
-    assert_eq!(clips[1]["sourceDuration"]["timescale"], 8);
+    assert_eq!(clips[1]["sourceDuration"]["timescale"], 16);
+    assert_eq!(clips[2]["timelineStart"]["value"], 13);
+    assert_eq!(clips[2]["timelineStart"]["timescale"], 16);
+    assert_eq!(clips[2]["sourceStart"]["value"], 5);
+    assert_eq!(clips[2]["sourceStart"]["timescale"], 16);
+    assert_eq!(clips[2]["sourceDuration"]["value"], 1);
+    assert_eq!(clips[2]["sourceDuration"]["timescale"], 16);
     fs::remove_file(&project_path)?;
     fs::remove_dir(&test_directory)?;
     Ok(())
