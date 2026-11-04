@@ -15,6 +15,12 @@ This keeps authoritative edit interpretation outside decoders, preview widgets,
 and exporters. Those consumers will share the same plan rather than independently
 reimplementing clip timing.
 
+The same crate now provides a codec-independent asynchronous decode scheduler.
+Both request and completion queues are bounded, submission never blocks the
+caller, and playback generations suppress queued or in-flight stale results.
+Decoder calls execute on a dedicated worker thread. A saturated completion queue
+drops newer frames so shutdown and UI coordination cannot deadlock.
+
 ## Actual-media verification
 
 The opt-in integration constructs a real project referencing the generated
@@ -27,7 +33,7 @@ that source timestamp.
 
 - Formatting passes.
 - Strict workspace Clippy passes with warnings denied.
-- 35 default tests pass.
+- 37 default tests pass.
 - Two media and one playback actual-fixture tests pass with explicitly supplied
   local `FFmpeg`/ffprobe executables.
 
@@ -35,7 +41,7 @@ that source timestamp.
 
 The planner currently models unretimed video clips only because speed, track
 visibility, effects, transitions, and compositing are not yet authoritative
-project fields. It does not decode asynchronously, schedule playback, evaluate
-audio, or present frames. Next, add a bounded asynchronous decode worker boundary
-with stale-request cancellation, then connect it to this plan without moving
-timeline semantics into the worker.
+project fields. The scheduler does not forcibly interrupt an in-flight native
+decoder call, evaluate audio, pace realtime playback, or present frames. Next,
+add an adapter that resolves planned assets into the isolated decoder boundary,
+with process-level cancellation and crash containment.

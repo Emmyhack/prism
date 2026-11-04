@@ -6,6 +6,15 @@
 use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
 use prism_project::{Project, TrackKind};
 use prism_timeline::{RationalTime, TimeError};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError, sync_channel},
+    },
+    thread::{self, JoinHandle},
+    time::Duration,
+};
 use thiserror::Error;
 
 /// A visible source selected for one sequence timestamp.
@@ -32,6 +41,169 @@ pub struct VideoFramePlan {
     pub sequence_time: RationalTime,
     /// At most one visible source per video track, in stored track order.
     pub sources: Vec<VideoSourceRequest>,
+}
+
+/// One scheduled decode operation derived from timeline evaluation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecodeRequest {
+    /// Caller-assigned identifier used to match asynchronous results.
+    pub request_id: u64,
+    /// Playback generation. Results older than the current generation are stale.
+    pub generation: u64,
+    /// Exact source selection produced by timeline evaluation.
+    pub source: VideoSourceRequest,
+}
+
+/// Result delivered by an asynchronous decode worker.
+#[derive(Debug, Eq, PartialEq)]
+pub enum DecodeResult<Frame> {
+    /// A current request completed successfully.
+    Ready {
+        /// Original request metadata.
+        request: DecodeRequest,
+        /// Decoder-specific frame value.
+        frame: Frame,
+    },
+    /// A current request failed in the decoder adapter.
+    Failed {
+        /// Original request metadata.
+        request: DecodeRequest,
+        /// Stable diagnostic text supplied by the adapter.
+        message: String,
+    },
+}
+
+/// Non-blocking submission failures for a bounded decode queue.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum SubmitError {
+    /// The configured queue is full; the caller must drop or retry work.
+    #[error("decode queue is full")]
+    QueueFull,
+    /// The worker thread has stopped accepting work.
+    #[error("decode worker is stopped")]
+    WorkerStopped,
+}
+
+/// A bounded, codec-independent asynchronous frame scheduler.
+///
+/// The supplied decoder closure owns codec integration and may block without
+/// blocking the caller. Raising the generation suppresses queued and in-flight
+/// results from older playback positions. It does not forcibly interrupt an
+/// in-flight native decoder call; process-level cancellation belongs to the
+/// decoder adapter. Completed frames are also bounded; if the consumer stops
+/// draining results, newer completions may be dropped rather than blocking the
+/// worker or its shutdown path.
+pub struct AsyncDecodeWorker<Frame> {
+    requests: Option<SyncSender<DecodeRequest>>,
+    results: Receiver<DecodeResult<Frame>>,
+    minimum_generation: Arc<AtomicU64>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl<Frame: Send + 'static> AsyncDecodeWorker<Frame> {
+    /// Starts one decoder thread with an explicitly bounded pending queue.
+    ///
+    /// The decoder closure receives exact source requests and returns either a
+    /// frame value or stable diagnostic text.
+    #[must_use]
+    pub fn spawn(
+        queue_capacity: usize,
+        mut decode: impl FnMut(&DecodeRequest) -> Result<Frame, String> + Send + 'static,
+    ) -> Self {
+        let queue_capacity = queue_capacity.max(1);
+        let (request_tx, request_rx) = sync_channel::<DecodeRequest>(queue_capacity);
+        let (result_tx, result_rx) = sync_channel(queue_capacity.saturating_add(1));
+        let minimum_generation = Arc::new(AtomicU64::new(0));
+        let worker_generation = Arc::clone(&minimum_generation);
+        let worker_thread = thread::spawn(move || {
+            while let Ok(request) = request_rx.recv() {
+                if request.generation < worker_generation.load(Ordering::Acquire) {
+                    continue;
+                }
+                let decoded = decode(&request);
+                if request.generation < worker_generation.load(Ordering::Acquire) {
+                    continue;
+                }
+                let result = match decoded {
+                    Ok(frame) => DecodeResult::Ready { request, frame },
+                    Err(message) => DecodeResult::Failed { request, message },
+                };
+                match result_tx.try_send(result) {
+                    Ok(()) | Err(TrySendError::Full(_)) => {}
+                    Err(TrySendError::Disconnected(_)) => break,
+                }
+            }
+        });
+        Self {
+            requests: Some(request_tx),
+            results: result_rx,
+            minimum_generation,
+            thread: Some(worker_thread),
+        }
+    }
+
+    /// Attempts to enqueue work without blocking the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubmitError::QueueFull`] when backpressure is required or
+    /// [`SubmitError::WorkerStopped`] after worker shutdown.
+    pub fn try_submit(&self, request: DecodeRequest) -> Result<(), SubmitError> {
+        self.requests
+            .as_ref()
+            .ok_or(SubmitError::WorkerStopped)?
+            .try_send(request)
+            .map_err(|error| match error {
+                TrySendError::Full(_) => SubmitError::QueueFull,
+                TrySendError::Disconnected(_) => SubmitError::WorkerStopped,
+            })
+    }
+
+    /// Suppresses results from all generations lower than `generation`.
+    pub fn cancel_before(&self, generation: u64) {
+        self.minimum_generation
+            .fetch_max(generation, Ordering::AcqRel);
+    }
+
+    /// Polls for one completed current-generation result without blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Empty`] when nothing is ready or
+    /// [`TryRecvError::Disconnected`] after the worker exits and drains.
+    pub fn try_result(&self) -> Result<DecodeResult<Frame>, TryRecvError> {
+        self.results.try_recv()
+    }
+
+    /// Waits up to `timeout` for one completed current-generation result.
+    ///
+    /// This is intended for coordinator/background threads, not UI event loops.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecvTimeoutError::Timeout`] when the deadline expires or
+    /// [`RecvTimeoutError::Disconnected`] after the worker exits and drains.
+    pub fn result_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<DecodeResult<Frame>, RecvTimeoutError> {
+        self.results.recv_timeout(timeout)
+    }
+}
+
+impl<Frame> AsyncDecodeWorker<Frame> {
+    fn stop(&mut self) {
+        self.requests.take();
+        if let Some(worker_thread) = self.thread.take() {
+            let _ = worker_thread.join();
+        }
+    }
+}
+
+impl<Frame> Drop for AsyncDecodeWorker<Frame> {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 /// Timeline evaluation failures.
@@ -100,10 +272,14 @@ pub fn evaluate_video_frame(
 
 #[cfg(test)]
 mod tests {
-    use super::{EvaluationError, evaluate_video_frame};
+    use super::{
+        AsyncDecodeWorker, DecodeRequest, DecodeResult, EvaluationError, SubmitError,
+        VideoSourceRequest, evaluate_video_frame,
+    };
     use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
     use prism_project::{Clip, MediaAsset, Project, Sequence, Track, TrackKind};
     use prism_timeline::RationalTime;
+    use std::{sync::mpsc, time::Duration};
 
     struct Fixture {
         project: Project,
@@ -186,6 +362,19 @@ mod tests {
         })
     }
 
+    fn decode_request(request_id: u64, generation: u64) -> DecodeRequest {
+        DecodeRequest {
+            request_id,
+            generation,
+            source: VideoSourceRequest {
+                track_id: TrackId::new(),
+                clip_id: ClipId::new(),
+                media_id: MediaAssetId::new(),
+                source_time: RationalTime::ZERO,
+            },
+        }
+    }
+
     #[test]
     fn maps_sequence_time_to_exact_source_time() -> Result<(), Box<dyn std::error::Error>> {
         let fixture = fixture()?;
@@ -244,6 +433,53 @@ mod tests {
             evaluate_video_frame(&fixture.project, SequenceId::new(), RationalTime::ZERO),
             Err(EvaluationError::SequenceNotFound)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn async_worker_delivers_decoder_result() -> Result<(), Box<dyn std::error::Error>> {
+        let worker = AsyncDecodeWorker::spawn(1, |request| Ok(request.request_id * 2));
+        let request = decode_request(7, 0);
+        worker.try_submit(request.clone())?;
+        assert_eq!(
+            worker.result_timeout(Duration::from_secs(1))?,
+            DecodeResult::Ready { request, frame: 14 }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn async_worker_applies_backpressure_and_suppresses_stale_result()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = AsyncDecodeWorker::spawn(1, move |request| {
+            started_tx
+                .send(request.request_id)
+                .map_err(|error| error.to_string())?;
+            release_rx.recv().map_err(|error| error.to_string())?;
+            Ok(request.request_id)
+        });
+        worker.try_submit(decode_request(1, 1))?;
+        assert_eq!(started_rx.recv_timeout(Duration::from_secs(1))?, 1);
+        worker.try_submit(decode_request(2, 1))?;
+        assert_eq!(
+            worker.try_submit(decode_request(3, 1)),
+            Err(SubmitError::QueueFull)
+        );
+        worker.cancel_before(2);
+        release_tx.send(())?;
+        assert!(worker.result_timeout(Duration::from_millis(20)).is_err());
+        worker.try_submit(decode_request(4, 2))?;
+        assert_eq!(started_rx.recv_timeout(Duration::from_secs(1))?, 4);
+        release_tx.send(())?;
+        let DecodeResult::Ready { request, frame } =
+            worker.result_timeout(Duration::from_secs(1))?
+        else {
+            return Err("expected ready frame".into());
+        };
+        assert_eq!(request.request_id, 4);
+        assert_eq!(frame, 4);
         Ok(())
     }
 }
