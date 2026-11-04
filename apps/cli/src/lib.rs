@@ -2664,6 +2664,38 @@ mod tests {
     }
 
     #[test]
+    fn rejects_zero_preset_bitrate_override() {
+        let arguments = [
+            "export-preset-track",
+            "--project",
+            "edit.prism",
+            "--sequence",
+            "11111111-1111-4111-8111-111111111111",
+            "--track",
+            "22222222-2222-4222-8222-222222222222",
+            "--preset",
+            "youtube-1080p",
+            "--video-bitrate-kbps",
+            "0",
+            "--output",
+            "finish.mp4",
+            "--ffmpeg",
+            "/tools/ffmpeg",
+            "--ffprobe",
+            "/tools/ffprobe",
+        ]
+        .into_iter()
+        .map(OsString::from);
+        assert!(matches!(
+            parse_export_preset_track(arguments),
+            Err(CliError::InvalidValue {
+                option: "--video-bitrate-kbps",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn lists_autosave_candidates_as_newest_first_json() -> Result<(), Box<dyn std::error::Error>> {
         let directory =
             std::env::temp_dir().join(format!("prism-cli-autosaves-{}", Uuid::new_v4()));
