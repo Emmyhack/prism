@@ -3,3 +3,5 @@
 *.prism.autosave
 *.tmp
 .env
+__pycache__/
+*.py[cod]
