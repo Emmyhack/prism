@@ -49,6 +49,10 @@ an existing clip at an exact timeline position through `SplitClip`.
 Added `delete-video-clip`, which removes an existing video clip by stable IDs
 through `DeleteClip` and atomically persists the remaining project state.
 
+Added `script-transaction`, a JSON protocol entry point that converts a
+versioned transaction into typed commands, enforces the expected revision, and
+supports validation-only dry runs or atomic commits.
+
 ## Actual workflow verification
 
 The opt-in integration builds media, sequence, track, and clip state through the

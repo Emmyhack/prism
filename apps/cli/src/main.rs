@@ -69,6 +69,19 @@ fn main() -> ExitCode {
             println!("Updated {}: deleted clip {clip_id}", path.display());
             ExitCode::SUCCESS
         }
+        Ok(prism_cli::CliOutcome::ScriptTransaction {
+            path,
+            revision,
+            dry_run,
+            event_count,
+        }) => {
+            println!(
+                "{} {}: revision {revision}, {event_count} event(s)",
+                if dry_run { "Validated" } else { "Committed" },
+                path.display()
+            );
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("Prism: {error}");
             ExitCode::FAILURE

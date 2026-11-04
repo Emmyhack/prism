@@ -327,6 +327,35 @@ fn cli_adds_a_second_video_clip_to_existing_track() -> Result<(), Box<dyn std::e
     assert_eq!(clips[1]["sourceStart"]["timescale"], 4);
     assert_eq!(clips[1]["sourceDuration"]["value"], 1);
     assert_eq!(clips[1]["sourceDuration"]["timescale"], 16);
+    let request_path = test_directory.join("dry-run.json");
+    let request = serde_json::json!({
+        "requestId": "cli-dry-run",
+        "apiVersion": "1",
+        "expectedRevision": json["revision"],
+        "label": "Validate move",
+        "dryRun": true,
+        "operations": [{
+            "type": "moveClip",
+            "sequenceId": json["sequences"][0]["id"],
+            "trackId": track_id,
+            "clipId": clips[0]["id"],
+            "timelineStart": {"value": 0, "timescale": 1}
+        }]
+    });
+    fs::write(&request_path, serde_json::to_vec(&request)?)?;
+    let scripted = ProcessCommand::new(binary)
+        .args(["script-transaction", "--project"])
+        .arg(&project_path)
+        .args(["--request"])
+        .arg(&request_path)
+        .output()?;
+    if !scripted.status.success() {
+        return Err(String::from_utf8_lossy(&scripted.stderr)
+            .into_owned()
+            .into());
+    }
+    assert!(String::from_utf8(scripted.stdout)?.contains("Validated"));
+    fs::remove_file(&request_path)?;
     fs::remove_file(&project_path)?;
     fs::remove_dir(&test_directory)?;
     Ok(())

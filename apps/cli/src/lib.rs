@@ -98,6 +98,17 @@ pub enum CliOutcome {
         /// Deleted clip UUID.
         clip_id: String,
     },
+    /// A protocol transaction was validated or committed.
+    ScriptTransaction {
+        /// Updated project path.
+        path: PathBuf,
+        /// Revision after the operation (unchanged for dry-run).
+        revision: u64,
+        /// Whether the request was validation-only.
+        dry_run: bool,
+        /// Number of validated command events.
+        event_count: usize,
+    },
 }
 
 /// CLI parse and workflow failures.
@@ -171,8 +182,66 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOutcome, 
         Some("trim-video-clip") => run_trim_video_clip(&arguments),
         Some("split-video-clip") => run_split_video_clip(&arguments),
         Some("delete-video-clip") => run_delete_video_clip(&arguments),
+        Some("script-transaction") => run_script_transaction(&arguments),
         Some(_) | None => Err(CliError::Usage),
     }
+}
+
+fn run_script_transaction(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
+    let [
+        command,
+        project_flag,
+        project_path,
+        request_flag,
+        request_path,
+    ] = arguments
+    else {
+        return Err(CliError::Usage);
+    };
+    if command != "script-transaction" || project_flag != "--project" || request_flag != "--request"
+    {
+        return Err(CliError::Usage);
+    }
+    let project_path = PathBuf::from(project_path);
+    let request_path = PathBuf::from(request_path);
+    let request: prism_script::TransactionRequest = serde_json::from_slice(
+        &std::fs::read(&request_path).map_err(|error| CliError::Command(error.to_string()))?,
+    )?;
+    let dry_run = request.dry_run;
+    let expected_revision = request.expected_revision;
+    let mut project = load(&project_path)?;
+    let transaction = request
+        .into_transaction()
+        .map_err(|error| CliError::Command(error.to_string()))?;
+    if transaction.expected_revision != expected_revision {
+        return Err(CliError::Command(
+            "request revision changed during parsing".to_owned(),
+        ));
+    }
+    let event_count = if transaction.dry_run {
+        CommandEngine::validate_transaction(&project, transaction.commands)
+            .map_err(|error| CliError::Command(error.to_string()))?
+            .len()
+    } else {
+        CommandEngine::execute_transaction_at_revision(
+            &mut project,
+            transaction.expected_revision,
+            transaction.label,
+            transaction.commands,
+        )
+        .map_err(|error| CliError::Command(error.to_string()))?
+        .events
+        .len()
+    };
+    if !dry_run {
+        save_atomic(&project, &project_path)?;
+    }
+    Ok(CliOutcome::ScriptTransaction {
+        path: project_path,
+        revision: project.revision(),
+        dry_run,
+        event_count,
+    })
 }
 
 fn run_delete_video_clip(arguments: &[OsString]) -> Result<CliOutcome, CliError> {

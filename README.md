@@ -91,6 +91,16 @@ cargo run -p prism-cli -- delete-video-clip \
   --clip 33333333-3333-4333-8333-333333333333
 ```
 
+Validate a language-neutral script transaction without changing the project:
+
+```sh
+cargo run -p prism-cli -- script-transaction \
+  --project ./edit.prism --request ./transaction.json
+```
+
+Set `dryRun` to `false` in the versioned JSON request to commit through the
+same validated command engine.
+
 The command emits deterministic, versioned JSON. Use the reported sequence and
 track IDs with the export command:
 

@@ -9,7 +9,7 @@ ready, Blocked. "Implemented" never implies the later states.
 | Exact rational time | Tested | Exact arithmetic, explicit tick rounding, and a commutativity/reversibility property test pass |
 | Typed IDs/project model | Tested | Domain validator covers identity, media references, time ranges, ordering, and overlap; object set remains incomplete |
 | Typed command API | In development | Atomic batches, revision conflicts, dry-run, undo/redo, and core insert/move/trim/split/delete commands tested |
-| Script protocol | In development | Exact-time DTOs for current commands, API/revision checks and dry-run intent; no runtime |
+| Script protocol | In development | Exact-time DTOs for current commands, API/revision checks, dry-run intent, and executable JSON transaction validation/commit; no language runtime |
 | Persistence | Tested | SQLite v1 round trip, forward-version refusal, SQLite/domain integrity checks and Unix atomic-save path tested; migrations/autosave pending |
 | Media inspection and reference decode | In development | Typed ffprobe inspection, packet timing, fingerprinting, and exact-seek RGBA reference vectors verified against one synthetic MP4/AAC fixture; production decoder worker pending |
 | Timeline playback evaluation | In development | Exact source planning drives a bounded background decoder and reproduces a pinned real frame; queue backpressure and stale-generation suppression tested; presentation pending |
