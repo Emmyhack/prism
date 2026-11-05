@@ -551,6 +551,12 @@ impl DecodedVideoFrame {
 }
 
 impl MediaFingerprint {
+    /// Returns the lowercase hexadecimal full-file digest.
+    #[must_use]
+    pub fn sha256_hex(&self) -> &str {
+        &self.sha256
+    }
+
     /// Derives a content-addressed key for a media-derived artifact.
     ///
     /// The operation and parameters must describe every setting that affects
@@ -1160,6 +1166,7 @@ mod tests {
             sha256: "abc123".to_owned(),
             byte_length: 6,
         };
+        assert_eq!(fingerprint.sha256_hex(), "abc123");
         let thumbnail = fingerprint.cache_key("thumbnail", "rgba", b"320x180");
         let waveform = fingerprint.cache_key("waveform", "peak-rms", b"48000");
         assert_ne!(thumbnail, waveform);
