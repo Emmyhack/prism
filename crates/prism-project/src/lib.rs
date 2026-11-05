@@ -332,6 +332,12 @@ impl Sequence {
         self.markers.len()
     }
 
+    /// Returns the marker with the given stable identifier, if present.
+    #[must_use]
+    pub fn marker(&self, marker_id: MarkerId) -> Option<&Marker> {
+        self.markers.iter().find(|marker| marker.id == marker_id)
+    }
+
     /// Returns the exact end time of the latest clip across all tracks.
     ///
     /// # Errors
