@@ -114,7 +114,8 @@ portable process-signal integration remain future work.
 Audio unit coverage verifies allocation-free stereo gain/pan processing,
 multitrack and indexed-bus accumulation, fade/crossfade curves, stateful
 one-pole filter cutoff validation and block/reset behavior, validation of malformed buffers and parameters, and
-peak/RMS and dBFS analysis. Peak normalization tests also cover silence, finite-input
+peak/RMS and dBFS analysis, interleaved stereo waveform channel separation, and
+waveform peak dBFS silence behavior. Peak normalization tests also cover silence, finite-input
 validation, and deterministic target scaling; this is not a claim of LUFS
 compliance. Dynamics tests cover attack/release detector behavior, reset,
 peak reduction, limiter ceilings, and non-finite input rejection. Resampler
