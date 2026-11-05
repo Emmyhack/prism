@@ -68,6 +68,20 @@ pub struct WaveformPoint {
     pub rms: f32,
 }
 
+impl WaveformPoint {
+    /// Returns the bucket peak in dBFS; silence is represented as negative
+    /// infinity.
+    #[must_use]
+    pub fn peak_dbfs(self) -> f32 {
+        let peak = self.min.abs().max(self.max.abs());
+        if peak == 0.0 {
+            f32::NEG_INFINITY
+        } else {
+            20.0 * peak.log10()
+        }
+    }
+}
+
 /// Deterministic left/right amplitude summary for one stereo display bucket.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StereoWaveformPoint {
@@ -1129,7 +1143,7 @@ mod tests {
         AudioAnalysis, AudioBus, AudioBusMixer, AudioError, AudioFades, AudioMixer, BusRoute,
         DynamicsCompressor, FilterKind, Limiter, LinearResampler, OnePoleFilter, PeakNormalizer,
         RoutedStereoTrack, StereoDelay, StereoGainPan, StereoTrack, StreamingLinearResampler,
-        generate_stereo_waveform, generate_waveform,
+        WaveformPoint, generate_stereo_waveform, generate_waveform,
     };
 
     #[test]
@@ -1349,6 +1363,16 @@ mod tests {
         assert!((points[0].rms - 0.790_569_4).abs() < 1e-6);
         assert!((points[2].min - 1.0).abs() < f32::EPSILON);
         assert!((points[2].max - 1.0).abs() < f32::EPSILON);
+        assert!((points[0].peak_dbfs() - 0.0).abs() < f32::EPSILON);
+        assert!(
+            WaveformPoint {
+                min: 0.0,
+                max: 0.0,
+                rms: 0.0,
+            }
+            .peak_dbfs()
+            .is_infinite()
+        );
         assert_eq!(
             generate_waveform(&[0.0], 0),
             Err(AudioError::InvalidWaveformWindow)
