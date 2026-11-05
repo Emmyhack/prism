@@ -129,6 +129,12 @@ impl RgbHistogram {
             normalize_bins(&self.blue),
         )
     }
+
+    /// Returns the number of accumulated samples represented by each channel.
+    #[must_use]
+    pub fn sample_count(&self) -> u64 {
+        self.red.iter().copied().sum()
+    }
 }
 
 impl Default for RgbHistogram {
@@ -186,6 +192,12 @@ impl LumaHistogram {
     #[must_use]
     pub fn percentages(&self) -> [f32; HISTOGRAM_BINS] {
         normalize_bins(&self.bins)
+    }
+
+    /// Returns the number of accumulated luma samples.
+    #[must_use]
+    pub fn sample_count(&self) -> u64 {
+        self.bins.iter().copied().sum()
     }
 }
 
@@ -784,6 +796,7 @@ mod tests {
         assert_eq!(histogram.red[0], 2);
         assert_eq!(histogram.green[128], 2);
         assert_eq!(histogram.blue[255], 2);
+        assert_eq!(histogram.sample_count(), 2);
         let (red, green, blue) = histogram.percentages();
         assert!((red[0] - 1.0).abs() < f32::EPSILON);
         assert!((green[128] - 1.0).abs() < f32::EPSILON);
@@ -809,6 +822,7 @@ mod tests {
         assert_eq!(histogram.bins[0], 1);
         assert_eq!(histogram.bins[128], 1);
         assert_eq!(histogram.bins[255], 1);
+        assert_eq!(histogram.sample_count(), 3);
         let percentages = histogram.percentages();
         assert!((percentages[0] - (1.0 / 3.0)).abs() < 1e-6);
         assert!((LumaHistogram::new().percentages()[0]).abs() < f32::EPSILON);
