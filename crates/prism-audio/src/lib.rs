@@ -68,6 +68,70 @@ pub struct WaveformPoint {
     pub rms: f32,
 }
 
+/// Deterministic left/right amplitude summary for one stereo display bucket.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StereoWaveformPoint {
+    /// Left-channel waveform summary.
+    pub left: WaveformPoint,
+    /// Right-channel waveform summary.
+    pub right: WaveformPoint,
+}
+
+/// Generates waveform buckets from interleaved stereo samples.
+///
+/// `frames_per_point` counts stereo frames rather than scalar samples.
+///
+/// # Errors
+///
+/// Returns [`AudioError::OddInterleavedBuffer`] for an incomplete frame,
+/// [`AudioError::InvalidWaveformWindow`] for a zero bucket, or
+/// [`AudioError::NonFiniteSample`] for NaN/infinite input.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+pub fn generate_stereo_waveform(
+    samples: &[f32],
+    frames_per_point: usize,
+) -> Result<Vec<StereoWaveformPoint>, AudioError> {
+    if !samples.len().is_multiple_of(2) {
+        return Err(AudioError::OddInterleavedBuffer);
+    }
+    if frames_per_point == 0 {
+        return Err(AudioError::InvalidWaveformWindow);
+    }
+    if samples.iter().any(|sample| !sample.is_finite()) {
+        return Err(AudioError::NonFiniteSample);
+    }
+    let frame_count = samples.len() / 2;
+    let mut points = Vec::with_capacity(frame_count.div_ceil(frames_per_point));
+    for bucket in samples.chunks(frames_per_point * 2) {
+        let (mut left_min, mut left_max, mut left_sum) =
+            (f32::INFINITY, f32::NEG_INFINITY, 0.0_f64);
+        let (mut right_min, mut right_max, mut right_sum) =
+            (f32::INFINITY, f32::NEG_INFINITY, 0.0_f64);
+        for frame in bucket.chunks_exact(2) {
+            left_min = left_min.min(frame[0]);
+            left_max = left_max.max(frame[0]);
+            left_sum += f64::from(frame[0]) * f64::from(frame[0]);
+            right_min = right_min.min(frame[1]);
+            right_max = right_max.max(frame[1]);
+            right_sum += f64::from(frame[1]) * f64::from(frame[1]);
+        }
+        let frames = bucket.len() / 2;
+        points.push(StereoWaveformPoint {
+            left: WaveformPoint {
+                min: left_min,
+                max: left_max,
+                rms: (left_sum / frames as f64).sqrt() as f32,
+            },
+            right: WaveformPoint {
+                min: right_min,
+                max: right_max,
+                rms: (right_sum / frames as f64).sqrt() as f32,
+            },
+        });
+    }
+    Ok(points)
+}
+
 /// Generates waveform buckets from decoded mono samples.
 ///
 /// The final bucket may contain fewer samples than `samples_per_point`. The
@@ -1065,7 +1129,7 @@ mod tests {
         AudioAnalysis, AudioBus, AudioBusMixer, AudioError, AudioFades, AudioMixer, BusRoute,
         DynamicsCompressor, FilterKind, Limiter, LinearResampler, OnePoleFilter, PeakNormalizer,
         RoutedStereoTrack, StereoDelay, StereoGainPan, StereoTrack, StreamingLinearResampler,
-        generate_waveform,
+        generate_stereo_waveform, generate_waveform,
     };
 
     #[test]
@@ -1292,6 +1356,21 @@ mod tests {
         assert_eq!(
             generate_waveform(&[f32::NAN], 1),
             Err(AudioError::NonFiniteSample)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stereo_waveform_generation_preserves_channels() -> Result<(), AudioError> {
+        let points = generate_stereo_waveform(&[-1.0, 0.25, 0.5, -0.5, 1.0, 0.75], 2)?;
+        assert_eq!(points.len(), 2);
+        assert!((points[0].left.min + 1.0).abs() < f32::EPSILON);
+        assert!((points[0].left.max - 0.5).abs() < f32::EPSILON);
+        assert!((points[0].right.min + 0.5).abs() < f32::EPSILON);
+        assert!((points[0].right.max - 0.25).abs() < f32::EPSILON);
+        assert_eq!(
+            generate_stereo_waveform(&[0.0], 1),
+            Err(AudioError::OddInterleavedBuffer)
         );
         Ok(())
     }
