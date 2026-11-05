@@ -507,6 +507,40 @@ impl DecodedVideoFrame {
         ))
     }
 
+    /// Returns one packed RGBA row, or `None` when `y` is out of range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frame dimensions or packed RGBA buffer length
+    /// are inconsistent.
+    pub fn row_rgba(&self, y: u32) -> Result<Option<&[u8]>, MediaError> {
+        let expected = checked_rgba_length(self.width, self.height)?;
+        if self.rgba.len() != expected {
+            return Err(MediaError::InvalidFrameLength {
+                expected,
+                actual: self.rgba.len(),
+            });
+        }
+        if y >= self.height {
+            return Ok(None);
+        }
+        let row_length = usize::try_from(self.width)
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+            .ok_or(MediaError::InvalidFrameDimensions {
+                width: self.width,
+                height: self.height,
+            })?;
+        let start = usize::try_from(y)
+            .ok()
+            .and_then(|row| row.checked_mul(row_length))
+            .ok_or(MediaError::InvalidFrameDimensions {
+                width: self.width,
+                height: self.height,
+            })?;
+        Ok(Some(&self.rgba[start..start + row_length]))
+    }
+
     /// Creates a deterministic nearest-neighbor thumbnail in RGBA order.
     ///
     /// This CPU helper is intentionally simple and stable for cache fixtures;
@@ -1155,6 +1189,10 @@ mod tests {
         assert_eq!(thumbnail.rgba, vec![255, 0, 0, 255]);
         assert_eq!(frame.pixel(0, 0)?, Some([255, 0, 0, 255]));
         assert_eq!(frame.pixel(2, 0)?, None);
+        assert_eq!(
+            frame.row_rgba(0)?,
+            Some(&[255, 0, 0, 255, 0, 255, 0, 255][..])
+        );
         let malformed = DecodedVideoFrame {
             rgba: vec![0, 1, 2],
             ..frame
