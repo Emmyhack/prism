@@ -236,6 +236,14 @@ pub struct MediaFingerprint {
     pub byte_length: u64,
 }
 
+impl MediaFingerprint {
+    /// Returns whether two fingerprints describe identical source bytes.
+    #[must_use]
+    pub fn same_content(&self, other: &Self) -> bool {
+        self.byte_length == other.byte_length && self.sha256 == other.sha256
+    }
+}
+
 /// Deterministic proxy-generation settings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProxyProfile {
