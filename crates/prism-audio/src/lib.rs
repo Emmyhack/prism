@@ -69,6 +69,12 @@ pub struct WaveformPoint {
 }
 
 impl WaveformPoint {
+    /// Returns whether every amplitude summary is exactly silent.
+    #[must_use]
+    pub fn is_silent(self) -> bool {
+        self.min == 0.0 && self.max == 0.0 && self.rms == 0.0
+    }
+
     /// Returns the bucket peak in dBFS; silence is represented as negative
     /// infinity.
     #[must_use]
