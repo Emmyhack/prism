@@ -1,7 +1,7 @@
 //! Authoritative in-memory project model, independent of persistence formats.
 
 use prism_core::{ClipId, MarkerId, MediaAssetId, ProjectId, SequenceId, TrackId, TransitionId};
-use prism_timeline::RationalTime;
+use prism_timeline::{RationalTime, TimeError};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
@@ -319,6 +319,26 @@ pub struct Sequence {
     pub tracks: Vec<Track>,
 }
 
+impl Sequence {
+    /// Returns the exact end time of the latest clip across all tracks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::Overflow`] if a clip end cannot be represented.
+    pub fn duration(&self) -> Result<RationalTime, TimeError> {
+        let mut end = RationalTime::ZERO;
+        for track in &self.tracks {
+            for clip in &track.clips {
+                let clip_end = clip.timeline_start.checked_add(clip.source_duration)?;
+                if clip_end > end {
+                    end = clip_end;
+                }
+            }
+        }
+        Ok(end)
+    }
+}
+
 /// A named exact-time marker on a sequence timeline.
 #[derive(Clone, Debug)]
 pub struct Marker {
@@ -537,6 +557,32 @@ mod tests {
                 ProjectValidationError::MissingMedia { .. }
             ))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn sequence_duration_uses_latest_exact_clip_end() -> Result<(), TimeError> {
+        let sequence = Sequence {
+            id: SequenceId::new(),
+            name: "Main".to_owned(),
+            markers: Vec::new(),
+            transitions: Vec::new(),
+            tracks: vec![Track {
+                id: TrackId::new(),
+                kind: TrackKind::Video,
+                clips: vec![Clip {
+                    id: ClipId::new(),
+                    media_id: MediaAssetId::new(),
+                    timeline_start: RationalTime::new(5, 1)?,
+                    source_start: RationalTime::ZERO,
+                    source_duration: RationalTime::new(2, 1)?,
+                }],
+                locked: false,
+                visible: true,
+                muted: false,
+            }],
+        };
+        assert_eq!(sequence.duration()?, RationalTime::new(7, 1)?);
         Ok(())
     }
 
