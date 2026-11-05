@@ -85,6 +85,14 @@ pub struct ExecutionLimits {
     pub max_payload_bytes: usize,
 }
 
+impl ExecutionLimits {
+    /// Returns whether a transaction operation count fits within this limit.
+    #[must_use]
+    pub const fn allows_operations(self, count: usize) -> bool {
+        count <= self.max_operations
+    }
+}
+
 /// Bounds applied to one trusted external language-worker process.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProcessLimits {
