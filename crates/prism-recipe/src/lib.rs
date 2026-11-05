@@ -105,6 +105,14 @@ pub struct RecipeManifest {
     pub parameters: BTreeMap<String, ParameterSchema>,
 }
 
+impl RecipeManifest {
+    /// Returns the number of declared recipe parameters.
+    #[must_use]
+    pub fn parameter_count(&self) -> usize {
+        self.parameters.len()
+    }
+}
+
 /// Recipe validation failures.
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum RecipeError {
