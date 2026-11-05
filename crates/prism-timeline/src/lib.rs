@@ -152,6 +152,27 @@ impl RationalTime {
         Self::new(value, self.timescale)
     }
 
+    /// Divides exact time by an integer factor without floating-point loss.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::DivisionByZero`] for zero or [`TimeError::Overflow`]
+    /// when the resulting denominator cannot be represented.
+    pub fn checked_div_i64(self, factor: i64) -> Result<Self, TimeError> {
+        if factor == 0 {
+            return Err(TimeError::DivisionByZero);
+        }
+        let denominator = u64::from(self.timescale)
+            .checked_mul(factor.unsigned_abs())
+            .ok_or(TimeError::Overflow)?;
+        let numerator = if factor.is_negative() {
+            -i128::from(self.value)
+        } else {
+            i128::from(self.value)
+        };
+        normalize_wide(numerator, denominator)
+    }
+
     /// Converts this time to integer ticks at `target_timescale` using an
     /// explicit rounding policy.
     ///
@@ -305,6 +326,15 @@ mod tests {
             RationalTime::new(i64::MAX, 1)?.checked_mul_i64(2),
             Err(TimeError::Overflow)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn checked_integer_division_preserves_exact_time() -> Result<(), TimeError> {
+        let time = RationalTime::new(3, 2)?;
+        assert_eq!(time.checked_div_i64(3)?, RationalTime::new(1, 2)?);
+        assert_eq!(time.checked_div_i64(-3)?, RationalTime::new(-1, 2)?);
+        assert_eq!(time.checked_div_i64(0), Err(TimeError::DivisionByZero));
         Ok(())
     }
 
