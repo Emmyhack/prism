@@ -299,6 +299,14 @@ impl WaveformScope {
         let start = column.checked_mul(HISTOGRAM_BINS)?;
         self.bins.get(start..start + HISTOGRAM_BINS)
     }
+
+    /// Returns the highest populated luma bin for one column.
+    #[must_use]
+    pub fn column_peak(&self, column: usize) -> Option<usize> {
+        self.column_bins(column)?
+            .iter()
+            .rposition(|&count| count > 0)
+    }
 }
 
 /// Deterministic U/V chroma vectorscope for validated SDR RGB samples.
@@ -363,6 +371,19 @@ impl Vectorscope {
             return None;
         }
         Some(self.bins[u * VECTORSCOPE_BINS + v])
+    }
+
+    /// Returns the most populated chroma bin and its count.
+    #[must_use]
+    pub fn peak_bin(&self) -> Option<(usize, usize, u64)> {
+        self.bins
+            .iter()
+            .copied()
+            .enumerate()
+            .max_by_key(|&(_, count)| count)
+            .and_then(|(index, count)| {
+                (count > 0).then_some((index % VECTORSCOPE_BINS, index / VECTORSCOPE_BINS, count))
+            })
     }
 }
 
