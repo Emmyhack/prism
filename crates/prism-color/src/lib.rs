@@ -113,6 +113,22 @@ impl RgbHistogram {
         }
         Ok(histogram)
     }
+
+    /// Returns per-channel sample percentages in the range `0.0..=1.0`.
+    #[must_use]
+    pub fn percentages(
+        &self,
+    ) -> (
+        [f32; HISTOGRAM_BINS],
+        [f32; HISTOGRAM_BINS],
+        [f32; HISTOGRAM_BINS],
+    ) {
+        (
+            normalize_bins(&self.red),
+            normalize_bins(&self.green),
+            normalize_bins(&self.blue),
+        )
+    }
 }
 
 impl Default for RgbHistogram {
@@ -165,6 +181,22 @@ impl LumaHistogram {
         }
         Ok(histogram)
     }
+
+    /// Returns luma sample percentages in the range `0.0..=1.0`.
+    #[must_use]
+    pub fn percentages(&self) -> [f32; HISTOGRAM_BINS] {
+        normalize_bins(&self.bins)
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn normalize_bins(bins: &[u64; HISTOGRAM_BINS]) -> [f32; HISTOGRAM_BINS] {
+    let total = bins.iter().copied().sum::<u64>();
+    if total == 0 {
+        return [0.0; HISTOGRAM_BINS];
+    }
+    let denominator = total as f32;
+    std::array::from_fn(|index| bins[index] as f32 / denominator)
 }
 
 impl Default for LumaHistogram {
@@ -752,6 +784,10 @@ mod tests {
         assert_eq!(histogram.red[0], 2);
         assert_eq!(histogram.green[128], 2);
         assert_eq!(histogram.blue[255], 2);
+        let (red, green, blue) = histogram.percentages();
+        assert!((red[0] - 1.0).abs() < f32::EPSILON);
+        assert!((green[128] - 1.0).abs() < f32::EPSILON);
+        assert!((blue[255] - 1.0).abs() < f32::EPSILON);
         assert_eq!(
             RgbHistogram::from_pixels(&[Rgb {
                 red: f32::NAN,
@@ -773,6 +809,9 @@ mod tests {
         assert_eq!(histogram.bins[0], 1);
         assert_eq!(histogram.bins[128], 1);
         assert_eq!(histogram.bins[255], 1);
+        let percentages = histogram.percentages();
+        assert!((percentages[0] - (1.0 / 3.0)).abs() < 1e-6);
+        assert!((LumaHistogram::new().percentages()[0]).abs() < f32::EPSILON);
         assert_eq!(
             LumaHistogram::from_pixels(&[Rgb {
                 red: 0.0,
