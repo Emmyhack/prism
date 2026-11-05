@@ -207,3 +207,9 @@ keyframes.
 Marker coverage verifies exact-time sorting, duplicate-ID and invalid-label
 rejection, command deletion, SQLite round trips and migrations, CLI inspection,
 and equivalent Python, JavaScript, TypeScript, and Rust protocol payloads.
+
+Read-side API coverage also verifies decoded RGBA row access, fingerprint
+identity, scope peak lookup, exact-time sign/absolute helpers, sequence and
+recipe metadata counts, audio silence classification, cache-root status,
+export preset identifiers, plugin capability classification, and script limit
+checks through focused crate tests and clippy gates.
