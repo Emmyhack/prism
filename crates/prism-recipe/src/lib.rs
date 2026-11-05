@@ -111,6 +111,15 @@ impl RecipeManifest {
     pub fn parameter_count(&self) -> usize {
         self.parameters.len()
     }
+
+    /// Returns the number of parameters without defaults.
+    #[must_use]
+    pub fn required_parameter_count(&self) -> usize {
+        self.parameters
+            .values()
+            .filter(|parameter| parameter.default.is_none())
+            .count()
+    }
 }
 
 /// Recipe validation failures.
