@@ -105,6 +105,15 @@ pub enum ExportPreset {
 }
 
 impl ExportPreset {
+    /// Returns the stable user-facing identifier for this preset.
+    #[must_use]
+    pub const fn identifier(self) -> &'static str {
+        match self {
+            Self::Youtube1080p => "youtube-1080p",
+            Self::Youtube4k => "youtube-4k",
+        }
+    }
+
     /// Parses a stable user-facing preset identifier.
     ///
     /// # Errors
