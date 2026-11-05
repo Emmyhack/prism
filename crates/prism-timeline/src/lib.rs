@@ -102,6 +102,12 @@ impl RationalTime {
         self.value == 0
     }
 
+    /// Returns whether this exact time is negative.
+    #[must_use]
+    pub const fn is_negative(self) -> bool {
+        self.value < 0
+    }
+
     /// Returns the non-negative absolute value of this time.
     ///
     /// # Errors
