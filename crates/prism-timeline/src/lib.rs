@@ -108,6 +108,15 @@ impl RationalTime {
         self.value > 0
     }
 
+    /// Returns an approximate floating-point seconds value for display or
+    /// diagnostics. Authoritative editing operations must continue using the
+    /// exact rational representation.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn as_seconds_f64(self) -> f64 {
+        self.value as f64 / f64::from(self.timescale)
+    }
+
     /// Adds two exact times with checked arithmetic.
     ///
     /// # Errors
@@ -266,6 +275,13 @@ mod tests {
             RationalTime::new(1, 2)?.snap_to_grid(RationalTime::ZERO),
             Err(TimeError::InvalidSnapGrid)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn floating_seconds_conversion_is_explicitly_approximate() -> Result<(), TimeError> {
+        let time = RationalTime::new(3, 2)?;
+        assert!((time.as_seconds_f64() - 1.5).abs() < f64::EPSILON);
         Ok(())
     }
 
