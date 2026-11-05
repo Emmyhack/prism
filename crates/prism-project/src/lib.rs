@@ -320,6 +320,18 @@ pub struct Sequence {
 }
 
 impl Sequence {
+    /// Returns the number of ordered tracks in this sequence.
+    #[must_use]
+    pub fn track_count(&self) -> usize {
+        self.tracks.len()
+    }
+
+    /// Returns the number of sequence markers.
+    #[must_use]
+    pub fn marker_count(&self) -> usize {
+        self.markers.len()
+    }
+
     /// Returns the exact end time of the latest clip across all tracks.
     ///
     /// # Errors
