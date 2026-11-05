@@ -380,6 +380,21 @@ impl CacheLayout {
             .map_err(|error| CacheError::Io(error.to_string()))
     }
 
+    /// Returns the byte length of a finalized artifact, or `None` on a miss.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheError::InvalidExtension`] for an unsafe extension or
+    /// [`CacheError::Io`] when metadata cannot be inspected.
+    pub fn size(&self, key: CacheKey, extension: &str) -> Result<Option<u64>, CacheError> {
+        let Some(path) = self.lookup(key, extension)? else {
+            return Ok(None);
+        };
+        fs::metadata(path)
+            .map(|metadata| Some(metadata.len()))
+            .map_err(|error| CacheError::Io(error.to_string()))
+    }
+
     /// Atomically writes a new cache artifact without replacing an existing one.
     ///
     /// Parent directories are created as needed. The temporary file is synced
@@ -552,6 +567,7 @@ mod tests {
             b"first"
         );
         assert_eq!(layout.read(key, "bin")?, Some(b"first".to_vec()));
+        assert_eq!(layout.size(key, "bin")?, Some(5));
         assert_eq!(
             layout.read(
                 CacheKey::from_parts("thumbnail", b"missing", "rgba", b"1"),
