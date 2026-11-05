@@ -292,6 +292,13 @@ impl WaveformScope {
     pub fn sample_count(&self) -> u64 {
         self.bins.iter().copied().sum()
     }
+
+    /// Returns the 256 luma bins for one column, or `None` if out of range.
+    #[must_use]
+    pub fn column_bins(&self, column: usize) -> Option<&[u64]> {
+        let start = column.checked_mul(HISTOGRAM_BINS)?;
+        self.bins.get(start..start + HISTOGRAM_BINS)
+    }
 }
 
 /// Deterministic U/V chroma vectorscope for validated SDR RGB samples.
@@ -864,6 +871,8 @@ mod tests {
         assert_eq!(scope.width, 2);
         assert_eq!(scope.bins.iter().sum::<u64>(), 4);
         assert_eq!(scope.sample_count(), 4);
+        assert_eq!(scope.column_bins(0).map(<[u64]>::len), Some(256));
+        assert!(scope.column_bins(2).is_none());
         assert_eq!(scope.bins[0], 1);
         assert_eq!(scope.bins[HISTOGRAM_BINS + 255], 1);
         assert_eq!(
