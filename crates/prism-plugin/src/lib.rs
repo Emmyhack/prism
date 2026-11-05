@@ -58,6 +58,17 @@ pub enum Capability {
     NetworkAccess,
 }
 
+impl Capability {
+    /// Returns whether this capability can access resources outside project state.
+    #[must_use]
+    pub const fn is_external(self) -> bool {
+        matches!(
+            self,
+            Self::FilesystemRead | Self::FilesystemWrite | Self::NetworkAccess
+        )
+    }
+}
+
 /// Declarative plugin manifest exchanged before any runtime is started.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PluginManifest {
