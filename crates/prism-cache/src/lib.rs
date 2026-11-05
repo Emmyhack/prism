@@ -329,6 +329,12 @@ impl CacheLayout {
         &self.root
     }
 
+    /// Returns whether the configured cache root currently exists as a directory.
+    #[must_use]
+    pub fn root_exists(&self) -> bool {
+        self.root.is_dir()
+    }
+
     /// Returns a sharded, traversal-safe artifact path.
     ///
     /// The caller remains responsible for creating parent directories and
