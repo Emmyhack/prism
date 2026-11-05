@@ -55,6 +55,14 @@ pub struct TransactionRequest {
     pub operations: Vec<Operation>,
 }
 
+impl TransactionRequest {
+    /// Returns the number of operations requested by the transaction.
+    #[must_use]
+    pub fn operation_count(&self) -> usize {
+        self.operations.len()
+    }
+}
+
 /// Validated protocol transaction ready for the command layer.
 #[derive(Debug)]
 pub struct ProtocolTransaction {
