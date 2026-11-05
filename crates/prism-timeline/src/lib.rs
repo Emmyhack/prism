@@ -304,6 +304,19 @@ mod tests {
     }
 
     #[test]
+    fn sign_and_absolute_helpers_are_exact() -> Result<(), TimeError> {
+        let negative = RationalTime::new(-3, 2)?;
+        assert!(negative.is_negative());
+        assert!(!negative.is_zero());
+        assert!(!negative.is_non_negative());
+        assert_eq!(negative.checked_abs()?, RationalTime::new(3, 2)?);
+        assert!(RationalTime::ZERO.is_zero());
+        assert!(!RationalTime::ZERO.is_negative());
+        assert!(!RationalTime::ZERO.is_positive());
+        Ok(())
+    }
+
+    #[test]
     fn integer_tick_conversion_uses_explicit_rounding() -> Result<(), TimeError> {
         let positive = RationalTime::new(3, 2)?;
         assert_eq!(positive.to_ticks(1, RoundingMode::Floor)?, 1);
