@@ -337,6 +337,26 @@ impl Sequence {
         }
         Ok(end)
     }
+
+    /// Returns the exact end time for one track, or `None` if the track is
+    /// absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::Overflow`] if a clip end cannot be represented.
+    pub fn track_duration(&self, track_id: TrackId) -> Result<Option<RationalTime>, TimeError> {
+        let Some(track) = self.tracks.iter().find(|track| track.id == track_id) else {
+            return Ok(None);
+        };
+        let mut end = RationalTime::ZERO;
+        for clip in &track.clips {
+            let clip_end = clip.timeline_start.checked_add(clip.source_duration)?;
+            if clip_end > end {
+                end = clip_end;
+            }
+        }
+        Ok(Some(end))
+    }
 }
 
 /// A named exact-time marker on a sequence timeline.
@@ -562,13 +582,14 @@ mod tests {
 
     #[test]
     fn sequence_duration_uses_latest_exact_clip_end() -> Result<(), TimeError> {
+        let track_id = TrackId::new();
         let sequence = Sequence {
             id: SequenceId::new(),
             name: "Main".to_owned(),
             markers: Vec::new(),
             transitions: Vec::new(),
             tracks: vec![Track {
-                id: TrackId::new(),
+                id: track_id,
                 kind: TrackKind::Video,
                 clips: vec![Clip {
                     id: ClipId::new(),
@@ -583,6 +604,11 @@ mod tests {
             }],
         };
         assert_eq!(sequence.duration()?, RationalTime::new(7, 1)?);
+        assert_eq!(
+            sequence.track_duration(track_id)?,
+            Some(RationalTime::new(7, 1)?)
+        );
+        assert_eq!(sequence.track_duration(TrackId::new())?, None);
         Ok(())
     }
 
