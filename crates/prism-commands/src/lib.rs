@@ -150,6 +150,17 @@ pub enum Command {
         /// New start in sequence time.
         timeline_start: RationalTime,
     },
+    /// Changes the source range while preserving a clip's timeline placement.
+    SlipClip {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Owning track.
+        track_id: TrackId,
+        /// Clip to slip.
+        clip_id: ClipId,
+        /// Exact source-time delta; positive advances the source window.
+        source_delta: RationalTime,
+    },
     /// Replaces a clip's sequence placement and source range.
     TrimClip {
         /// Owning sequence.
@@ -320,6 +331,11 @@ pub enum Event {
         id: ClipId,
         /// Number of clips shifted.
         shifted_count: usize,
+    },
+    /// A clip's source window was slipped without changing its timeline span.
+    ClipSlipped {
+        /// Slipped clip identifier.
+        id: ClipId,
     },
 }
 
@@ -640,6 +656,12 @@ impl CommandEngine {
                 clip_id,
                 timeline_start,
             } => move_clip(project, sequence_id, track_id, clip_id, timeline_start),
+            Command::SlipClip {
+                sequence_id,
+                track_id,
+                clip_id,
+                source_delta,
+            } => slip_clip(project, sequence_id, track_id, clip_id, source_delta),
             Command::TrimClip {
                 sequence_id,
                 track_id,
@@ -1074,6 +1096,37 @@ fn move_clip(
         id: clip_id,
         timeline_start,
     })
+}
+
+fn slip_clip(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    track_id: TrackId,
+    clip_id: ClipId,
+    source_delta: RationalTime,
+) -> Result<Event, CommandError> {
+    let track = find_track_mut(project, sequence_id, track_id)?;
+    ensure_track_editable(track)?;
+    let clip = track
+        .clips
+        .iter_mut()
+        .find(|clip| clip.id == clip_id)
+        .ok_or(CommandError::ClipNotFound)?;
+    let source_start =
+        clip.source_start
+            .checked_add(source_delta)
+            .map_err(|_| CommandError::InvalidTime {
+                field: "source_delta",
+                constraint: "representable",
+            })?;
+    if !source_start.is_non_negative() {
+        return Err(CommandError::InvalidTime {
+            field: "source_delta",
+            constraint: "source start must remain non-negative",
+        });
+    }
+    clip.source_start = source_start;
+    Ok(Event::ClipSlipped { id: clip_id })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2112,6 +2165,19 @@ mod tests {
         )?;
         CommandEngine::execute(
             &mut project,
+            Command::SlipClip {
+                sequence_id,
+                track_id,
+                clip_id: left_id,
+                source_delta: RationalTime::new(1, 2)?,
+            },
+        )?;
+        assert_eq!(
+            project.sequences[&sequence_id].tracks[0].clips[0].source_start,
+            RationalTime::new(1, 2)?
+        );
+        CommandEngine::execute(
+            &mut project,
             Command::SplitClip {
                 sequence_id,
                 track_id,
@@ -2123,7 +2189,7 @@ mod tests {
         let clips = &project.sequences[&sequence_id].tracks[0].clips;
         assert_eq!(clips[0].source_duration, two);
         assert_eq!(clips[1].timeline_start, two);
-        assert_eq!(clips[1].source_start, two);
+        assert_eq!(clips[1].source_start, RationalTime::new(5, 2)?);
         assert_eq!(clips[1].source_duration, two);
 
         CommandEngine::execute(
