@@ -333,6 +333,13 @@ mod tests {
 
     #[test]
     fn validation_rejects_unsafe_or_ambiguous_manifests() {
+        assert_eq!(manifest().capability_count(), 2);
+        assert!(!Capability::ProjectRead.is_external());
+        assert!(!Capability::MediaRead.is_external());
+        assert!(Capability::FilesystemRead.is_external());
+        assert!(Capability::FilesystemWrite.is_external());
+        assert!(Capability::NetworkAccess.is_external());
+
         let mut invalid = manifest();
         invalid.id = "../escape".to_owned();
         assert_eq!(invalid.validate(), Err(ManifestError::InvalidId));
