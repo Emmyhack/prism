@@ -899,6 +899,12 @@ pub struct AudioAnalysis {
 }
 
 impl AudioAnalysis {
+    /// Returns whether the analyzed signal contains no measurable amplitude.
+    #[must_use]
+    pub fn is_silent(self) -> bool {
+        self.peak == 0.0 && self.rms == 0.0
+    }
+
     /// Analyzes samples without allocating.
     #[must_use]
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
