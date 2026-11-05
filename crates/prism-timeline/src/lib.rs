@@ -96,6 +96,25 @@ impl RationalTime {
         self.timescale
     }
 
+    /// Returns whether this exact time is zero.
+    #[must_use]
+    pub const fn is_zero(self) -> bool {
+        self.value == 0
+    }
+
+    /// Returns the non-negative absolute value of this time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::Overflow`] for the unrepresentable minimum `i64`
+    /// numerator.
+    pub fn checked_abs(self) -> Result<Self, TimeError> {
+        Self::new(
+            self.value.checked_abs().ok_or(TimeError::Overflow)?,
+            self.timescale,
+        )
+    }
+
     /// Returns whether this time is zero or later.
     #[must_use]
     pub const fn is_non_negative(self) -> bool {
