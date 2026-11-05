@@ -286,6 +286,12 @@ impl WaveformScope {
         }
         Ok(scope)
     }
+
+    /// Returns the total number of samples accumulated across all columns.
+    #[must_use]
+    pub fn sample_count(&self) -> u64 {
+        self.bins.iter().copied().sum()
+    }
 }
 
 /// Deterministic U/V chroma vectorscope for validated SDR RGB samples.
@@ -335,6 +341,12 @@ impl Vectorscope {
             scope.accumulate(pixel)?;
         }
         Ok(scope)
+    }
+
+    /// Returns the total number of samples accumulated in the scope.
+    #[must_use]
+    pub fn sample_count(&self) -> u64 {
+        self.bins.iter().copied().sum()
     }
 }
 
@@ -851,6 +863,7 @@ mod tests {
         )?;
         assert_eq!(scope.width, 2);
         assert_eq!(scope.bins.iter().sum::<u64>(), 4);
+        assert_eq!(scope.sample_count(), 4);
         assert_eq!(scope.bins[0], 1);
         assert_eq!(scope.bins[HISTOGRAM_BINS + 255], 1);
         assert_eq!(
@@ -925,6 +938,7 @@ mod tests {
         let scope =
             Vectorscope::from_pixels(&[Rgb::new(1.0, 0.0, 0.0)?, Rgb::new(0.5, 0.5, 0.5)?])?;
         assert_eq!(scope.bins.iter().sum::<u64>(), 2);
+        assert_eq!(scope.sample_count(), 2);
         let neutral_bin = VECTORSCOPE_BINS / 2;
         assert_eq!(scope.bins[neutral_bin * VECTORSCOPE_BINS + neutral_bin], 1);
         assert_eq!(
