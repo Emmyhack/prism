@@ -355,6 +355,15 @@ impl Vectorscope {
     pub fn sample_count(&self) -> u64 {
         self.bins.iter().copied().sum()
     }
+
+    /// Returns the count for one chroma coordinate, or `None` out of range.
+    #[must_use]
+    pub fn bin_count(&self, u: usize, v: usize) -> Option<u64> {
+        if u >= VECTORSCOPE_BINS || v >= VECTORSCOPE_BINS {
+            return None;
+        }
+        Some(self.bins[u * VECTORSCOPE_BINS + v])
+    }
 }
 
 impl Default for Vectorscope {
@@ -950,6 +959,8 @@ mod tests {
         assert_eq!(scope.sample_count(), 2);
         let neutral_bin = VECTORSCOPE_BINS / 2;
         assert_eq!(scope.bins[neutral_bin * VECTORSCOPE_BINS + neutral_bin], 1);
+        assert_eq!(scope.bin_count(neutral_bin, neutral_bin), Some(1));
+        assert_eq!(scope.bin_count(VECTORSCOPE_BINS, 0), None);
         assert_eq!(
             Vectorscope::from_pixels(&[Rgb {
                 red: f32::NAN,
