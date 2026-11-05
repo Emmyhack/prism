@@ -304,6 +304,14 @@ pub struct MediaAsset {
     pub source_path: String,
 }
 
+impl MediaAsset {
+    /// Returns whether this asset has a non-empty source path.
+    #[must_use]
+    pub fn has_source_path(&self) -> bool {
+        !self.source_path.is_empty()
+    }
+}
+
 /// A timeline sequence.
 #[derive(Clone, Debug)]
 pub struct Sequence {
