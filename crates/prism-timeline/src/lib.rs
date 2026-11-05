@@ -141,6 +141,17 @@ impl RationalTime {
         normalize_wide(numerator, denominator)
     }
 
+    /// Multiplies exact time by an integer factor without floating-point loss.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::Overflow`] when the scaled numerator cannot be
+    /// represented.
+    pub fn checked_mul_i64(self, factor: i64) -> Result<Self, TimeError> {
+        let value = self.value.checked_mul(factor).ok_or(TimeError::Overflow)?;
+        Self::new(value, self.timescale)
+    }
+
     /// Converts this time to integer ticks at `target_timescale` using an
     /// explicit rounding policy.
     ///
@@ -282,6 +293,18 @@ mod tests {
     fn floating_seconds_conversion_is_explicitly_approximate() -> Result<(), TimeError> {
         let time = RationalTime::new(3, 2)?;
         assert!((time.as_seconds_f64() - 1.5).abs() < f64::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn checked_integer_scaling_preserves_exact_time() -> Result<(), TimeError> {
+        let frame = RationalTime::new(1, 30)?;
+        assert_eq!(frame.checked_mul_i64(3)?, RationalTime::new(1, 10)?);
+        assert_eq!(frame.checked_mul_i64(-2)?, RationalTime::new(-1, 15)?);
+        assert_eq!(
+            RationalTime::new(i64::MAX, 1)?.checked_mul_i64(2),
+            Err(TimeError::Overflow)
+        );
         Ok(())
     }
 
