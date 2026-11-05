@@ -551,6 +551,12 @@ impl DecodedVideoFrame {
 }
 
 impl MediaFingerprint {
+    /// Returns the exact byte length captured by the fingerprint.
+    #[must_use]
+    pub const fn byte_length(&self) -> u64 {
+        self.byte_length
+    }
+
     /// Returns the lowercase hexadecimal full-file digest.
     #[must_use]
     pub fn sha256_hex(&self) -> &str {
@@ -1167,6 +1173,7 @@ mod tests {
             byte_length: 6,
         };
         assert_eq!(fingerprint.sha256_hex(), "abc123");
+        assert_eq!(fingerprint.byte_length(), 6);
         let thumbnail = fingerprint.cache_key("thumbnail", "rgba", b"320x180");
         let waveform = fingerprint.cache_key("waveform", "peak-rms", b"48000");
         assert_ne!(thumbnail, waveform);
