@@ -670,6 +670,12 @@ impl ColorAdjustment {
 }
 
 impl Rgb {
+    /// Returns whether all three channels are exactly equal.
+    #[must_use]
+    pub fn is_grayscale(self) -> bool {
+        self.red.to_bits() == self.green.to_bits() && self.green.to_bits() == self.blue.to_bits()
+    }
+
     /// Creates a validated normalized RGB value.
     ///
     /// # Errors
