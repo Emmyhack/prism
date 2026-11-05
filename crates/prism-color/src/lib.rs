@@ -909,6 +909,9 @@ mod tests {
         assert_eq!(scope.sample_count(), 4);
         assert_eq!(scope.column_bins(0).map(<[u64]>::len), Some(256));
         assert!(scope.column_bins(2).is_none());
+        assert_eq!(scope.column_peak(0), Some(128));
+        assert_eq!(scope.column_peak(1), Some(255));
+        assert_eq!(scope.column_peak(2), None);
         assert_eq!(scope.bins[0], 1);
         assert_eq!(scope.bins[HISTOGRAM_BINS + 255], 1);
         assert_eq!(
@@ -988,6 +991,8 @@ mod tests {
         assert_eq!(scope.bins[neutral_bin * VECTORSCOPE_BINS + neutral_bin], 1);
         assert_eq!(scope.bin_count(neutral_bin, neutral_bin), Some(1));
         assert_eq!(scope.bin_count(VECTORSCOPE_BINS, 0), None);
+        assert!(matches!(scope.peak_bin(), Some((_, _, 1))));
+        assert!(Vectorscope::new().peak_bin().is_none());
         assert_eq!(
             Vectorscope::from_pixels(&[Rgb {
                 red: f32::NAN,
