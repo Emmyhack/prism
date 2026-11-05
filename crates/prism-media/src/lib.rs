@@ -1220,6 +1220,18 @@ mod tests {
         };
         assert_eq!(fingerprint.sha256_hex(), "abc123");
         assert_eq!(fingerprint.byte_length(), 6);
+        assert!(fingerprint.same_content(&MediaFingerprint {
+            sha256: "abc123".to_owned(),
+            byte_length: 6,
+        }));
+        assert!(!fingerprint.same_content(&MediaFingerprint {
+            sha256: "abc123".to_owned(),
+            byte_length: 7,
+        }));
+        assert!(!fingerprint.same_content(&MediaFingerprint {
+            sha256: "different".to_owned(),
+            byte_length: 6,
+        }));
         let thumbnail = fingerprint.cache_key("thumbnail", "rgba", b"320x180");
         let waveform = fingerprint.cache_key("waveform", "peak-rms", b"48000");
         assert_ne!(thumbnail, waveform);
