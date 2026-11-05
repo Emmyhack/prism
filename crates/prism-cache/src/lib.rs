@@ -362,6 +362,24 @@ impl CacheLayout {
         Ok(path.is_file().then_some(path))
     }
 
+    /// Reads a finalized cache artifact, returning `None` for a cache miss.
+    ///
+    /// Temporary files and missing entries are treated as misses. The
+    /// extension is still validated before any filesystem access.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheError::InvalidExtension`] for an unsafe extension or
+    /// [`CacheError::Io`] when an existing artifact cannot be read.
+    pub fn read(&self, key: CacheKey, extension: &str) -> Result<Option<Vec<u8>>, CacheError> {
+        let Some(path) = self.lookup(key, extension)? else {
+            return Ok(None);
+        };
+        fs::read(path)
+            .map(Some)
+            .map_err(|error| CacheError::Io(error.to_string()))
+    }
+
     /// Atomically writes a new cache artifact without replacing an existing one.
     ///
     /// Parent directories are created as needed. The temporary file is synced
@@ -532,6 +550,14 @@ mod tests {
         assert_eq!(
             std::fs::read(&path).map_err(|error| CacheError::Io(error.to_string()))?,
             b"first"
+        );
+        assert_eq!(layout.read(key, "bin")?, Some(b"first".to_vec()));
+        assert_eq!(
+            layout.read(
+                CacheKey::from_parts("thumbnail", b"missing", "rgba", b"1"),
+                "bin"
+            )?,
+            None
         );
         assert!(matches!(
             layout.write_atomic(key, "bin", b"second"),
