@@ -29,6 +29,14 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             RationalTime(1, 0)
 
+    def test_rejects_invalid_transaction_envelope_fields(self) -> None:
+        with self.assertRaises(ValueError):
+            TransactionRequest("x", -1, "label", ()).as_dict()
+        with self.assertRaises(TypeError):
+            TransactionRequest("x", 0, "label", []).as_dict()
+        with self.assertRaises(TypeError):
+            TransactionRequest("x", 0, "label", (), dry_run="yes").as_dict()
+
     def test_emits_shared_recipe_request(self) -> None:
         request = RecipeRequest(
             {"id": "prism.example.recipe", "apiVersion": 1},

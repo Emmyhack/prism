@@ -90,5 +90,8 @@ export function splitClip(sequenceId: string, trackId: string, clipId: string, r
 export function deleteClip(sequenceId: string, trackId: string, clipId: string): DeleteClipOperation { return { type: "deleteClip", sequenceId, trackId, clipId }; }
 export function transaction(requestId: string, expectedRevision: number, label: string, operations: readonly Operation[], dryRun = true): TransactionRequest {
   if (!label.trim()) throw new TypeError("label must not be empty");
+  if (!Number.isInteger(expectedRevision) || expectedRevision < 0) throw new TypeError("expectedRevision must be a nonnegative integer");
+  if (!Array.isArray(operations)) throw new TypeError("operations must be an array");
+  if (typeof dryRun !== "boolean") throw new TypeError("dryRun must be a boolean");
   return { requestId, apiVersion: API_VERSION, expectedRevision, label, dryRun, operations };
 }

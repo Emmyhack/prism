@@ -316,6 +316,12 @@ class TransactionRequest:
     def as_dict(self) -> dict[str, Any]:
         if not self.label.strip():
             raise ValueError("label must not be empty")
+        if not isinstance(self.expected_revision, int) or self.expected_revision < 0:
+            raise ValueError("expected_revision must be a nonnegative integer")
+        if not isinstance(self.operations, tuple):
+            raise TypeError("operations must be a tuple")
+        if not isinstance(self.dry_run, bool):
+            raise TypeError("dry_run must be a boolean")
         return {
             "requestId": self.request_id,
             "apiVersion": self.api_version,

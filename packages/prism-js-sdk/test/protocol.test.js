@@ -18,6 +18,12 @@ test("emits the shared exact-time transaction shape", () => {
   assert.deepEqual(request.operations[0].timelineStart, { value: 1, timescale: 8 });
 });
 
+test("rejects invalid transaction envelope fields", () => {
+  assert.throws(() => transaction({ requestId: "x", expectedRevision: -1, label: "x", operations: [] }), /expectedRevision/);
+  assert.throws(() => transaction({ requestId: "x", expectedRevision: 0, label: "x", operations: {} }), /operations/);
+  assert.throws(() => transaction({ requestId: "x", expectedRevision: 0, label: "x", operations: [], dryRun: "yes" }), /dryRun/);
+});
+
 test("rejects invalid timebases", () => {
   assert.throws(() => new RationalTime(1, 0), TypeError);
 });

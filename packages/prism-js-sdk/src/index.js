@@ -142,6 +142,8 @@ export function transaction({ requestId, expectedRevision, label, operations, dr
   if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
     throw new TypeError("expectedRevision must be a nonnegative integer");
   }
+  if (!Array.isArray(operations)) throw new TypeError("operations must be an array");
+  if (typeof dryRun !== "boolean") throw new TypeError("dryRun must be a boolean");
   return {
     requestId,
     apiVersion: API_VERSION,
