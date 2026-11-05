@@ -480,6 +480,33 @@ impl DecodedVideoFrame {
         format!("{:x}", Sha256::digest(&self.rgba))
     }
 
+    /// Returns one RGBA pixel when `(x, y)` is inside the frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError::InvalidFrameDimensions`] or
+    /// [`MediaError::InvalidFrameLength`] when the frame storage is invalid.
+    pub fn pixel(&self, x: u32, y: u32) -> Result<Option<[u8; 4]>, MediaError> {
+        let expected = checked_rgba_length(self.width, self.height)?;
+        if self.rgba.len() != expected {
+            return Err(MediaError::InvalidFrameLength {
+                expected,
+                actual: self.rgba.len(),
+            });
+        }
+        if x >= self.width || y >= self.height {
+            return Ok(None);
+        }
+        let index = usize::try_from((u64::from(y) * u64::from(self.width) + u64::from(x)) * 4)
+            .map_err(|_| MediaError::InvalidFrameDimensions {
+                width: self.width,
+                height: self.height,
+            })?;
+        Ok(Some(
+            self.rgba[index..index + 4].try_into().unwrap_or([0; 4]),
+        ))
+    }
+
     /// Creates a deterministic nearest-neighbor thumbnail in RGBA order.
     ///
     /// This CPU helper is intentionally simple and stable for cache fixtures;
@@ -1114,6 +1141,8 @@ mod tests {
         };
         let thumbnail = frame.thumbnail(1, 1)?;
         assert_eq!(thumbnail.rgba, vec![255, 0, 0, 255]);
+        assert_eq!(frame.pixel(0, 0)?, Some([255, 0, 0, 255]));
+        assert_eq!(frame.pixel(2, 0)?, None);
         let malformed = DecodedVideoFrame {
             rgba: vec![0, 1, 2],
             ..frame
