@@ -86,6 +86,14 @@ pub struct PluginManifest {
     pub capabilities: Vec<Capability>,
 }
 
+impl PluginManifest {
+    /// Returns the number of declared capabilities.
+    #[must_use]
+    pub fn capability_count(&self) -> usize {
+        self.capabilities.len()
+    }
+}
+
 /// Manifest validation failures.
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum ManifestError {
