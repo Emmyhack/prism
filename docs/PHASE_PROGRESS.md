@@ -20,7 +20,8 @@ Remaining acceptance work:
   validation and undo records (slip and rolling edits are now implemented in
   the Rust command engine; slip, rolling, and slide protocol builders are now
   complete, while UI parity remains);
-- connect background media/cache work to user-visible task state;
+- connect background media/cache work to user-visible task state (the Studio
+  summary now exposes locked/muted track and marker state);
 - expose crash-recovery candidates through the Studio workflow;
 - verify the complete import/edit/save/reopen/export workflow with a real media
   fixture on each supported platform.
