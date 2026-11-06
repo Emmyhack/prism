@@ -15,7 +15,9 @@ background cache workers, export presets, and crash-safe persistence helpers.
 Remaining acceptance work:
 
 - expose proxy assignment, switching, invalidation, and relinking in the
-  project model and command API;
+  project model and command API (explicit original/proxy source selection is
+  now implemented as a media-layer primitive; project persistence/commands
+  remain);
 - implement and test slip, slide, and rolling timeline edits with exact-time
   validation and undo records (slip and rolling edits are now implemented in
   the Rust command engine; slip, rolling, and slide protocol builders are now
