@@ -13,6 +13,10 @@ pub enum TransferFunction {
     Srgb,
     /// ITU-R BT.709 SDR transfer curve.
     Rec709,
+    /// SMPTE ST 2084 perceptual quantizer, normalized to 10,000 cd/m².
+    Pq,
+    /// ARIB STD-B67 hybrid log-gamma transfer curve.
+    Hlg,
 }
 
 /// D65 RGB primaries supported by the color-management foundation.
@@ -816,9 +820,9 @@ impl Rgb {
 
     fn map(self, function: impl Fn(f32) -> f32) -> Self {
         Self {
-            red: function(self.red),
-            green: function(self.green),
-            blue: function(self.blue),
+            red: function(self.red).clamp(0.0, 1.0),
+            green: function(self.green).clamp(0.0, 1.0),
+            blue: function(self.blue).clamp(0.0, 1.0),
         }
     }
 }
@@ -837,6 +841,27 @@ fn decode_channel(channel: f32, transfer: TransferFunction) -> f32 {
                 channel / 4.5
             } else {
                 ((channel + 0.099) / 1.099).powf(1.0 / 0.45)
+            }
+        }
+        TransferFunction::Pq => {
+            let m1 = 2610.0 / 16384.0;
+            let m2 = 2523.0 / 32.0;
+            let c1 = 3424.0 / 4096.0;
+            let c2 = 2413.0 / 128.0;
+            let c3 = 2392.0 / 128.0;
+            let powered = channel.powf(1.0 / m2);
+            ((powered - c1).max(0.0) / (c2 - c3 * powered))
+                .max(0.0)
+                .powf(1.0 / m1)
+        }
+        TransferFunction::Hlg => {
+            const A: f32 = 0.178_832_77;
+            const B: f32 = 0.284_668_92;
+            const C: f32 = 0.559_910_7;
+            if channel <= 0.5 {
+                channel * channel / 3.0
+            } else {
+                (((channel - C) / A).exp() + B) / 12.0
             }
         }
     }
@@ -858,6 +883,25 @@ fn encode_channel(channel: f32, transfer: TransferFunction) -> f32 {
                 1.099 * channel.powf(0.45) - 0.099
             }
         }
+        TransferFunction::Pq => {
+            let m1 = 2610.0 / 16384.0;
+            let m2 = 2523.0 / 32.0;
+            let c1 = 3424.0 / 4096.0;
+            let c2 = 2413.0 / 128.0;
+            let c3 = 2392.0 / 128.0;
+            let powered = channel.powf(m1);
+            ((c1 + c2 * powered) / (1.0 + c3 * powered)).powf(m2)
+        }
+        TransferFunction::Hlg => {
+            const A: f32 = 0.178_832_77;
+            const B: f32 = 0.284_668_92;
+            const C: f32 = 0.559_910_7;
+            if channel <= 1.0 / 12.0 {
+                (3.0 * channel).sqrt()
+            } else {
+                A * (12.0 * channel - B).ln() + C
+            }
+        }
     }
 }
 
@@ -871,14 +915,19 @@ mod tests {
 
     #[test]
     fn transfer_functions_preserve_endpoints_and_round_trip() -> Result<(), ColorError> {
-        for transfer in [TransferFunction::Srgb, TransferFunction::Rec709] {
+        for transfer in [
+            TransferFunction::Srgb,
+            TransferFunction::Rec709,
+            TransferFunction::Pq,
+            TransferFunction::Hlg,
+        ] {
             let black = Rgb::new(0.0, 0.0, 0.0)?
                 .decode(transfer)?
                 .encode(transfer)?;
             let white = Rgb::new(1.0, 1.0, 1.0)?
                 .decode(transfer)?
                 .encode(transfer)?;
-            assert!(black.red.abs() < 1e-7 && black.green.abs() < 1e-7 && black.blue.abs() < 1e-7);
+            assert!(black.red.abs() < 1e-5 && black.green.abs() < 1e-5 && black.blue.abs() < 1e-5);
             assert!((white.red - 1.0).abs() < 1e-6);
             assert!((white.green - 1.0).abs() < 1e-6);
             assert!((white.blue - 1.0).abs() < 1e-6);

@@ -52,8 +52,9 @@ graphical Studio scripting workspace remain acceptance gaps.
 Current state: in development.
 
 The color, audio, compositing, and render foundations are functional. D65
-Rec.709, Display P3, and Rec.2020 linear-light primaries conversion is now
-implemented and tested. HDR display transforms, scopes UI, advanced
+Rec.709, Display P3, and Rec.2020 linear-light primaries conversion plus
+normalized PQ and HLG transfer functions are implemented and tested. HDR
+display transforms, scopes UI, advanced
 tracking/retiming, multicamera workflows, and production codec coverage remain
 unimplemented.
 
