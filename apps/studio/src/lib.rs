@@ -114,6 +114,32 @@ pub struct ShortcutBinding {
     pub modifiers: Vec<String>,
 }
 
+/// Resolves a platform-neutral key event against the default shortcut map.
+///
+/// Key and modifier labels are compared case-insensitively. Modifier order is
+/// ignored so native adapters can pass events in their platform-defined order.
+#[must_use]
+pub fn resolve_shortcut(key: &str, modifiers: &[&str]) -> Option<ShortcutAction> {
+    let key = key.trim().to_ascii_lowercase();
+    let mut requested = modifiers
+        .iter()
+        .map(|modifier| modifier.trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    requested.sort();
+    default_shortcuts().into_iter().find_map(|binding| {
+        if binding.key.to_ascii_lowercase() != key {
+            return None;
+        }
+        let mut expected = binding
+            .modifiers
+            .iter()
+            .map(|modifier| modifier.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        expected.sort();
+        (expected == requested).then_some(binding.action)
+    })
+}
+
 /// Returns the default keyboard map shared by Studio and future UI adapters.
 #[must_use]
 pub fn default_shortcuts() -> Vec<ShortcutBinding> {
@@ -267,7 +293,7 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
 mod tests {
     use super::{
         AutosaveSummary, ProjectSummary, ShortcutAction, StudioCommand, StudioError,
-        default_shortcuts, parse,
+        default_shortcuts, parse, resolve_shortcut,
     };
     use std::path::Path;
 
@@ -360,5 +386,18 @@ mod tests {
                 .iter()
                 .any(|binding| binding.action == ShortcutAction::Redo)
         );
+    }
+
+    #[test]
+    fn shortcut_resolution_is_case_and_order_insensitive() {
+        assert_eq!(
+            resolve_shortcut("z", &["Shift", "PRIMARY"]),
+            Some(ShortcutAction::Redo)
+        );
+        assert_eq!(
+            resolve_shortcut(" space ", &[]),
+            Some(ShortcutAction::PlayPause)
+        );
+        assert_eq!(resolve_shortcut("z", &["Shift"]), None);
     }
 }

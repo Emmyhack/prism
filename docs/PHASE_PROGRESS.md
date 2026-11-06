@@ -16,8 +16,9 @@ Remaining acceptance work:
 
 - expose proxy assignment, switching, invalidation, and relinking in the
   project model and command API (proxy paths now persist through schema v5,
-  `SetMediaProxy` and all three SDKs can set/clear validated relinks; proxy
-  generation status, automatic invalidation, and UI switching remain);
+  `SetMediaProxy` and all three SDKs can set/clear validated relinks, and
+  source/proxy freshness is available through the media boundary; automatic
+  generation and graphical switching remain);
 - implement and test slip, slide, and rolling timeline edits with exact-time
   validation and undo records (slip and rolling edits are now implemented in
   the Rust command engine; slip, rolling, and slide protocol builders are now
@@ -26,10 +27,12 @@ Remaining acceptance work:
   worker exposes bounded pending-write state and the Studio summary exposes
   locked/muted track and marker state; graphical task presentation remains
   pending);
-- expose crash-recovery candidates through the Studio workflow;
+- expose crash-recovery candidates through the Studio workflow (implemented
+  through `--list-autosaves` and the stable `AutosaveSummary` boundary);
 - provide a stable default keyboard map for selection, razor, trim, slip,
   slide, rolling, playback, undo, and redo (`--list-shortcuts` exposes the
-  map for UI adapters; graphical dispatch remains pending);
+  map for UI adapters; deterministic event resolution is implemented, while
+  graphical event wiring remains pending);
 - verify the complete import/edit/save/reopen/export workflow with a real media
   fixture on each supported platform (the complete fixture workflow now passes
   on the development macOS host; Windows and Linux verification remain).
