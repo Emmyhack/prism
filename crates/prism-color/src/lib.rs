@@ -1,8 +1,8 @@
 //! Validated SDR transfer-function primitives.
 //!
 //! These functions operate on normalized, non-negative channel values. They
-//! are building blocks for a future color-managed render graph; they do not
-//! implement primaries conversion, HDR metadata, LUTs, or display transforms.
+//! are building blocks for a color-managed render graph; HDR metadata and
+//! display-specific transfer pipelines remain separate concerns.
 
 use thiserror::Error;
 
@@ -13,6 +13,17 @@ pub enum TransferFunction {
     Srgb,
     /// ITU-R BT.709 SDR transfer curve.
     Rec709,
+}
+
+/// D65 RGB primaries supported by the color-management foundation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ColorPrimaries {
+    /// ITU-R BT.709 / sRGB primaries.
+    Rec709,
+    /// Display P3 primaries with a D65 white point.
+    DisplayP3,
+    /// ITU-R BT.2020 primaries.
+    Rec2020,
 }
 
 /// A normalized RGB triplet.
@@ -50,6 +61,84 @@ pub enum ColorError {
     /// A LUT had too few samples or contained an invalid value.
     #[error("LUT must contain at least two normalized finite samples")]
     InvalidLut,
+}
+
+/// Converts a linear-light RGB value between D65 working spaces.
+///
+/// Matrix conversion is followed by deterministic `[0, 1]` gamut clipping so
+/// the result remains representable by [`Rgb`]. Callers that need scene-linear
+/// values outside that display range should use a wider-float frame type.
+///
+/// # Errors
+///
+/// Returns [`ColorError::NonFinite`] or [`ColorError::OutOfRange`] when the
+/// input is not a normalized RGB value.
+pub fn convert_linear(
+    value: Rgb,
+    source: ColorPrimaries,
+    destination: ColorPrimaries,
+) -> Result<Rgb, ColorError> {
+    value.validate()?;
+    if source == destination {
+        return Ok(value);
+    }
+    let xyz = multiply(primary_matrix(source), [value.red, value.green, value.blue]);
+    let rgb = multiply(inverse_primary_matrix(destination), xyz);
+    Rgb::new(
+        rgb[0].clamp(0.0, 1.0),
+        rgb[1].clamp(0.0, 1.0),
+        rgb[2].clamp(0.0, 1.0),
+    )
+}
+
+fn multiply(matrix: [[f32; 3]; 3], vector: [f32; 3]) -> [f32; 3] {
+    [
+        matrix[0][0] * vector[0] + matrix[0][1] * vector[1] + matrix[0][2] * vector[2],
+        matrix[1][0] * vector[0] + matrix[1][1] * vector[1] + matrix[1][2] * vector[2],
+        matrix[2][0] * vector[0] + matrix[2][1] * vector[1] + matrix[2][2] * vector[2],
+    ]
+}
+
+#[allow(clippy::excessive_precision, clippy::unreadable_literal)]
+fn primary_matrix(primaries: ColorPrimaries) -> [[f32; 3]; 3] {
+    match primaries {
+        ColorPrimaries::Rec709 => [
+            [0.4123908, 0.3575843, 0.1804808],
+            [0.2126390, 0.7151687, 0.0721923],
+            [0.0193308, 0.1191948, 0.9505322],
+        ],
+        ColorPrimaries::DisplayP3 => [
+            [0.48657095, 0.26566769, 0.19821729],
+            [0.22897456, 0.69173852, 0.07928691],
+            [0.0, 0.04511338, 1.04394437],
+        ],
+        ColorPrimaries::Rec2020 => [
+            [0.63695805, 0.14461690, 0.16888097],
+            [0.26270021, 0.67799807, 0.05930172],
+            [0.0, 0.02807269, 1.06098506],
+        ],
+    }
+}
+
+#[allow(clippy::excessive_precision, clippy::unreadable_literal)]
+fn inverse_primary_matrix(primaries: ColorPrimaries) -> [[f32; 3]; 3] {
+    match primaries {
+        ColorPrimaries::Rec709 => [
+            [3.24096994, -1.53738318, -0.49861076],
+            [-0.96924364, 1.8759675, 0.04155506],
+            [0.05563008, -0.20397696, 1.05697151],
+        ],
+        ColorPrimaries::DisplayP3 => [
+            [2.49349691, -0.93138362, -0.40271078],
+            [-0.82948897, 1.76266406, 0.02362469],
+            [0.03584583, -0.07617239, 0.95688452],
+        ],
+        ColorPrimaries::Rec2020 => [
+            [1.71665119, -0.35567078, -0.25336628],
+            [-0.66668435, 1.61648124, 0.01576855],
+            [0.01763986, -0.04277061, 0.94210312],
+        ],
+    }
 }
 
 /// Number of bins in the normalized RGB histogram scope.
@@ -775,8 +864,9 @@ fn encode_channel(channel: f32, transfer: TransferFunction) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ColorAdjustment, ColorError, HISTOGRAM_BINS, LumaHistogram, Lut1d, Lut3d, Rgb,
-        RgbHistogram, RgbLut, TransferFunction, VECTORSCOPE_BINS, Vectorscope, WaveformScope,
+        ColorAdjustment, ColorError, ColorPrimaries, HISTOGRAM_BINS, LumaHistogram, Lut1d, Lut3d,
+        Rgb, RgbHistogram, RgbLut, TransferFunction, VECTORSCOPE_BINS, Vectorscope, WaveformScope,
+        convert_linear,
     };
 
     #[test]
@@ -807,6 +897,38 @@ mod tests {
         assert_eq!(Rgb::new(f32::NAN, 0.0, 0.0), Err(ColorError::NonFinite));
         assert_eq!(Rgb::new(1.1, 0.0, 0.0), Err(ColorError::OutOfRange));
         assert_eq!(Rgb::new(0.0, -0.1, 0.0), Err(ColorError::OutOfRange));
+    }
+
+    #[test]
+    fn primaries_conversion_round_trips_neutral_and_validates_input() -> Result<(), ColorError> {
+        let source = Rgb::new(0.18, 0.5, 0.82)?;
+        for destination in [ColorPrimaries::DisplayP3, ColorPrimaries::Rec2020] {
+            let converted = convert_linear(source, ColorPrimaries::Rec709, destination)?;
+            let round_trip = convert_linear(converted, destination, ColorPrimaries::Rec709)?;
+            assert!((round_trip.red - source.red).abs() < 2e-4);
+            assert!((round_trip.green - source.green).abs() < 2e-4);
+            assert!((round_trip.blue - source.blue).abs() < 2e-4);
+        }
+        let neutral = convert_linear(
+            Rgb::new(0.5, 0.5, 0.5)?,
+            ColorPrimaries::Rec709,
+            ColorPrimaries::DisplayP3,
+        )?;
+        assert!((neutral.red - neutral.green).abs() < 2e-4);
+        assert!((neutral.green - neutral.blue).abs() < 2e-4);
+        assert_eq!(
+            convert_linear(
+                Rgb {
+                    red: f32::NAN,
+                    green: 0.0,
+                    blue: 0.0,
+                },
+                ColorPrimaries::Rec709,
+                ColorPrimaries::Rec2020,
+            ),
+            Err(ColorError::NonFinite)
+        );
+        Ok(())
     }
 
     #[test]
