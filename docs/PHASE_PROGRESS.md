@@ -15,9 +15,9 @@ background cache workers, export presets, and crash-safe persistence helpers.
 Remaining acceptance work:
 
 - expose proxy assignment, switching, invalidation, and relinking in the
-  project model and command API (proxy paths now persist through schema v5 and
-  `SetMediaProxy` can set/clear validated relinks; proxy generation status,
-  automatic invalidation, and UI switching remain);
+  project model and command API (proxy paths now persist through schema v5,
+  `SetMediaProxy` and all three SDKs can set/clear validated relinks; proxy
+  generation status, automatic invalidation, and UI switching remain);
 - implement and test slip, slide, and rolling timeline edits with exact-time
   validation and undo records (slip and rolling edits are now implemented in
   the Rust command engine; slip, rolling, and slide protocol builders are now
