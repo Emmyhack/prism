@@ -17,9 +17,9 @@ Remaining acceptance work:
 - expose proxy assignment, switching, invalidation, and relinking in the
   project model and command API;
 - implement and test slip, slide, and rolling timeline edits with exact-time
-  validation and undo records (slip is now implemented in the Rust command
-  engine and Python/JavaScript/TypeScript protocol builders; UI parity and
-  slide/rolling edits remain);
+  validation and undo records (slip and rolling edits are now implemented in
+  the Rust command engine; slip protocol builders are complete, while rolling
+  protocol/UI parity and slide edits remain);
 - connect background media/cache work to user-visible task state;
 - expose crash-recovery candidates through the Studio workflow;
 - verify the complete import/edit/save/reopen/export workflow with a real media
