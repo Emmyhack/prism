@@ -282,6 +282,17 @@ pub enum MediaSourceSelection {
     Proxy,
 }
 
+/// Current validity of a relinked proxy against its source media.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProxyStatus {
+    /// No proxy path is configured or the configured file is missing.
+    Missing,
+    /// The proxy exists and has the same fingerprint as the source.
+    Available,
+    /// The proxy exists but no longer matches the source fingerprint.
+    Stale,
+}
+
 /// Selects a source path without silently falling back from proxy mode.
 ///
 /// # Errors
@@ -297,6 +308,36 @@ pub fn select_media_source<'a>(
         MediaSourceSelection::Original => Ok(original),
         MediaSourceSelection::Proxy => proxy.ok_or(MediaError::ProxyUnavailable),
     }
+}
+
+/// Compares a configured proxy with its source fingerprint.
+///
+/// # Errors
+///
+/// Returns [`MediaError::InvalidProxySource`] when the source is not a regular
+/// file, or an I/O error while fingerprinting either regular file.
+pub fn proxy_status(
+    source: &Path,
+    proxy: Option<&Path>,
+    recorded_source: Option<&MediaFingerprint>,
+) -> Result<ProxyStatus, MediaError> {
+    if !source.is_file() {
+        return Err(MediaError::InvalidProxySource(source.to_path_buf()));
+    }
+    let Some(proxy) = proxy else {
+        return Ok(ProxyStatus::Missing);
+    };
+    if !proxy.is_file() {
+        return Ok(ProxyStatus::Missing);
+    }
+    let Some(recorded_source) = recorded_source else {
+        return Ok(ProxyStatus::Stale);
+    };
+    Ok(if fingerprint(source)?.same_content(recorded_source) {
+        ProxyStatus::Available
+    } else {
+        ProxyStatus::Stale
+    })
 }
 
 /// Explicit `FFmpeg` proxy generator.
@@ -1130,11 +1171,12 @@ mod tests {
     use super::{
         DecodedVideoFrame, FfmpegProxyGenerator, FrameRateEvidence, MediaError, MediaFingerprint,
         MediaMetadata, MediaSourceSelection, PacketTimingEvidence, ProbeOutput, ProbePacket,
-        ProxyProfile, ProxyRequest, StreamKind, analyze_packet_timing, checked_rgba_length,
-        format_seek_timestamp, parse_decimal_time, select_media_source,
+        ProxyProfile, ProxyRequest, ProxyStatus, StreamKind, analyze_packet_timing,
+        checked_rgba_length, fingerprint, format_seek_timestamp, parse_decimal_time, proxy_status,
+        select_media_source,
     };
     use prism_timeline::RationalTime;
-    use std::path::Path;
+    use std::{fs, path::Path};
 
     #[test]
     fn parses_probe_json_without_float_time() -> Result<(), Box<dyn std::error::Error>> {
@@ -1311,6 +1353,37 @@ mod tests {
             select_media_source(original, None, MediaSourceSelection::Proxy),
             Err(MediaError::ProxyUnavailable)
         ));
+    }
+
+    #[test]
+    fn proxy_status_uses_recorded_source_fingerprint() -> Result<(), Box<dyn std::error::Error>> {
+        let directory =
+            std::env::temp_dir().join(format!("prism-proxy-status-{}", std::process::id()));
+        fs::create_dir_all(&directory)?;
+        let source = directory.join("source.mp4");
+        let proxy = directory.join("proxy.mp4");
+        fs::write(&source, b"source")?;
+        fs::write(&proxy, b"proxy")?;
+        let recorded = fingerprint(&source)?;
+        assert_eq!(
+            proxy_status(&source, None, Some(&recorded))?,
+            ProxyStatus::Missing
+        );
+        assert_eq!(
+            proxy_status(&source, Some(&proxy), Some(&recorded))?,
+            ProxyStatus::Available
+        );
+        fs::write(&source, b"changed")?;
+        assert_eq!(
+            proxy_status(&source, Some(&proxy), Some(&recorded))?,
+            ProxyStatus::Stale
+        );
+        assert_eq!(
+            proxy_status(&source, Some(&proxy), None)?,
+            ProxyStatus::Stale
+        );
+        fs::remove_dir_all(directory)?;
+        Ok(())
     }
 
     #[cfg(unix)]
