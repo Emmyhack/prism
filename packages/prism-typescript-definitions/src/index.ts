@@ -16,7 +16,7 @@ export interface RecipeRequest {
 
 export interface RationalTime { readonly value: number; readonly timescale: number; }
 export type Operation =
-  | ImportMediaOperation | CreateSequenceOperation | CreateTrackOperation | SetTrackLockedOperation | SetTrackVisibleOperation | SetTrackMutedOperation | ReorderTrackOperation | InsertClipOperation
+  | ImportMediaOperation | SetMediaProxyOperation | CreateSequenceOperation | CreateTrackOperation | SetTrackLockedOperation | SetTrackVisibleOperation | SetTrackMutedOperation | ReorderTrackOperation | InsertClipOperation
   | MoveClipOperation | SlipClipOperation | RollEditOperation | SlideEditOperation | TrimClipOperation | SplitClipOperation | DeleteClipOperation | AddMarkerOperation | DeleteMarkerOperation | DuplicateClipOperation | RippleDeleteOperation | AddTransitionOperation | DeleteTransitionOperation;
 export interface AddMarkerOperation { readonly type: "addMarker"; readonly sequenceId: string; readonly id: string; readonly time: RationalTime; readonly label: string; }
 export interface DeleteMarkerOperation { readonly type: "deleteMarker"; readonly sequenceId: string; readonly markerId: string; }
@@ -25,6 +25,7 @@ export interface RippleDeleteOperation { readonly type: "rippleDelete"; readonly
 export interface AddTransitionOperation { readonly type: "addTransition"; readonly sequenceId: string; readonly id: string; readonly outgoingClip: string; readonly incomingClip: string; readonly duration: RationalTime; readonly kind: "dissolve"; }
 export interface DeleteTransitionOperation { readonly type: "deleteTransition"; readonly sequenceId: string; readonly transitionId: string; }
 export interface ImportMediaOperation { readonly type: "importMedia"; readonly id: string; readonly sourcePath: string; }
+export interface SetMediaProxyOperation { readonly type: "setMediaProxy"; readonly mediaId: string; readonly proxyPath: string | null; }
 export interface CreateSequenceOperation { readonly type: "createSequence"; readonly id: string; readonly name: string; }
 export interface CreateTrackOperation { readonly type: "createTrack"; readonly sequenceId: string; readonly id: string; readonly kind: "video" | "audio"; }
 export interface SetTrackLockedOperation { readonly type: "setTrackLocked"; readonly sequenceId: string; readonly trackId: string; readonly locked: boolean; }
@@ -51,6 +52,10 @@ export function rationalTime(value: number, timescale: number): RationalTime {
   return { value, timescale };
 }
 export function importMedia(id: string, sourcePath: string): ImportMediaOperation { return { type: "importMedia", id, sourcePath }; }
+export function setMediaProxy(mediaId: string, proxyPath: string | null): SetMediaProxyOperation {
+  if (proxyPath !== null && !proxyPath.trim()) throw new TypeError("proxyPath must not be empty");
+  return { type: "setMediaProxy", mediaId, proxyPath };
+}
 export function createSequence(id: string, name: string): CreateSequenceOperation { return { type: "createSequence", id, name }; }
 export function createTrack(sequenceId: string, id: string, kind: "video" | "audio"): CreateTrackOperation { return { type: "createTrack", sequenceId, id, kind }; }
 export function setTrackLocked(sequenceId: string, trackId: string, locked: boolean): SetTrackLockedOperation {

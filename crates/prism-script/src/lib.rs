@@ -614,6 +614,13 @@ pub enum Operation {
         /// User-authorized source path.
         source_path: String,
     },
+    /// Sets or clears a media proxy relink.
+    SetMediaProxy {
+        /// Asset to update.
+        media_id: Uuid,
+        /// New proxy path, or `None` to clear it.
+        proxy_path: Option<String>,
+    },
     /// Create an empty sequence.
     CreateSequence {
         /// Stable identifier encoded as a UUID.
@@ -975,6 +982,13 @@ impl Operation {
             Self::ImportMedia { id, source_path } => Command::ImportMedia {
                 id: MediaAssetId::from_uuid(id),
                 source_path,
+            },
+            Self::SetMediaProxy {
+                media_id,
+                proxy_path,
+            } => Command::SetMediaProxy {
+                media_id: MediaAssetId::from_uuid(media_id),
+                proxy_path,
             },
             Self::CreateSequence { id, name } => Command::CreateSequence {
                 id: SequenceId::from_uuid(id),

@@ -1,11 +1,11 @@
 """Small, protocol-first Python authoring SDK for Prism."""
 
 from .protocol import (
-    AddMarker, AddTransition, CreateSequence, CreateTrack, DeleteClip, DeleteMarker, DeleteTransition, DuplicateClip, ImportMedia, InsertClip, MoveClip,
+    AddMarker, AddTransition, CreateSequence, CreateTrack, DeleteClip, DeleteMarker, DeleteTransition, DuplicateClip, ImportMedia, InsertClip, MoveClip, SetMediaProxy,
     RationalTime, RecipeRequest, ReorderTrack, RippleDelete, RollEdit, SetTrackLocked, SetTrackMuted, SetTrackVisible, SlideEdit, SlipClip, SplitClip, TransactionRequest, TrimClip,
 )
 
 __all__ = [
-    "AddMarker", "AddTransition", "CreateSequence", "CreateTrack", "DeleteClip", "DeleteMarker", "DeleteTransition", "DuplicateClip", "ImportMedia", "InsertClip",
+    "AddMarker", "AddTransition", "CreateSequence", "CreateTrack", "DeleteClip", "DeleteMarker", "DeleteTransition", "DuplicateClip", "ImportMedia", "InsertClip", "SetMediaProxy",
     "MoveClip", "RationalTime", "RecipeRequest", "ReorderTrack", "RippleDelete", "RollEdit", "SetTrackLocked", "SetTrackMuted", "SetTrackVisible", "SlideEdit", "SlipClip", "SplitClip", "TransactionRequest", "TrimClip",
 ]

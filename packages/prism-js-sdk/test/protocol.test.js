@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RationalTime, addMarker, addTransition, createSequence, createTrack, deleteClip, deleteMarker, deleteTransition, duplicateClip, importMedia, insertClip, moveClip, recipeRequest, reorderTrack, rippleDelete, rollEdit, setTrackLocked, setTrackMuted, setTrackVisible, slideEdit, slipClip, splitClip, transaction, trimClip } from "../src/index.js";
+import { RationalTime, addMarker, addTransition, createSequence, createTrack, deleteClip, deleteMarker, deleteTransition, duplicateClip, importMedia, insertClip, moveClip, recipeRequest, reorderTrack, rippleDelete, rollEdit, setMediaProxy, setTrackLocked, setTrackMuted, setTrackVisible, slideEdit, slipClip, splitClip, transaction, trimClip } from "../src/index.js";
 
 test("emits the shared exact-time transaction shape", () => {
   const request = transaction({
@@ -57,6 +57,8 @@ test("emits project-building operations", () => {
   assert.equal(createSequence({ id: "s", name: "Main" }).type, "createSequence");
   assert.equal(createTrack({ sequenceId: "s", id: "t", kind: "video" }).kind, "video");
   assert.equal(insertClip({ sequenceId: "s", trackId: "t", id: "c", mediaId: "m", timelineStart: time, sourceStart: time, sourceDuration: new RationalTime(1, 1) }).type, "insertClip");
+  assert.deepEqual(setMediaProxy({ mediaId: "m", proxyPath: "proxy.mp4" }), { type: "setMediaProxy", mediaId: "m", proxyPath: "proxy.mp4" });
+  assert.deepEqual(setMediaProxy({ mediaId: "m", proxyPath: null }), { type: "setMediaProxy", mediaId: "m", proxyPath: null });
 });
 
 test("emits track lock operations", () => {

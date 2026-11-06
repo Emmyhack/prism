@@ -16,6 +16,12 @@ export function importMedia({ id, sourcePath }) {
   return { type: "importMedia", id, sourcePath };
 }
 
+export function setMediaProxy({ mediaId, proxyPath }) {
+  if (proxyPath !== null && typeof proxyPath !== "string") throw new TypeError("proxyPath must be a string or null");
+  if (typeof proxyPath === "string" && !proxyPath.trim()) throw new TypeError("proxyPath must not be empty");
+  return { type: "setMediaProxy", mediaId, proxyPath };
+}
+
 export function createSequence({ id, name }) {
   return { type: "createSequence", id, name };
 }

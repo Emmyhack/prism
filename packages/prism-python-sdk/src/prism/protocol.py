@@ -41,6 +41,17 @@ class ImportMedia:
 
 
 @dataclass(frozen=True)
+class SetMediaProxy:
+    media_id: str
+    proxy_path: str | None
+
+    def as_dict(self) -> dict[str, Any]:
+        if self.proxy_path is not None and not self.proxy_path.strip():
+            raise ValueError("proxy_path must not be empty")
+        return {"type": "setMediaProxy", "mediaId": self.media_id, "proxyPath": self.proxy_path}
+
+
+@dataclass(frozen=True)
 class CreateSequence:
     id: str
     name: str

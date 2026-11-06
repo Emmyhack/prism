@@ -1,7 +1,7 @@
 import unittest
 
 from prism import (
-    AddMarker, AddTransition, CreateSequence, CreateTrack, DeleteClip, DeleteMarker, DeleteTransition, DuplicateClip, ImportMedia, InsertClip, MoveClip,
+    AddMarker, AddTransition, CreateSequence, CreateTrack, DeleteClip, DeleteMarker, DeleteTransition, DuplicateClip, ImportMedia, InsertClip, MoveClip, SetMediaProxy,
     RationalTime, RecipeRequest, ReorderTrack, RippleDelete, RollEdit, SetTrackLocked, SetTrackMuted, SetTrackVisible, SlideEdit, SlipClip, SplitClip, TransactionRequest, TrimClip,
 )
 
@@ -82,6 +82,8 @@ class ProtocolTests(unittest.TestCase):
             InsertClip("s", "t", "c", "m", time, time, RationalTime(1, 1)).as_dict()["type"],
             "insertClip",
         )
+        self.assertEqual(SetMediaProxy("m", "proxy.mp4").as_dict()["proxyPath"], "proxy.mp4")
+        self.assertIsNone(SetMediaProxy("m", None).as_dict()["proxyPath"])
 
     def test_emits_track_lock_operation(self) -> None:
         self.assertEqual(
