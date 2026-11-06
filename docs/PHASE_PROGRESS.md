@@ -42,9 +42,10 @@ Remaining acceptance work:
 Current state: in development.
 
 The shared protocol, bounded worker host, SDK builders, transaction validation,
-and Studio script catalog/diagnostics boundary are implemented. Runtime
-packaging, graphical permissions UI, interactive debugging, and the graphical
-Studio scripting workspace remain acceptance gaps.
+Studio script catalog/diagnostics boundary, and normalized permission review
+boundary are implemented. Runtime packaging, graphical permissions UI,
+interactive debugging, and the graphical Studio scripting workspace remain
+acceptance gaps.
 
 ## Phase 4 — advanced professional processing
 

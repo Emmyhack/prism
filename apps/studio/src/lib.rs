@@ -39,6 +39,11 @@ pub enum StudioCommand {
         /// Script file to inspect.
         script: PathBuf,
     },
+    /// Inspect a script permission sidecar.
+    InspectPermissions {
+        /// Permission manifest JSON file.
+        permissions: PathBuf,
+    },
 }
 
 /// Structured shell failures.
@@ -156,6 +161,18 @@ pub struct ScriptSummary {
     pub line_count: usize,
 }
 
+/// Normalized permission review data for a script workspace.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionSummary {
+    /// Capabilities requested by the script.
+    pub requested: Vec<String>,
+    /// Capabilities granted by the host.
+    pub granted: Vec<String>,
+    /// Requested capabilities not granted by the host.
+    pub denied: Vec<String>,
+}
+
 fn script_language(path: &Path) -> Option<ScriptLanguage> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "py" => Some(ScriptLanguage::Python),
@@ -201,6 +218,41 @@ pub fn list_scripts(directory: impl AsRef<Path>) -> Result<Vec<ScriptSummary>, S
         .collect::<Vec<_>>();
     paths.sort();
     paths.into_iter().map(inspect_script).collect()
+}
+
+/// Reads and normalizes a requested/granted permission sidecar.
+///
+/// # Errors
+///
+/// Returns a JSON error for malformed manifests or an I/O error when the file
+/// cannot be read.
+pub fn inspect_permissions(path: impl AsRef<Path>) -> Result<PermissionSummary, StudioError> {
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
+    let values = |field: &str| -> Result<Vec<String>, StudioError> {
+        let entries = value
+            .get(field)
+            .and_then(serde_json::Value::as_array)
+            .ok_or(StudioError::Usage)?;
+        let mut output = entries
+            .iter()
+            .map(|entry| entry.as_str().map(str::to_owned).ok_or(StudioError::Usage))
+            .collect::<Result<Vec<_>, _>>()?;
+        output.sort();
+        output.dedup();
+        Ok(output)
+    };
+    let requested = values("requested")?;
+    let granted = values("granted")?;
+    let denied = requested
+        .iter()
+        .filter(|permission| granted.binary_search(permission).is_err())
+        .cloned()
+        .collect();
+    Ok(PermissionSummary {
+        requested,
+        granted,
+        denied,
+    })
 }
 
 /// Resolves a platform-neutral key event against the default shortcut map.
@@ -323,6 +375,11 @@ where
                 script: PathBuf::from(script),
             })
         }
+        [permissions_flag, permissions] if permissions_flag == "--inspect-permissions" => {
+            Ok(StudioCommand::InspectPermissions {
+                permissions: PathBuf::from(permissions),
+            })
+        }
         _ => Err(StudioError::Usage),
     }
 }
@@ -391,6 +448,9 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
         StudioCommand::InspectScript { script } => Ok(Some(serde_json::to_string_pretty(
             &inspect_script(script)?,
         )?)),
+        StudioCommand::InspectPermissions { permissions } => Ok(Some(
+            serde_json::to_string_pretty(&inspect_permissions(permissions)?)?,
+        )),
     }
 }
 
@@ -398,7 +458,8 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
 mod tests {
     use super::{
         AutosaveSummary, ProjectSummary, ScriptLanguage, ShortcutAction, StudioCommand,
-        StudioError, default_shortcuts, inspect_script, list_scripts, parse, resolve_shortcut,
+        StudioError, default_shortcuts, inspect_permissions, inspect_script, list_scripts, parse,
+        resolve_shortcut,
     };
     use std::path::Path;
 
@@ -423,6 +484,10 @@ mod tests {
         assert!(matches!(
             parse(vec!["--list-scripts".to_owned(), "scripts".to_owned()]),
             Ok(StudioCommand::ListScripts { directory }) if directory == Path::new("scripts")
+        ));
+        assert!(matches!(
+            parse(vec!["--inspect-permissions".to_owned(), "permissions.json".to_owned()]),
+            Ok(StudioCommand::InspectPermissions { permissions }) if permissions == Path::new("permissions.json")
         ));
     }
 
@@ -531,6 +596,22 @@ mod tests {
         assert_eq!(scripts[1].language, ScriptLanguage::TypeScript);
         assert_eq!(inspect_script(root.join("a.py"))?.line_count, 2);
         std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn permission_review_reports_denied_capabilities() -> Result<(), Box<dyn std::error::Error>> {
+        let path =
+            std::env::temp_dir().join(format!("prism-studio-permissions-{}", std::process::id()));
+        std::fs::write(
+            &path,
+            r#"{"requested":["project.write","media.read","project.write"],"granted":["media.read"]}"#,
+        )?;
+        let summary = inspect_permissions(&path)?;
+        assert_eq!(summary.requested, vec!["media.read", "project.write"]);
+        assert_eq!(summary.granted, vec!["media.read"]);
+        assert_eq!(summary.denied, vec!["project.write"]);
+        std::fs::remove_file(path)?;
         Ok(())
     }
 }
