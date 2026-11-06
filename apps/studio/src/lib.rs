@@ -53,6 +53,12 @@ pub struct ProjectSummary {
     pub track_count: usize,
     /// Number of clips across all tracks.
     pub clip_count: usize,
+    /// Number of locked tracks across all sequences.
+    pub locked_track_count: usize,
+    /// Number of muted tracks across all sequences.
+    pub muted_track_count: usize,
+    /// Number of sequence markers.
+    pub marker_count: usize,
 }
 
 /// Parses one Studio shell invocation.
@@ -102,6 +108,23 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
                     .flat_map(|sequence| sequence.tracks.iter())
                     .map(|track| track.clips.len())
                     .sum(),
+                locked_track_count: project
+                    .sequences
+                    .values()
+                    .flat_map(|sequence| sequence.tracks.iter())
+                    .filter(|track| track.locked)
+                    .count(),
+                muted_track_count: project
+                    .sequences
+                    .values()
+                    .flat_map(|sequence| sequence.tracks.iter())
+                    .filter(|track| track.muted)
+                    .count(),
+                marker_count: project
+                    .sequences
+                    .values()
+                    .map(|sequence| sequence.markers.len())
+                    .sum(),
             };
             Ok(Some(serde_json::to_string_pretty(&summary)?))
         }
@@ -110,7 +133,7 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{StudioCommand, StudioError, parse};
+    use super::{ProjectSummary, StudioCommand, StudioError, parse};
     use std::path::Path;
 
     #[test]
@@ -131,5 +154,26 @@ mod tests {
             parse(vec!["--unknown".to_owned()]),
             Err(StudioError::Usage)
         ));
+    }
+
+    #[test]
+    fn summary_exposes_timeline_state_for_ui_consumers() -> Result<(), serde_json::Error> {
+        let summary = ProjectSummary {
+            id: "project".to_owned(),
+            name: "Main".to_owned(),
+            revision: 3,
+            media_count: 1,
+            sequence_count: 1,
+            track_count: 2,
+            clip_count: 4,
+            locked_track_count: 1,
+            muted_track_count: 1,
+            marker_count: 2,
+        };
+        let json = serde_json::to_string(&summary)?;
+        assert!(json.contains("lockedTrackCount"));
+        assert!(json.contains("mutedTrackCount"));
+        assert!(json.contains("markerCount"));
+        Ok(())
     }
 }
