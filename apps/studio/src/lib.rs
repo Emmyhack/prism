@@ -6,7 +6,10 @@
 
 use prism_persistence::{AutosaveCandidate, PersistenceError, list_autosaves, load};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use thiserror::Error;
 
 /// Parsed Studio shell invocation.
@@ -26,6 +29,16 @@ pub enum StudioCommand {
     },
     /// Print the stable default keyboard bindings.
     ListShortcuts,
+    /// List supported scripts in a directory.
+    ListScripts {
+        /// Directory containing script files.
+        directory: PathBuf,
+    },
+    /// Inspect one supported script file.
+    InspectScript {
+        /// Script file to inspect.
+        script: PathBuf,
+    },
 }
 
 /// Structured shell failures.
@@ -40,6 +53,9 @@ pub enum StudioError {
     /// Summary serialization failed.
     #[error("could not serialize project summary: {0}")]
     Json(#[from] serde_json::Error),
+    /// Script catalog filesystem access failed.
+    #[error("could not inspect script catalog: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 /// Stable, UI-independent project summary exposed to the shell and future UI.
@@ -112,6 +128,79 @@ pub struct ShortcutBinding {
     pub key: String,
     /// Required modifier labels.
     pub modifiers: Vec<String>,
+}
+
+/// Supported authoring languages in the Studio script catalog.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScriptLanguage {
+    /// Python source.
+    Python,
+    /// JavaScript source.
+    JavaScript,
+    /// TypeScript source.
+    TypeScript,
+}
+
+/// Stable metadata surfaced to a script browser and diagnostics panel.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptSummary {
+    /// Script path.
+    pub path: PathBuf,
+    /// Inferred source language.
+    pub language: ScriptLanguage,
+    /// Source size in bytes.
+    pub byte_count: usize,
+    /// Number of source lines.
+    pub line_count: usize,
+}
+
+fn script_language(path: &Path) -> Option<ScriptLanguage> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "py" => Some(ScriptLanguage::Python),
+        "js" | "mjs" | "cjs" => Some(ScriptLanguage::JavaScript),
+        "ts" | "mts" | "cts" => Some(ScriptLanguage::TypeScript),
+        _ => None,
+    }
+}
+
+/// Reads one script and returns stable metadata for workspace consumers.
+///
+/// # Errors
+///
+/// Returns [`StudioError::Usage`] for unsupported extensions or an I/O error
+/// when the file cannot be read.
+pub fn inspect_script(path: impl AsRef<Path>) -> Result<ScriptSummary, StudioError> {
+    let path = path.as_ref();
+    let language = script_language(path).ok_or(StudioError::Usage)?;
+    let source = fs::read(path)?;
+    Ok(ScriptSummary {
+        path: path.to_owned(),
+        language,
+        byte_count: source.len(),
+        line_count: if source.is_empty() {
+            0
+        } else {
+            source.split(|byte| *byte == b'\n').count()
+        },
+    })
+}
+
+/// Enumerates supported scripts in one directory in deterministic path order.
+///
+/// # Errors
+///
+/// Returns an I/O error when the directory or one of its supported scripts
+/// cannot be read.
+pub fn list_scripts(directory: impl AsRef<Path>) -> Result<Vec<ScriptSummary>, StudioError> {
+    let mut paths = fs::read_dir(directory.as_ref())?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && script_language(path).is_some())
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.into_iter().map(inspect_script).collect()
 }
 
 /// Resolves a platform-neutral key event against the default shortcut map.
@@ -224,6 +313,16 @@ where
         [shortcuts_flag] if shortcuts_flag == "--list-shortcuts" => {
             Ok(StudioCommand::ListShortcuts)
         }
+        [scripts_flag, directory] if scripts_flag == "--list-scripts" => {
+            Ok(StudioCommand::ListScripts {
+                directory: PathBuf::from(directory),
+            })
+        }
+        [script_flag, script] if script_flag == "--inspect-script" => {
+            Ok(StudioCommand::InspectScript {
+                script: PathBuf::from(script),
+            })
+        }
         _ => Err(StudioError::Usage),
     }
 }
@@ -286,14 +385,20 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
         StudioCommand::ListShortcuts => {
             Ok(Some(serde_json::to_string_pretty(&default_shortcuts())?))
         }
+        StudioCommand::ListScripts { directory } => Ok(Some(serde_json::to_string_pretty(
+            &list_scripts(directory)?,
+        )?)),
+        StudioCommand::InspectScript { script } => Ok(Some(serde_json::to_string_pretty(
+            &inspect_script(script)?,
+        )?)),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        AutosaveSummary, ProjectSummary, ShortcutAction, StudioCommand, StudioError,
-        default_shortcuts, parse, resolve_shortcut,
+        AutosaveSummary, ProjectSummary, ScriptLanguage, ShortcutAction, StudioCommand,
+        StudioError, default_shortcuts, inspect_script, list_scripts, parse, resolve_shortcut,
     };
     use std::path::Path;
 
@@ -314,6 +419,10 @@ mod tests {
         assert!(matches!(
             parse(vec!["--list-shortcuts".to_owned()]),
             Ok(StudioCommand::ListShortcuts)
+        ));
+        assert!(matches!(
+            parse(vec!["--list-scripts".to_owned(), "scripts".to_owned()]),
+            Ok(StudioCommand::ListScripts { directory }) if directory == Path::new("scripts")
         ));
     }
 
@@ -399,5 +508,29 @@ mod tests {
             Some(ShortcutAction::PlayPause)
         );
         assert_eq!(resolve_shortcut("z", &["Shift"]), None);
+    }
+
+    #[test]
+    fn script_catalog_reports_supported_files_deterministically()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("prism-studio-scripts-{nonce}"));
+        std::fs::create_dir(&root)?;
+        std::fs::write(root.join("b.ts"), "const value = 1;\n")?;
+        std::fs::write(root.join("a.py"), "print('ok')\n")?;
+        std::fs::write(root.join("notes.txt"), "ignored\n")?;
+        let scripts = list_scripts(&root)?;
+        assert_eq!(scripts.len(), 2);
+        assert_eq!(
+            scripts[0].path.file_name().and_then(|name| name.to_str()),
+            Some("a.py")
+        );
+        assert_eq!(scripts[0].language, ScriptLanguage::Python);
+        assert_eq!(scripts[1].language, ScriptLanguage::TypeScript);
+        assert_eq!(inspect_script(root.join("a.py"))?.line_count, 2);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 }
