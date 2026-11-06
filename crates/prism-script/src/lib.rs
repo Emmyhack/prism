@@ -518,6 +518,13 @@ impl ScriptWorker {
         let transaction = request.into_transaction()?;
         let dry_run = transaction.dry_run;
         let event_count = if dry_run {
+            if project.revision() != transaction.expected_revision {
+                return Err(ExecutionError::Command(format!(
+                    "revision conflict: expected {}, actual {}",
+                    transaction.expected_revision,
+                    project.revision()
+                )));
+            }
             CommandEngine::validate_transaction(project, transaction.commands)
                 .map_err(|error| ExecutionError::Command(error.to_string()))?
                 .len()
@@ -1401,7 +1408,7 @@ mod tests {
         let worker = ScriptWorker {
             limits: ExecutionLimits {
                 max_operations: 1,
-                max_payload_bytes: payload.len(),
+                max_payload_bytes: 4096,
             },
         };
         let mut project = Project::new("Worker");
@@ -1410,6 +1417,16 @@ mod tests {
         assert!(result.dry_run);
         assert_eq!(result.event_count, 1);
         assert_eq!(project.revision(), 0);
+        let stale_request = serde_json::json!({
+            "requestId": "worker-stale", "apiVersion": API_VERSION,
+            "expectedRevision": 1, "label": "Create sequence", "dryRun": true,
+            "operations": [{"type":"createSequence","id":"00000000-0000-0000-0000-000000000002","name":"Other"}]
+        });
+        let stale_payload = serde_json::to_vec(&stale_request)?;
+        assert!(matches!(
+            worker.execute_json(&mut project, &stale_payload, &AtomicBool::new(false)),
+            Err(ExecutionError::Command(message)) if message.contains("revision conflict")
+        ));
         cancelled.store(true, std::sync::atomic::Ordering::Release);
         assert!(matches!(
             worker.execute_json(&mut project, &payload, &cancelled),

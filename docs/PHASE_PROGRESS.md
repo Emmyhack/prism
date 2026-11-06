@@ -31,7 +31,8 @@ Remaining acceptance work:
   slide, rolling, playback, undo, and redo (`--list-shortcuts` exposes the
   map for UI adapters; graphical dispatch remains pending);
 - verify the complete import/edit/save/reopen/export workflow with a real media
-  fixture on each supported platform.
+  fixture on each supported platform (the complete fixture workflow now passes
+  on the development macOS host; Windows and Linux verification remain).
 
 ## Phase 3 — scripting runtimes and SDKs
 

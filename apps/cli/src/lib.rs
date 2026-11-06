@@ -26,6 +26,8 @@ use std::{ffi::OsString, path::PathBuf, time::Duration};
 use thiserror::Error;
 use uuid::Uuid;
 
+const DEFAULT_VIDEO_BITRATE_KBPS: u32 = 5_000;
+
 /// Parsed `export-track` command.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExportTrackArgs {
@@ -2392,10 +2394,11 @@ impl ParsedValues {
             width: parse_u32(required(self.width, "--width")?, "--width")?,
             height: parse_u32(required(self.height, "--height")?, "--height")?,
             frame_rate: parse_rate(required(self.fps, "--fps")?)?,
-            video_bitrate_kbps: parse_positive_u32(
-                required(self.video_bitrate_kbps, "--video-bitrate-kbps")?,
-                "--video-bitrate-kbps",
-            )?,
+            video_bitrate_kbps: self
+                .video_bitrate_kbps
+                .map(|value| parse_positive_u32(value, "--video-bitrate-kbps"))
+                .transpose()?
+                .unwrap_or(DEFAULT_VIDEO_BITRATE_KBPS),
             ffmpeg: PathBuf::from(required(self.ffmpeg, "--ffmpeg")?),
             ffprobe: PathBuf::from(required(self.ffprobe, "--ffprobe")?),
         })
@@ -2564,6 +2567,20 @@ mod tests {
             parsed.sequence_id.as_uuid().to_string(),
             "11111111-1111-4111-8111-111111111111"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn export_track_uses_safe_default_bitrate_when_omitted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut arguments = valid_arguments();
+        let index = arguments
+            .iter()
+            .position(|argument| argument == "--video-bitrate-kbps")
+            .ok_or("missing bitrate option")?;
+        arguments.drain(index..=index + 1);
+        let parsed = parse_export_track(arguments)?;
+        assert_eq!(parsed.video_bitrate_kbps, 5_000);
         Ok(())
     }
 
