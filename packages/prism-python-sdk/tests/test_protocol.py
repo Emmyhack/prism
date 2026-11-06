@@ -2,7 +2,7 @@ import unittest
 
 from prism import (
     AddMarker, AddTransition, CreateSequence, CreateTrack, DeleteClip, DeleteMarker, DeleteTransition, DuplicateClip, ImportMedia, InsertClip, MoveClip,
-    RationalTime, RecipeRequest, ReorderTrack, RippleDelete, SetTrackLocked, SetTrackMuted, SetTrackVisible, SlipClip, SplitClip, TransactionRequest, TrimClip,
+    RationalTime, RecipeRequest, ReorderTrack, RippleDelete, RollEdit, SetTrackLocked, SetTrackMuted, SetTrackVisible, SlipClip, SplitClip, TransactionRequest, TrimClip,
 )
 
 
@@ -62,6 +62,10 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(DeleteClip("s", "t", "c").as_dict()["type"], "deleteClip")
         self.assertEqual(
             SlipClip("s", "t", "c", time).as_dict()["sourceDelta"],
+            {"value": 1, "timescale": 8},
+        )
+        self.assertEqual(
+            RollEdit("s", "t", "a", "b", time).as_dict()["delta"],
             {"value": 1, "timescale": 8},
         )
 

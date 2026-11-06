@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RationalTime, addMarker, addTransition, createSequence, createTrack, deleteClip, deleteMarker, deleteTransition, duplicateClip, importMedia, insertClip, moveClip, recipeRequest, reorderTrack, rippleDelete, setTrackLocked, setTrackMuted, setTrackVisible, slipClip, splitClip, transaction, trimClip } from "../src/index.js";
+import { RationalTime, addMarker, addTransition, createSequence, createTrack, deleteClip, deleteMarker, deleteTransition, duplicateClip, importMedia, insertClip, moveClip, recipeRequest, reorderTrack, rippleDelete, rollEdit, setTrackLocked, setTrackMuted, setTrackVisible, slipClip, splitClip, transaction, trimClip } from "../src/index.js";
 
 test("emits the shared exact-time transaction shape", () => {
   const request = transaction({
@@ -47,6 +47,7 @@ test("emits the remaining core clip operations", () => {
   assert.equal(splitClip({ sequenceId: "s", trackId: "t", clipId: "c", rightClipId: "r", timelinePosition: time }).type, "splitClip");
   assert.equal(deleteClip({ sequenceId: "s", trackId: "t", clipId: "c" }).type, "deleteClip");
   assert.deepEqual(slipClip({ sequenceId: "s", trackId: "t", clipId: "c", sourceDelta: new RationalTime(1, 2) }).sourceDelta, { value: 1, timescale: 2 });
+  assert.deepEqual(rollEdit({ sequenceId: "s", trackId: "t", leftClipId: "a", rightClipId: "b", delta: new RationalTime(1, 2) }).delta, { value: 1, timescale: 2 });
 });
 
 test("emits project-building operations", () => {

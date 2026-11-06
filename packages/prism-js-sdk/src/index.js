@@ -119,6 +119,11 @@ export function slipClip({ sequenceId, trackId, clipId, sourceDelta }) {
   return { type: "slipClip", sequenceId, trackId, clipId, sourceDelta: sourceDelta.toJSON() };
 }
 
+export function rollEdit({ sequenceId, trackId, leftClipId, rightClipId, delta }) {
+  if (!(delta instanceof RationalTime)) throw new TypeError("delta must be RationalTime");
+  return { type: "rollEdit", sequenceId, trackId, leftClipId, rightClipId, delta: delta.toJSON() };
+}
+
 export function trimClip({ sequenceId, trackId, clipId, timelineStart, sourceStart, sourceDuration }) {
   for (const time of [timelineStart, sourceStart, sourceDuration]) {
     if (!(time instanceof RationalTime)) throw new TypeError("clip times must be RationalTime");

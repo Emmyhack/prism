@@ -758,6 +758,19 @@ pub enum Operation {
         /// Exact source-time delta.
         source_delta: RationalTimeDto,
     },
+    /// Roll the boundary between two adjacent clips.
+    RollEdit {
+        /// Owning sequence.
+        sequence_id: Uuid,
+        /// Owning track.
+        track_id: Uuid,
+        /// Clip before the boundary.
+        left_clip_id: Uuid,
+        /// Clip after the boundary.
+        right_clip_id: Uuid,
+        /// Exact boundary delta.
+        delta: RationalTimeDto,
+    },
     /// Trim an existing clip.
     TrimClip {
         /// Owning sequence.
@@ -1088,6 +1101,19 @@ impl Operation {
                 track_id: TrackId::from_uuid(track_id),
                 clip_id: ClipId::from_uuid(clip_id),
                 source_delta: source_delta.try_into()?,
+            },
+            Self::RollEdit {
+                sequence_id,
+                track_id,
+                left_clip_id,
+                right_clip_id,
+                delta,
+            } => Command::RollEdit {
+                sequence_id: SequenceId::from_uuid(sequence_id),
+                track_id: TrackId::from_uuid(track_id),
+                left_clip_id: ClipId::from_uuid(left_clip_id),
+                right_clip_id: ClipId::from_uuid(right_clip_id),
+                delta: delta.try_into()?,
             },
             Self::TrimClip {
                 sequence_id,

@@ -267,6 +267,25 @@ class SlipClip:
 
 
 @dataclass(frozen=True)
+class RollEdit:
+    sequence_id: str
+    track_id: str
+    left_clip_id: str
+    right_clip_id: str
+    delta: RationalTime
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "type": "rollEdit",
+            "sequenceId": self.sequence_id,
+            "trackId": self.track_id,
+            "leftClipId": self.left_clip_id,
+            "rightClipId": self.right_clip_id,
+            "delta": self.delta.as_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class TrimClip:
     sequence_id: str
     track_id: str
