@@ -161,6 +161,20 @@ pub enum Command {
         /// Exact source-time delta; positive advances the source window.
         source_delta: RationalTime,
     },
+    /// Moves the boundary between two adjacent clips while preserving their
+    /// combined timeline span.
+    RollEdit {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Owning track.
+        track_id: TrackId,
+        /// Clip immediately before the edit point.
+        left_clip_id: ClipId,
+        /// Clip immediately after the edit point.
+        right_clip_id: ClipId,
+        /// Exact boundary delta; positive extends the left clip.
+        delta: RationalTime,
+    },
     /// Replaces a clip's sequence placement and source range.
     TrimClip {
         /// Owning sequence.
@@ -336,6 +350,13 @@ pub enum Event {
     ClipSlipped {
         /// Slipped clip identifier.
         id: ClipId,
+    },
+    /// An adjacent clip boundary was rolled.
+    ClipsRolled {
+        /// Clip before the edit point.
+        left_clip_id: ClipId,
+        /// Clip after the edit point.
+        right_clip_id: ClipId,
     },
 }
 
@@ -662,6 +683,20 @@ impl CommandEngine {
                 clip_id,
                 source_delta,
             } => slip_clip(project, sequence_id, track_id, clip_id, source_delta),
+            Command::RollEdit {
+                sequence_id,
+                track_id,
+                left_clip_id,
+                right_clip_id,
+                delta,
+            } => roll_edit(
+                project,
+                sequence_id,
+                track_id,
+                left_clip_id,
+                right_clip_id,
+                delta,
+            ),
             Command::TrimClip {
                 sequence_id,
                 track_id,
@@ -1127,6 +1162,83 @@ fn slip_clip(
     }
     clip.source_start = source_start;
     Ok(Event::ClipSlipped { id: clip_id })
+}
+
+fn roll_edit(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    track_id: TrackId,
+    left_clip_id: ClipId,
+    right_clip_id: ClipId,
+    delta: RationalTime,
+) -> Result<Event, CommandError> {
+    let track = find_track_mut(project, sequence_id, track_id)?;
+    ensure_track_editable(track)?;
+    let left_index = track
+        .clips
+        .iter()
+        .position(|clip| clip.id == left_clip_id)
+        .ok_or(CommandError::ClipNotFound)?;
+    let right_index = track
+        .clips
+        .iter()
+        .position(|clip| clip.id == right_clip_id)
+        .ok_or(CommandError::ClipNotFound)?;
+    if right_index != left_index + 1 {
+        return Err(CommandError::InvalidTime {
+            field: "clip_boundary",
+            constraint: "clips must be adjacent",
+        });
+    }
+    let left_duration = track.clips[left_index].source_duration;
+    let right_duration = track.clips[right_index].source_duration;
+    let new_left_duration =
+        left_duration
+            .checked_add(delta)
+            .map_err(|_| CommandError::InvalidTime {
+                field: "delta",
+                constraint: "representable",
+            })?;
+    let new_right_duration =
+        right_duration
+            .checked_sub(delta)
+            .map_err(|_| CommandError::InvalidTime {
+                field: "delta",
+                constraint: "representable",
+            })?;
+    if !new_left_duration.is_positive() || !new_right_duration.is_positive() {
+        return Err(CommandError::InvalidTime {
+            field: "delta",
+            constraint: "resulting durations must be positive",
+        });
+    }
+    let right_source_start = track.clips[right_index]
+        .source_start
+        .checked_add(delta)
+        .map_err(|_| CommandError::InvalidTime {
+            field: "delta",
+            constraint: "representable",
+        })?;
+    if !right_source_start.is_non_negative() {
+        return Err(CommandError::InvalidTime {
+            field: "delta",
+            constraint: "source start must remain non-negative",
+        });
+    }
+    track.clips[left_index].source_duration = new_left_duration;
+    track.clips[right_index].timeline_start = track.clips[right_index]
+        .timeline_start
+        .checked_add(delta)
+        .map_err(|_| CommandError::InvalidTime {
+            field: "delta",
+            constraint: "representable",
+        })?;
+    track.clips[right_index].source_start = right_source_start;
+    track.clips[right_index].source_duration = new_right_duration;
+    Ok(Event::ClipsRolled {
+        left_clip_id,
+        right_clip_id,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2124,6 +2236,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn split_trim_and_delete_preserve_exact_source_ranges() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut project = Project::new("Test");
@@ -2191,6 +2304,22 @@ mod tests {
         assert_eq!(clips[1].timeline_start, two);
         assert_eq!(clips[1].source_start, RationalTime::new(5, 2)?);
         assert_eq!(clips[1].source_duration, two);
+
+        CommandEngine::execute(
+            &mut project,
+            Command::RollEdit {
+                sequence_id,
+                track_id,
+                left_clip_id: left_id,
+                right_clip_id: right_id,
+                delta: RationalTime::new(1, 2)?,
+            },
+        )?;
+        let clips = &project.sequences[&sequence_id].tracks[0].clips;
+        assert_eq!(clips[0].source_duration, RationalTime::new(5, 2)?);
+        assert_eq!(clips[1].timeline_start, RationalTime::new(5, 2)?);
+        assert_eq!(clips[1].source_start, RationalTime::new(3, 1)?);
+        assert_eq!(clips[1].source_duration, RationalTime::new(3, 2)?);
 
         CommandEngine::execute(
             &mut project,
