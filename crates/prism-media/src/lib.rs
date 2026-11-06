@@ -105,6 +105,9 @@ pub enum MediaError {
     /// Proxy process succeeded but did not produce a file.
     #[error("proxy encoder produced no output")]
     ProxyOutputMissing,
+    /// Proxy playback was requested without an available relinked proxy.
+    #[error("proxy media is unavailable")]
+    ProxyUnavailable,
 }
 
 const MAX_REFERENCE_FRAME_BYTES: usize = 512 * 1024 * 1024;
@@ -268,6 +271,32 @@ pub struct ProxyRequest {
     pub output: PathBuf,
     /// Encoding profile.
     pub profile: ProxyProfile,
+}
+
+/// Source variant selected for preview or proxy playback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediaSourceSelection {
+    /// Use the original source media.
+    Original,
+    /// Use a relinked proxy source.
+    Proxy,
+}
+
+/// Selects a source path without silently falling back from proxy mode.
+///
+/// # Errors
+///
+/// Returns [`MediaError::ProxyUnavailable`] when proxy mode is requested but
+/// no proxy path has been provided.
+pub fn select_media_source<'a>(
+    original: &'a Path,
+    proxy: Option<&'a Path>,
+    selection: MediaSourceSelection,
+) -> Result<&'a Path, MediaError> {
+    match selection {
+        MediaSourceSelection::Original => Ok(original),
+        MediaSourceSelection::Proxy => proxy.ok_or(MediaError::ProxyUnavailable),
+    }
 }
 
 /// Explicit `FFmpeg` proxy generator.
@@ -1100,11 +1129,12 @@ fn parse_decimal_time(field: &'static str, value: &str) -> Result<RationalTime, 
 mod tests {
     use super::{
         DecodedVideoFrame, FfmpegProxyGenerator, FrameRateEvidence, MediaError, MediaFingerprint,
-        MediaMetadata, PacketTimingEvidence, ProbeOutput, ProbePacket, ProxyProfile, ProxyRequest,
-        StreamKind, analyze_packet_timing, checked_rgba_length, format_seek_timestamp,
-        parse_decimal_time,
+        MediaMetadata, MediaSourceSelection, PacketTimingEvidence, ProbeOutput, ProbePacket,
+        ProxyProfile, ProxyRequest, StreamKind, analyze_packet_timing, checked_rgba_length,
+        format_seek_timestamp, parse_decimal_time, select_media_source,
     };
     use prism_timeline::RationalTime;
+    use std::path::Path;
 
     #[test]
     fn parses_probe_json_without_float_time() -> Result<(), Box<dyn std::error::Error>> {
@@ -1263,6 +1293,24 @@ mod tests {
             Err(MediaError::InvalidProxyProfile { .. })
         ));
         Ok(())
+    }
+
+    #[test]
+    fn media_source_selection_never_silently_falls_back() {
+        let original = Path::new("source.mp4");
+        let proxy = Path::new("proxy.mp4");
+        assert!(matches!(
+            select_media_source(original, Some(proxy), MediaSourceSelection::Original),
+            Ok(path) if path == original
+        ));
+        assert!(matches!(
+            select_media_source(original, Some(proxy), MediaSourceSelection::Proxy),
+            Ok(path) if path == proxy
+        ));
+        assert!(matches!(
+            select_media_source(original, None, MediaSourceSelection::Proxy),
+            Err(MediaError::ProxyUnavailable)
+        ));
     }
 
     #[cfg(unix)]
