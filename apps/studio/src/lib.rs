@@ -76,6 +76,94 @@ pub struct AutosaveSummary {
     pub path: PathBuf,
 }
 
+/// Stable actions exposed to a future keyboard-shortcut layer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ShortcutAction {
+    /// Activate selection editing.
+    SelectTool,
+    /// Activate razor splitting.
+    RazorTool,
+    /// Activate trim editing.
+    TrimTool,
+    /// Activate slip editing.
+    SlipTool,
+    /// Activate slide editing.
+    SlideTool,
+    /// Activate rolling edit.
+    RollTool,
+    /// Toggle playback.
+    PlayPause,
+    /// Undo the last transaction.
+    Undo,
+    /// Redo the last transaction.
+    Redo,
+}
+
+/// One deterministic default keyboard binding.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutBinding {
+    /// Action triggered by the binding.
+    pub action: ShortcutAction,
+    /// Platform-neutral key label.
+    pub key: String,
+    /// Required modifier labels.
+    pub modifiers: Vec<String>,
+}
+
+/// Returns the default keyboard map shared by Studio and future UI adapters.
+#[must_use]
+pub fn default_shortcuts() -> Vec<ShortcutBinding> {
+    vec![
+        ShortcutBinding {
+            action: ShortcutAction::SelectTool,
+            key: "V".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::RazorTool,
+            key: "C".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::TrimTool,
+            key: "T".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::SlipTool,
+            key: "Y".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::SlideTool,
+            key: "U".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::RollTool,
+            key: "R".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::PlayPause,
+            key: "Space".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::Undo,
+            key: "Z".to_owned(),
+            modifiers: vec!["Primary".to_owned()],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::Redo,
+            key: "Z".to_owned(),
+            modifiers: vec!["Primary".to_owned(), "Shift".to_owned()],
+        },
+    ]
+}
+
 impl From<AutosaveCandidate> for AutosaveSummary {
     fn from(candidate: AutosaveCandidate) -> Self {
         Self {
@@ -169,7 +257,10 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AutosaveSummary, ProjectSummary, StudioCommand, StudioError, parse};
+    use super::{
+        AutosaveSummary, ProjectSummary, ShortcutAction, StudioCommand, StudioError,
+        default_shortcuts, parse,
+    };
     use std::path::Path;
 
     #[test]
@@ -227,5 +318,35 @@ mod tests {
         assert!(json.contains("revision"));
         assert!(json.contains("edit.prism.autosave.7"));
         Ok(())
+    }
+
+    #[test]
+    fn default_shortcuts_cover_phase_two_editing_tools() {
+        let shortcuts = default_shortcuts();
+        assert!(
+            shortcuts
+                .iter()
+                .any(|binding| binding.action == ShortcutAction::SlipTool)
+        );
+        assert!(
+            shortcuts
+                .iter()
+                .any(|binding| binding.action == ShortcutAction::SlideTool)
+        );
+        assert!(
+            shortcuts
+                .iter()
+                .any(|binding| binding.action == ShortcutAction::RollTool)
+        );
+        assert!(
+            shortcuts
+                .iter()
+                .any(|binding| binding.action == ShortcutAction::Undo)
+        );
+        assert!(
+            shortcuts
+                .iter()
+                .any(|binding| binding.action == ShortcutAction::Redo)
+        );
     }
 }
