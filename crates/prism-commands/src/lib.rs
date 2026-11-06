@@ -175,6 +175,21 @@ pub enum Command {
         /// Exact boundary delta; positive extends the left clip.
         delta: RationalTime,
     },
+    /// Slides a clip while preserving its duration and adjusting both neighbors.
+    SlideEdit {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Owning track.
+        track_id: TrackId,
+        /// Clip immediately before the selected clip.
+        previous_clip_id: ClipId,
+        /// Clip being moved.
+        clip_id: ClipId,
+        /// Clip immediately after the selected clip.
+        next_clip_id: ClipId,
+        /// Exact timeline delta; positive moves the selected clip later.
+        delta: RationalTime,
+    },
     /// Replaces a clip's sequence placement and source range.
     TrimClip {
         /// Owning sequence.
@@ -357,6 +372,11 @@ pub enum Event {
         left_clip_id: ClipId,
         /// Clip after the edit point.
         right_clip_id: ClipId,
+    },
+    /// A clip and its two adjacent neighbors were slid.
+    ClipsSlid {
+        /// Selected clip identifier.
+        id: ClipId,
     },
 }
 
@@ -695,6 +715,22 @@ impl CommandEngine {
                 track_id,
                 left_clip_id,
                 right_clip_id,
+                delta,
+            ),
+            Command::SlideEdit {
+                sequence_id,
+                track_id,
+                previous_clip_id,
+                clip_id,
+                next_clip_id,
+                delta,
+            } => slide_edit(
+                project,
+                sequence_id,
+                track_id,
+                previous_clip_id,
+                clip_id,
+                next_clip_id,
                 delta,
             ),
             Command::TrimClip {
@@ -1239,6 +1275,100 @@ fn roll_edit(
         left_clip_id,
         right_clip_id,
     })
+}
+
+fn slide_edit(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    track_id: TrackId,
+    previous_clip_id: ClipId,
+    clip_id: ClipId,
+    next_clip_id: ClipId,
+    delta: RationalTime,
+) -> Result<Event, CommandError> {
+    let track = find_track_mut(project, sequence_id, track_id)?;
+    ensure_track_editable(track)?;
+    let previous_index = track
+        .clips
+        .iter()
+        .position(|clip| clip.id == previous_clip_id)
+        .ok_or(CommandError::ClipNotFound)?;
+    let clip_index = track
+        .clips
+        .iter()
+        .position(|clip| clip.id == clip_id)
+        .ok_or(CommandError::ClipNotFound)?;
+    let next_index = track
+        .clips
+        .iter()
+        .position(|clip| clip.id == next_clip_id)
+        .ok_or(CommandError::ClipNotFound)?;
+    if clip_index != previous_index + 1 || next_index != clip_index + 1 {
+        return Err(CommandError::InvalidTime {
+            field: "clip_neighbors",
+            constraint: "clips must be adjacent",
+        });
+    }
+    let previous_duration = track.clips[previous_index].source_duration;
+    let next_duration = track.clips[next_index].source_duration;
+    let new_previous_duration =
+        previous_duration
+            .checked_add(delta)
+            .map_err(|_| CommandError::InvalidTime {
+                field: "delta",
+                constraint: "representable",
+            })?;
+    let new_next_duration =
+        next_duration
+            .checked_sub(delta)
+            .map_err(|_| CommandError::InvalidTime {
+                field: "delta",
+                constraint: "representable",
+            })?;
+    if !new_previous_duration.is_positive() || !new_next_duration.is_positive() {
+        return Err(CommandError::InvalidTime {
+            field: "delta",
+            constraint: "neighbor durations must remain positive",
+        });
+    }
+    let new_clip_start = track.clips[clip_index]
+        .timeline_start
+        .checked_add(delta)
+        .map_err(|_| CommandError::InvalidTime {
+            field: "delta",
+            constraint: "representable",
+        })?;
+    if !new_clip_start.is_non_negative() {
+        return Err(CommandError::InvalidTime {
+            field: "delta",
+            constraint: "clip start must remain non-negative",
+        });
+    }
+    let new_next_source_start = track.clips[next_index]
+        .source_start
+        .checked_add(delta)
+        .map_err(|_| CommandError::InvalidTime {
+            field: "delta",
+            constraint: "representable",
+        })?;
+    if !new_next_source_start.is_non_negative() {
+        return Err(CommandError::InvalidTime {
+            field: "delta",
+            constraint: "source start must remain non-negative",
+        });
+    }
+    track.clips[previous_index].source_duration = new_previous_duration;
+    track.clips[clip_index].timeline_start = new_clip_start;
+    track.clips[next_index].timeline_start = track.clips[next_index]
+        .timeline_start
+        .checked_add(delta)
+        .map_err(|_| CommandError::InvalidTime {
+            field: "delta",
+            constraint: "representable",
+        })?;
+    track.clips[next_index].source_start = new_next_source_start;
+    track.clips[next_index].source_duration = new_next_duration;
+    Ok(Event::ClipsSlid { id: clip_id })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2344,6 +2474,83 @@ mod tests {
         assert_eq!(clips.len(), 1);
         assert_eq!(clips[0].id, right_id);
         assert_eq!(clips[0].timeline_start, RationalTime::new(3, 1)?);
+        Ok(())
+    }
+
+    #[test]
+    fn slide_edit_moves_clip_and_adjusts_neighbors() -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Test");
+        let sequence_id = SequenceId::new();
+        let track_id = TrackId::new();
+        let media_id = MediaAssetId::new();
+        let previous = ClipId::new();
+        let selected = ClipId::new();
+        let next = ClipId::new();
+        let duration = RationalTime::new(2, 1)?;
+        CommandEngine::execute_transaction(
+            &mut project,
+            "Create slide timeline",
+            vec![
+                Command::ImportMedia {
+                    id: media_id,
+                    source_path: "/media/source.mov".to_owned(),
+                },
+                Command::CreateSequence {
+                    id: sequence_id,
+                    name: "Main".to_owned(),
+                },
+                Command::CreateTrack {
+                    sequence_id,
+                    id: track_id,
+                    kind: TrackKind::Video,
+                },
+                Command::InsertClip {
+                    sequence_id,
+                    track_id,
+                    id: previous,
+                    media_id,
+                    timeline_start: RationalTime::ZERO,
+                    source_start: RationalTime::ZERO,
+                    source_duration: duration,
+                },
+                Command::InsertClip {
+                    sequence_id,
+                    track_id,
+                    id: selected,
+                    media_id,
+                    timeline_start: duration,
+                    source_start: RationalTime::ZERO,
+                    source_duration: duration,
+                },
+                Command::InsertClip {
+                    sequence_id,
+                    track_id,
+                    id: next,
+                    media_id,
+                    timeline_start: RationalTime::new(4, 1)?,
+                    source_start: RationalTime::ZERO,
+                    source_duration: duration,
+                },
+            ],
+        )?;
+        CommandEngine::execute(
+            &mut project,
+            Command::SlideEdit {
+                sequence_id,
+                track_id,
+                previous_clip_id: previous,
+                clip_id: selected,
+                next_clip_id: next,
+                delta: RationalTime::new(1, 2)?,
+            },
+        )?;
+        let clips = &project.sequences[&sequence_id].tracks[0].clips;
+        assert_eq!(clips[0].source_duration, RationalTime::new(5, 2)?);
+        assert_eq!(clips[1].timeline_start, RationalTime::new(5, 2)?);
+        assert_eq!(clips[1].source_duration, duration);
+        assert_eq!(clips[2].timeline_start, RationalTime::new(9, 2)?);
+        assert_eq!(clips[2].source_start, RationalTime::new(1, 2)?);
+        assert_eq!(clips[2].source_duration, RationalTime::new(3, 2)?);
         Ok(())
     }
 }
