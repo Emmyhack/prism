@@ -346,17 +346,55 @@ impl TypeScriptCompiler {
         granted: &[RecipePermission],
         cancelled: &AtomicBool,
     ) -> Result<PathBuf, ProcessError> {
+        self.compile_internal(source, output_dir, requested, granted, cancelled, false)
+    }
+
+    /// Compiles TypeScript and requires the compiler to emit a sibling source map.
+    ///
+    /// # Errors
+    ///
+    /// Returns a bounded process error or [`ProcessError::MissingCompiledOutput`]
+    /// when JavaScript or source-map output is missing.
+    pub fn compile_with_source_map(
+        &self,
+        source: &Path,
+        output_dir: &Path,
+        requested: &[RecipePermission],
+        granted: &[RecipePermission],
+        cancelled: &AtomicBool,
+    ) -> Result<(PathBuf, PathBuf), ProcessError> {
+        let compiled =
+            self.compile_internal(source, output_dir, requested, granted, cancelled, true)?;
+        let source_map = compiled.with_extension("js.map");
+        if !source_map.is_file() {
+            return Err(ProcessError::MissingCompiledOutput(source_map));
+        }
+        Ok((compiled, source_map))
+    }
+
+    fn compile_internal(
+        &self,
+        source: &Path,
+        output_dir: &Path,
+        requested: &[RecipePermission],
+        granted: &[RecipePermission],
+        cancelled: &AtomicBool,
+        source_map: bool,
+    ) -> Result<PathBuf, ProcessError> {
         fs::create_dir_all(output_dir)?;
         let output_flag = output_dir.to_path_buf();
-        let arguments = [
+        let mut arguments = vec![
             PathBuf::from("--target"),
             PathBuf::from("ES2022"),
             PathBuf::from("--module"),
             PathBuf::from("NodeNext"),
             PathBuf::from("--outDir"),
             output_flag,
-            source.to_path_buf(),
         ];
+        if source_map {
+            arguments.push(PathBuf::from("--sourceMap"));
+        }
+        arguments.push(source.to_path_buf());
         self.runner
             .run_command_authorized(&arguments, &[], requested, granted, cancelled)?;
         let stem = source
@@ -1559,7 +1597,7 @@ mod tests {
         let output = root.join("out");
         std::fs::write(
             &compiler_path,
-            "#!/bin/sh\nout=''\nsrc=''\nprevious=''\nfor arg in \"$@\"; do if [ \"$previous\" = \"--outDir\" ]; then out=\"$arg\"; fi; src=\"$arg\"; previous=\"$arg\"; done\nbase=$(basename \"$src\" .ts)\nprintf '%s' 'console.log(\"compiled\")' > \"$out/$base.js\"\n",
+            "#!/bin/sh\nout=''\nsrc=''\nprevious=''\nfor arg in \"$@\"; do if [ \"$previous\" = \"--outDir\" ]; then out=\"$arg\"; fi; src=\"$arg\"; previous=\"$arg\"; done\nbase=$(basename \"$src\" .ts)\nprintf '%s' 'console.log(\"compiled\")' > \"$out/$base.js\"\nprintf '%s' '{\"version\":3}' > \"$out/$base.js.map\"\n",
         )?;
         std::fs::set_permissions(&compiler_path, std::fs::Permissions::from_mode(0o755))?;
         std::fs::write(&source, "const value: number = 1;\n")?;
@@ -1567,6 +1605,12 @@ mod tests {
             .compile(&source, &output, &[], &[], &AtomicBool::new(false))?;
         assert_eq!(compiled_path, output.join("main.js"));
         assert!(compiled_path.is_file());
+        let (compiled_path, source_map) =
+            TypeScriptCompiler::new(&compiler_path, ProcessLimits::default())
+                .compile_with_source_map(&source, &output, &[], &[], &AtomicBool::new(false))?;
+        assert_eq!(compiled_path, output.join("main.js"));
+        assert_eq!(source_map, output.join("main.js.map"));
+        assert!(source_map.is_file());
         std::fs::remove_dir_all(root)?;
         Ok(())
     }
