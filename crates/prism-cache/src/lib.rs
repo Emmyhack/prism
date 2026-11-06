@@ -9,7 +9,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
+    Arc,
+    atomic::{AtomicU64, AtomicUsize, Ordering},
     mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError, sync_channel},
 };
 use std::thread::{self, JoinHandle};
@@ -139,6 +140,7 @@ pub enum CacheSubmitError {
 pub struct CacheWorker {
     requests: Option<SyncSender<CacheWriteRequest>>,
     results: Receiver<CacheWriteResult>,
+    pending: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -165,6 +167,8 @@ impl CacheWorker {
         let (request_tx, request_rx) = sync_channel::<CacheWriteRequest>(queue_capacity.max(1));
         let (result_tx, result_rx) =
             sync_channel::<CacheWriteResult>(queue_capacity.max(1).saturating_add(1));
+        let pending = Arc::new(AtomicUsize::new(0));
+        let worker_pending = Arc::clone(&pending);
         let worker_thread = thread::spawn(move || {
             while let Ok(request) = request_rx.recv() {
                 let key = request.key;
@@ -178,13 +182,16 @@ impl CacheWorker {
                     })
                     .is_err()
                 {
+                    worker_pending.fetch_sub(1, Ordering::Relaxed);
                     break;
                 }
+                worker_pending.fetch_sub(1, Ordering::Relaxed);
             }
         });
         Self {
             requests: Some(request_tx),
             results: result_rx,
+            pending,
             thread: Some(worker_thread),
         }
     }
@@ -196,14 +203,25 @@ impl CacheWorker {
     /// Returns [`CacheSubmitError::QueueFull`] under backpressure or
     /// [`CacheSubmitError::WorkerStopped`] after shutdown.
     pub fn try_submit(&self, request: CacheWriteRequest) -> Result<(), CacheSubmitError> {
-        self.requests
+        let sender = self
+            .requests
             .as_ref()
-            .ok_or(CacheSubmitError::WorkerStopped)?
-            .try_send(request)
-            .map_err(|error| match error {
+            .ok_or(CacheSubmitError::WorkerStopped)?;
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        if let Err(error) = sender.try_send(request) {
+            self.pending.fetch_sub(1, Ordering::Relaxed);
+            return Err(match error {
                 TrySendError::Full(_) => CacheSubmitError::QueueFull,
                 TrySendError::Disconnected(_) => CacheSubmitError::WorkerStopped,
-            })
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns the number of submitted writes not yet delivered as results.
+    #[must_use]
+    pub fn pending_writes(&self) -> usize {
+        self.pending.load(Ordering::Relaxed)
     }
 
     /// Polls for one completed write without blocking.
