@@ -4,7 +4,7 @@
 //! startup, project loading, and inspection behavior real and testable without
 //! coupling the domain model to a UI framework.
 
-use prism_persistence::{PersistenceError, load};
+use prism_persistence::{AutosaveCandidate, PersistenceError, list_autosaves, load};
 use serde::Serialize;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -17,6 +17,11 @@ pub enum StudioCommand {
     /// Open a project and print its authoritative summary.
     Inspect {
         /// Project database to open.
+        project: PathBuf,
+    },
+    /// List revision-scoped autosaves for a project path.
+    ListAutosaves {
+        /// Active project path whose autosaves should be discovered.
         project: PathBuf,
     },
 }
@@ -61,6 +66,25 @@ pub struct ProjectSummary {
     pub marker_count: usize,
 }
 
+/// Stable autosave candidate summary exposed to recovery UI consumers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutosaveSummary {
+    /// Autosave revision.
+    pub revision: u64,
+    /// Candidate path.
+    pub path: PathBuf,
+}
+
+impl From<AutosaveCandidate> for AutosaveSummary {
+    fn from(candidate: AutosaveCandidate) -> Self {
+        Self {
+            revision: candidate.revision,
+            path: candidate.path,
+        }
+    }
+}
+
 /// Parses one Studio shell invocation.
 ///
 /// # Errors
@@ -76,6 +100,11 @@ where
         [project_flag, project] if project_flag == "--project" => Ok(StudioCommand::Inspect {
             project: PathBuf::from(project),
         }),
+        [project_flag, project] if project_flag == "--list-autosaves" => {
+            Ok(StudioCommand::ListAutosaves {
+                project: PathBuf::from(project),
+            })
+        }
         _ => Err(StudioError::Usage),
     }
 }
@@ -128,12 +157,19 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
             };
             Ok(Some(serde_json::to_string_pretty(&summary)?))
         }
+        StudioCommand::ListAutosaves { project } => {
+            let candidates = list_autosaves(&project)?
+                .into_iter()
+                .map(AutosaveSummary::from)
+                .collect::<Vec<_>>();
+            Ok(Some(serde_json::to_string_pretty(&candidates)?))
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ProjectSummary, StudioCommand, StudioError, parse};
+    use super::{AutosaveSummary, ProjectSummary, StudioCommand, StudioError, parse};
     use std::path::Path;
 
     #[test]
@@ -145,6 +181,10 @@ mod tests {
         assert!(matches!(
             parse(vec!["--project".to_owned(), "edit.prism".to_owned()]),
             Ok(StudioCommand::Inspect { project }) if project == Path::new("edit.prism")
+        ));
+        assert!(matches!(
+            parse(vec!["--list-autosaves".to_owned(), "edit.prism".to_owned()]),
+            Ok(StudioCommand::ListAutosaves { project }) if project == Path::new("edit.prism")
         ));
     }
 
@@ -174,6 +214,18 @@ mod tests {
         assert!(json.contains("lockedTrackCount"));
         assert!(json.contains("mutedTrackCount"));
         assert!(json.contains("markerCount"));
+        Ok(())
+    }
+
+    #[test]
+    fn autosave_summary_serializes_recovery_fields() -> Result<(), serde_json::Error> {
+        let summary = AutosaveSummary {
+            revision: 7,
+            path: Path::new("edit.prism.autosave.7").to_owned(),
+        };
+        let json = serde_json::to_string(&summary)?;
+        assert!(json.contains("revision"));
+        assert!(json.contains("edit.prism.autosave.7"));
         Ok(())
     }
 }
