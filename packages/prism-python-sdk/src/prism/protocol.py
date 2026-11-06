@@ -250,6 +250,23 @@ class MoveClip:
 
 
 @dataclass(frozen=True)
+class SlipClip:
+    sequence_id: str
+    track_id: str
+    clip_id: str
+    source_delta: RationalTime
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "type": "slipClip",
+            "sequenceId": self.sequence_id,
+            "trackId": self.track_id,
+            "clipId": self.clip_id,
+            "sourceDelta": self.source_delta.as_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class TrimClip:
     sequence_id: str
     track_id: str

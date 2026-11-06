@@ -2,7 +2,7 @@ import unittest
 
 from prism import (
     AddMarker, AddTransition, CreateSequence, CreateTrack, DeleteClip, DeleteMarker, DeleteTransition, DuplicateClip, ImportMedia, InsertClip, MoveClip,
-    RationalTime, RecipeRequest, ReorderTrack, RippleDelete, SetTrackLocked, SetTrackMuted, SetTrackVisible, SplitClip, TransactionRequest, TrimClip,
+    RationalTime, RecipeRequest, ReorderTrack, RippleDelete, SetTrackLocked, SetTrackMuted, SetTrackVisible, SlipClip, SplitClip, TransactionRequest, TrimClip,
 )
 
 
@@ -60,6 +60,10 @@ class ProtocolTests(unittest.TestCase):
             SplitClip("s", "t", "c", "r", time).as_dict()["type"], "splitClip"
         )
         self.assertEqual(DeleteClip("s", "t", "c").as_dict()["type"], "deleteClip")
+        self.assertEqual(
+            SlipClip("s", "t", "c", time).as_dict()["sourceDelta"],
+            {"value": 1, "timescale": 8},
+        )
 
     def test_emits_project_building_operations(self) -> None:
         time = RationalTime(0, 1)

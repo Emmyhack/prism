@@ -114,6 +114,11 @@ export function moveClip({ sequenceId, trackId, clipId, timelineStart }) {
   };
 }
 
+export function slipClip({ sequenceId, trackId, clipId, sourceDelta }) {
+  if (!(sourceDelta instanceof RationalTime)) throw new TypeError("sourceDelta must be RationalTime");
+  return { type: "slipClip", sequenceId, trackId, clipId, sourceDelta: sourceDelta.toJSON() };
+}
+
 export function trimClip({ sequenceId, trackId, clipId, timelineStart, sourceStart, sourceDuration }) {
   for (const time of [timelineStart, sourceStart, sourceDuration]) {
     if (!(time instanceof RationalTime)) throw new TypeError("clip times must be RationalTime");

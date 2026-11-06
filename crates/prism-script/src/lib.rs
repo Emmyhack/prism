@@ -747,6 +747,17 @@ pub enum Operation {
         /// New sequence start.
         timeline_start: RationalTimeDto,
     },
+    /// Slip an existing clip's source window without changing its timeline span.
+    SlipClip {
+        /// Owning sequence.
+        sequence_id: Uuid,
+        /// Owning track.
+        track_id: Uuid,
+        /// Clip identifier.
+        clip_id: Uuid,
+        /// Exact source-time delta.
+        source_delta: RationalTimeDto,
+    },
     /// Trim an existing clip.
     TrimClip {
         /// Owning sequence.
@@ -1066,6 +1077,17 @@ impl Operation {
                 track_id: TrackId::from_uuid(track_id),
                 clip_id: ClipId::from_uuid(clip_id),
                 timeline_start: timeline_start.try_into()?,
+            },
+            Self::SlipClip {
+                sequence_id,
+                track_id,
+                clip_id,
+                source_delta,
+            } => Command::SlipClip {
+                sequence_id: SequenceId::from_uuid(sequence_id),
+                track_id: TrackId::from_uuid(track_id),
+                clip_id: ClipId::from_uuid(clip_id),
+                source_delta: source_delta.try_into()?,
             },
             Self::TrimClip {
                 sequence_id,
