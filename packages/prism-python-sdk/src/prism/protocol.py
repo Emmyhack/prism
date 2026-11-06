@@ -286,6 +286,27 @@ class RollEdit:
 
 
 @dataclass(frozen=True)
+class SlideEdit:
+    sequence_id: str
+    track_id: str
+    previous_clip_id: str
+    clip_id: str
+    next_clip_id: str
+    delta: RationalTime
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "type": "slideEdit",
+            "sequenceId": self.sequence_id,
+            "trackId": self.track_id,
+            "previousClipId": self.previous_clip_id,
+            "clipId": self.clip_id,
+            "nextClipId": self.next_clip_id,
+            "delta": self.delta.as_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class TrimClip:
     sequence_id: str
     track_id: str

@@ -771,6 +771,21 @@ pub enum Operation {
         /// Exact boundary delta.
         delta: RationalTimeDto,
     },
+    /// Slide a clip while adjusting both adjacent clips.
+    SlideEdit {
+        /// Owning sequence.
+        sequence_id: Uuid,
+        /// Owning track.
+        track_id: Uuid,
+        /// Clip before the selected clip.
+        previous_clip_id: Uuid,
+        /// Selected clip.
+        clip_id: Uuid,
+        /// Clip after the selected clip.
+        next_clip_id: Uuid,
+        /// Exact timeline delta.
+        delta: RationalTimeDto,
+    },
     /// Trim an existing clip.
     TrimClip {
         /// Owning sequence.
@@ -1113,6 +1128,21 @@ impl Operation {
                 track_id: TrackId::from_uuid(track_id),
                 left_clip_id: ClipId::from_uuid(left_clip_id),
                 right_clip_id: ClipId::from_uuid(right_clip_id),
+                delta: delta.try_into()?,
+            },
+            Self::SlideEdit {
+                sequence_id,
+                track_id,
+                previous_clip_id,
+                clip_id,
+                next_clip_id,
+                delta,
+            } => Command::SlideEdit {
+                sequence_id: SequenceId::from_uuid(sequence_id),
+                track_id: TrackId::from_uuid(track_id),
+                previous_clip_id: ClipId::from_uuid(previous_clip_id),
+                clip_id: ClipId::from_uuid(clip_id),
+                next_clip_id: ClipId::from_uuid(next_clip_id),
                 delta: delta.try_into()?,
             },
             Self::TrimClip {
