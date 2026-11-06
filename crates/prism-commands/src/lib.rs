@@ -17,6 +17,13 @@ pub enum Command {
         /// Source path selected by the user.
         source_path: String,
     },
+    /// Sets or clears a relinked proxy path for an imported media asset.
+    SetMediaProxy {
+        /// Asset to update.
+        media_id: MediaAssetId,
+        /// New proxy path, or `None` to clear the relink.
+        proxy_path: Option<String>,
+    },
     /// Adds an empty sequence.
     CreateSequence {
         /// Stable ID selected before execution for deterministic replay.
@@ -244,6 +251,11 @@ pub enum Event {
     /// Media was registered.
     MediaImported {
         /// Imported asset.
+        id: MediaAssetId,
+    },
+    /// A media asset's proxy path changed.
+    MediaProxyUpdated {
+        /// Updated asset identifier.
         id: MediaAssetId,
     },
     /// A sequence was created.
@@ -601,6 +613,10 @@ impl CommandEngine {
     fn apply(project: &mut Project, command: Command) -> Result<Event, CommandError> {
         match command {
             Command::ImportMedia { id, source_path } => import_media(project, id, source_path),
+            Command::SetMediaProxy {
+                media_id,
+                proxy_path,
+            } => set_media_proxy(project, media_id, proxy_path),
             Command::CreateSequence { id, name } => create_sequence(project, id, name),
             Command::AddMarker {
                 sequence_id,
@@ -799,6 +815,27 @@ fn import_media(
         },
     );
     Ok(Event::MediaImported { id })
+}
+
+fn set_media_proxy(
+    project: &mut Project,
+    media_id: MediaAssetId,
+    proxy_path: Option<String>,
+) -> Result<Event, CommandError> {
+    if proxy_path
+        .as_deref()
+        .is_some_and(|path| path.trim().is_empty())
+    {
+        return Err(CommandError::EmptyField {
+            field: "proxy_path",
+        });
+    }
+    let asset = project
+        .media
+        .get_mut(&media_id)
+        .ok_or(CommandError::MediaNotFound)?;
+    asset.proxy_path = proxy_path;
+    Ok(Event::MediaProxyUpdated { id: media_id })
 }
 
 fn create_sequence(
@@ -1640,6 +1677,51 @@ mod tests {
         assert!(project.sequences[&sequence_id].tracks[0].locked);
         assert_eq!(project.revision(), 3);
         assert_eq!(project.sequences[&sequence_id].tracks.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn media_proxy_command_sets_clears_and_validates_relinks() -> Result<(), CommandError> {
+        let mut project = Project::new("Test");
+        let media_id = MediaAssetId::new();
+        CommandEngine::execute(
+            &mut project,
+            Command::ImportMedia {
+                id: media_id,
+                source_path: "source.mp4".to_owned(),
+            },
+        )?;
+        CommandEngine::execute(
+            &mut project,
+            Command::SetMediaProxy {
+                media_id,
+                proxy_path: Some("proxy.mp4".to_owned()),
+            },
+        )?;
+        assert_eq!(
+            project.media[&media_id].proxy_path.as_deref(),
+            Some("proxy.mp4")
+        );
+        CommandEngine::execute(
+            &mut project,
+            Command::SetMediaProxy {
+                media_id,
+                proxy_path: None,
+            },
+        )?;
+        assert!(!project.media[&media_id].has_proxy_path());
+        assert_eq!(
+            CommandEngine::execute(
+                &mut project,
+                Command::SetMediaProxy {
+                    media_id,
+                    proxy_path: Some("  ".to_owned()),
+                },
+            ),
+            Err(CommandError::EmptyField {
+                field: "proxy_path"
+            })
+        );
         Ok(())
     }
 
