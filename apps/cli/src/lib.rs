@@ -2732,6 +2732,7 @@ mod tests {
             MediaAsset {
                 id: media_id,
                 source_path: "source.mp4".to_owned(),
+                proxy_path: None,
             },
         );
         project.sequences.insert(

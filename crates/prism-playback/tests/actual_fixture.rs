@@ -22,6 +22,7 @@ fn timeline_trim_and_placement_select_expected_source_frame()
         MediaAsset {
             id: media_id,
             source_path: fixture.to_string_lossy().into_owned(),
+            proxy_path: None,
         },
     );
     project.sequences.insert(
@@ -81,6 +82,7 @@ fn evaluated_frame_is_decoded_off_thread() -> Result<(), Box<dyn std::error::Err
         MediaAsset {
             id: media_id,
             source_path: fixture.to_string_lossy().into_owned(),
+            proxy_path: None,
         },
     );
     project.sequences.insert(

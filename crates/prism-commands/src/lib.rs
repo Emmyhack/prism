@@ -790,7 +790,14 @@ fn import_media(
     if project.media.contains_key(&id) {
         return Err(CommandError::DuplicateId);
     }
-    project.media.insert(id, MediaAsset { id, source_path });
+    project.media.insert(
+        id,
+        MediaAsset {
+            id,
+            source_path,
+            proxy_path: None,
+        },
+    );
     Ok(Event::MediaImported { id })
 }
 

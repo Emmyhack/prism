@@ -1211,6 +1211,7 @@ mod tests {
             MediaAsset {
                 id: media_id,
                 source_path: "missing.mp4".to_owned(),
+                proxy_path: None,
             },
         );
         project.sequences.insert(
@@ -1320,6 +1321,7 @@ mod tests {
             MediaAsset {
                 id: media_id,
                 source_path: "source.mp4".to_owned(),
+                proxy_path: None,
             },
         );
         project.sequences.insert(
@@ -1436,6 +1438,7 @@ mod tests {
             MediaAsset {
                 id: media_id,
                 source_path: "speech.wav".to_owned(),
+                proxy_path: None,
             },
         );
         project.sequences.insert(
@@ -1564,6 +1567,7 @@ mod tests {
             MediaAsset {
                 id: media_id,
                 source_path: "source.mp4".to_owned(),
+                proxy_path: None,
             },
         );
         project.sequences.insert(
@@ -1646,6 +1650,7 @@ mod tests {
             MediaAsset {
                 id: media_id,
                 source_path: source.display().to_string(),
+                proxy_path: None,
             },
         );
         project.sequences.insert(

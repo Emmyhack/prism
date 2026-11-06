@@ -87,6 +87,7 @@ fn renders_single_track_clips_and_black_gaps() -> Result<(), Box<dyn std::error:
         MediaAsset {
             id: media_id,
             source_path: fixture.to_string_lossy().into_owned(),
+            proxy_path: None,
         },
     );
     project.sequences.insert(
@@ -187,6 +188,7 @@ fn muxes_synchronized_video_and_audio_tracks() -> Result<(), Box<dyn std::error:
         MediaAsset {
             id: media_id,
             source_path: fixture.to_string_lossy().into_owned(),
+            proxy_path: None,
         },
     );
     project.sequences.insert(

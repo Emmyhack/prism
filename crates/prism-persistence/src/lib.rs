@@ -18,7 +18,7 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const STORAGE_SCHEMA_VERSION: u32 = 4;
+const STORAGE_SCHEMA_VERSION: u32 = 5;
 
 /// Persistence and stored-data validation failures.
 #[derive(Debug, Error)]
@@ -518,7 +518,8 @@ fn initialize(connection: &Connection) -> Result<(), PersistenceError> {
          );
          CREATE TABLE IF NOT EXISTS media (
              id TEXT PRIMARY KEY,
-             source_path TEXT NOT NULL
+             source_path TEXT NOT NULL,
+             proxy_path TEXT
          );
          CREATE TABLE IF NOT EXISTS sequence (
              id TEXT PRIMARY KEY,
@@ -567,7 +568,7 @@ fn initialize(connection: &Connection) -> Result<(), PersistenceError> {
              duration_scale INTEGER NOT NULL CHECK(duration_scale > 0),
              UNIQUE(track_id, position)
          );
-         PRAGMA user_version = 4;",
+         PRAGMA user_version = 5;",
     )?;
     Ok(())
 }
@@ -611,6 +612,13 @@ fn upgrade_storage_schema(connection: &Connection) -> Result<(), PersistenceErro
                  UNIQUE(sequence_id, position)
              );
              PRAGMA user_version = 4;",
+        )?;
+    }
+    let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 4 {
+        connection.execute_batch(
+            "ALTER TABLE media ADD COLUMN proxy_path TEXT;
+             PRAGMA user_version = 5;",
         )?;
     }
     Ok(())
@@ -684,8 +692,12 @@ fn write_project(transaction: &Transaction<'_>, project: &Project) -> Result<(),
     )?;
     for asset in project.media.values() {
         transaction.execute(
-            "INSERT INTO media(id, source_path) VALUES(?1, ?2)",
-            params![asset.id.as_uuid().to_string(), asset.source_path],
+            "INSERT INTO media(id, source_path, proxy_path) VALUES(?1, ?2, ?3)",
+            params![
+                asset.id.as_uuid().to_string(),
+                asset.source_path,
+                asset.proxy_path
+            ],
         )?;
     }
     for sequence in project.sequences.values() {
@@ -836,15 +848,27 @@ fn read_root(connection: &Connection) -> Result<RootRow, PersistenceError> {
 fn read_media(
     connection: &Connection,
 ) -> Result<BTreeMap<MediaAssetId, MediaAsset>, PersistenceError> {
-    let mut statement = connection.prepare("SELECT id, source_path FROM media ORDER BY id")?;
+    let mut statement =
+        connection.prepare("SELECT id, source_path, proxy_path FROM media ORDER BY id")?;
     let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
     })?;
     let mut media = BTreeMap::new();
     for row in rows {
-        let (raw_id, source_path) = row?;
+        let (raw_id, source_path, proxy_path) = row?;
         let id = MediaAssetId::from_uuid(parse_uuid("media.id", &raw_id)?);
-        media.insert(id, MediaAsset { id, source_path });
+        media.insert(
+            id,
+            MediaAsset {
+                id,
+                source_path,
+                proxy_path,
+            },
+        );
     }
     Ok(media)
 }
@@ -1191,6 +1215,11 @@ mod tests {
             },
         )?;
         let media_id = *project.media.keys().next().ok_or("missing media")?;
+        project
+            .media
+            .get_mut(&media_id)
+            .ok_or("missing media")?
+            .proxy_path = Some("/cache/source-proxy.mp4".to_owned());
         let first_clip_id = project.sequences[&sequence_id].tracks[0].clips[0].id;
         let second_clip_id = ClipId::new();
         CommandEngine::execute(
@@ -1240,6 +1269,10 @@ mod tests {
         assert_eq!(loaded.name, project.name);
         assert_eq!(loaded.revision(), project.revision());
         assert_eq!(loaded.media.len(), 1);
+        assert_eq!(
+            loaded.media[&media_id].proxy_path.as_deref(),
+            Some("/cache/source-proxy.mp4")
+        );
         let loaded_sequence = loaded.sequences.values().next().ok_or("missing sequence")?;
         assert!(!loaded_sequence.tracks[0].visible);
         assert!(loaded_sequence.tracks[0].muted);
@@ -1281,7 +1314,7 @@ mod tests {
         assert!(track.visible);
         assert!(!track.muted);
         let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
         Ok(())
     }
 

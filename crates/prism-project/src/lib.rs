@@ -302,6 +302,8 @@ pub struct MediaAsset {
     pub id: MediaAssetId,
     /// Original path as selected or relinked by the user.
     pub source_path: String,
+    /// Optional relinked proxy path used when proxy playback is selected.
+    pub proxy_path: Option<String>,
 }
 
 impl MediaAsset {
@@ -309,6 +311,14 @@ impl MediaAsset {
     #[must_use]
     pub fn has_source_path(&self) -> bool {
         !self.source_path.is_empty()
+    }
+
+    /// Returns whether a non-empty proxy path is configured.
+    #[must_use]
+    pub fn has_proxy_path(&self) -> bool {
+        self.proxy_path
+            .as_deref()
+            .is_some_and(|path| !path.is_empty())
     }
 }
 
@@ -647,6 +657,7 @@ mod tests {
             MediaAsset {
                 id: media_id,
                 source_path: "/media/source.mov".to_owned(),
+                proxy_path: None,
             },
         );
         let sequence_id = SequenceId::new();
