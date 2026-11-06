@@ -24,6 +24,8 @@ pub enum StudioCommand {
         /// Active project path whose autosaves should be discovered.
         project: PathBuf,
     },
+    /// Print the stable default keyboard bindings.
+    ListShortcuts,
 }
 
 /// Structured shell failures.
@@ -193,6 +195,9 @@ where
                 project: PathBuf::from(project),
             })
         }
+        [shortcuts_flag] if shortcuts_flag == "--list-shortcuts" => {
+            Ok(StudioCommand::ListShortcuts)
+        }
         _ => Err(StudioError::Usage),
     }
 }
@@ -252,6 +257,9 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
                 .collect::<Vec<_>>();
             Ok(Some(serde_json::to_string_pretty(&candidates)?))
         }
+        StudioCommand::ListShortcuts => {
+            Ok(Some(serde_json::to_string_pretty(&default_shortcuts())?))
+        }
     }
 }
 
@@ -276,6 +284,10 @@ mod tests {
         assert!(matches!(
             parse(vec!["--list-autosaves".to_owned(), "edit.prism".to_owned()]),
             Ok(StudioCommand::ListAutosaves { project }) if project == Path::new("edit.prism")
+        ));
+        assert!(matches!(
+            parse(vec!["--list-shortcuts".to_owned()]),
+            Ok(StudioCommand::ListShortcuts)
         ));
     }
 
