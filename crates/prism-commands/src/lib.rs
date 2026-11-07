@@ -98,6 +98,14 @@ impl CommandRegistry {
                 enabled: always_enabled,
             },
             CommandDescriptor {
+                id: "project.set_proxy",
+                label: "Set Media Proxy",
+                category: CommandCategory::Project,
+                shortcut: None,
+                undo: UndoStrategy::Transaction,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
                 id: "timeline.add_marker",
                 label: "Add Marker",
                 category: CommandCategory::Timeline,
@@ -112,6 +120,30 @@ impl CommandRegistry {
                 shortcut: Some("C"),
                 undo: UndoStrategy::Transaction,
                 enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "timeline.insert_clip",
+                label: "Insert Clip",
+                category: CommandCategory::Timeline,
+                shortcut: Some(","),
+                undo: UndoStrategy::Transaction,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "timeline.ripple_delete",
+                label: "Ripple Delete",
+                category: CommandCategory::Timeline,
+                shortcut: Some("Shift+Delete"),
+                undo: UndoStrategy::Transaction,
+                enabled: has_revision,
+            },
+            CommandDescriptor {
+                id: "timeline.add_transition",
+                label: "Add Transition",
+                category: CommandCategory::Timeline,
+                shortcut: Some("Cmd+D"),
+                undo: UndoStrategy::Transaction,
+                enabled: has_revision,
             },
             CommandDescriptor {
                 id: "timeline.undo",
@@ -1968,6 +2000,9 @@ mod tests {
         let play =
             CommandRegistry::find("playback.play_pause").ok_or(CommandError::EmptyTransaction)?;
         assert!(play.is_enabled(&project));
+        assert!(CommandRegistry::find("project.set_proxy").is_some());
+        assert!(CommandRegistry::find("timeline.insert_clip").is_some());
+        assert!(CommandRegistry::find("timeline.ripple_delete").is_some());
         Ok(())
     }
 
