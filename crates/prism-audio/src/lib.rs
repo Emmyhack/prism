@@ -1142,6 +1142,32 @@ pub struct StereoMeterSnapshot {
     pub clipped: bool,
 }
 
+impl StereoMeterSnapshot {
+    /// Current left-channel peak in dBFS; silence is negative infinity.
+    #[must_use]
+    pub fn left_peak_dbfs(self) -> f32 {
+        amplitude_to_dbfs(self.left_peak)
+    }
+
+    /// Current right-channel peak in dBFS; silence is negative infinity.
+    #[must_use]
+    pub fn right_peak_dbfs(self) -> f32 {
+        amplitude_to_dbfs(self.right_peak)
+    }
+
+    /// Current left-channel RMS in dBFS; silence is negative infinity.
+    #[must_use]
+    pub fn left_rms_dbfs(self) -> f32 {
+        amplitude_to_dbfs(self.left_rms)
+    }
+
+    /// Current right-channel RMS in dBFS; silence is negative infinity.
+    #[must_use]
+    pub fn right_rms_dbfs(self) -> f32 {
+        amplitude_to_dbfs(self.right_rms)
+    }
+}
+
 impl StereoMeter {
     /// Updates the meter from one interleaved stereo block.
     ///
@@ -1428,6 +1454,8 @@ mod tests {
         assert!((snapshot.left_peak - 1.1).abs() < f32::EPSILON);
         assert!((snapshot.right_peak - 0.75).abs() < f32::EPSILON);
         assert!((snapshot.left_hold - 1.1).abs() < f32::EPSILON);
+        assert!(snapshot.left_peak_dbfs() > 0.0);
+        assert!(snapshot.right_peak_dbfs() < 0.0);
         assert!(snapshot.clipped);
         meter.update(&[0.1, 0.2])?;
         assert!((meter.snapshot().left_hold - 1.1).abs() < f32::EPSILON);
