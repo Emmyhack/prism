@@ -4,13 +4,17 @@
 //! interaction state, and design tokens here makes the editing experience stable
 //! across macOS, Windows, and Linux without coupling it to a renderer.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 /// Minimum supported desktop viewport in logical pixels.
 pub const MIN_VIEWPORT: Size = Size::new(1_024, 640);
 
 /// A two-dimensional logical-pixel size.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Size {
     /// Horizontal extent.
@@ -28,7 +32,7 @@ impl Size {
 }
 
 /// A panel rectangle in logical pixels.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Rect {
     /// Distance from the viewport's left edge.
@@ -53,7 +57,7 @@ impl Rect {
 }
 
 /// Stable names for the primary editing surfaces.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PanelId {
     /// Project media, bins, effects, and search.
@@ -69,7 +73,7 @@ pub enum PanelId {
 }
 
 /// Computed geometry for one desktop workspace frame.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceLayout {
     /// Effective viewport, clamped to the supported minimum.
@@ -78,6 +82,59 @@ pub struct WorkspaceLayout {
     pub panels: Vec<(PanelId, Rect)>,
     /// Whether the inspector is collapsed into a drawer.
     pub inspector_drawer: bool,
+}
+
+/// A named workspace layout persisted independently from project media.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacePreset {
+    /// User-visible preset name.
+    pub name: String,
+    /// Serialized panel geometry and collapse state.
+    pub layout: WorkspaceLayout,
+}
+
+/// Atomic JSON persistence for workspace presets.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceStore {
+    path: PathBuf,
+}
+
+impl WorkspaceStore {
+    /// Creates a store rooted at `path`; no I/O occurs until save/load.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// Loads presets, returning an empty list when no store exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns filesystem or invalid-JSON errors.
+    pub fn load(&self) -> Result<Vec<WorkspacePreset>, io::Error> {
+        if !self.path.is_file() {
+            return Ok(Vec::new());
+        }
+        let bytes = fs::read(&self.path)?;
+        serde_json::from_slice(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    /// Atomically replaces the preset store after validating its JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns filesystem or serialization errors.
+    pub fn save(&self, presets: &[WorkspacePreset]) -> Result<(), io::Error> {
+        let bytes = serde_json::to_vec_pretty(presets)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let temporary = self.path.with_extension("tmp");
+        fs::write(&temporary, bytes)?;
+        fs::rename(temporary, &self.path)
+    }
 }
 
 impl WorkspaceLayout {
@@ -408,7 +465,7 @@ impl DesktopState {
 mod tests {
     use super::{
         DesktopState, EditTool, MIN_VIEWPORT, PanelId, Size, TransportState, WorkspaceKind,
-        WorkspaceLayout,
+        WorkspaceLayout, WorkspacePreset, WorkspaceStore,
     };
 
     #[test]
@@ -439,6 +496,22 @@ mod tests {
             layout.panel(PanelId::Timeline).map(|rect| rect.y)
         );
         assert!(!layout.inspector_drawer);
+    }
+
+    #[test]
+    fn workspace_presets_round_trip_atomically() -> Result<(), Box<dyn std::error::Error>> {
+        let path =
+            std::env::temp_dir().join(format!("prism-workspaces-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let store = WorkspaceStore::new(&path);
+        let presets = vec![WorkspacePreset {
+            name: "Edit".to_owned(),
+            layout: WorkspaceLayout::for_viewport(Size::new(1_440, 900)),
+        }];
+        store.save(&presets)?;
+        assert_eq!(store.load()?, presets);
+        let _ = std::fs::remove_file(path);
+        Ok(())
     }
 
     #[test]
