@@ -1,8 +1,13 @@
 {
   "name": "@prism/editor",
   "version": "0.1.0",
+  "description": "JavaScript authoring SDK for Prism's versioned editing protocol",
   "type": "module",
-  "exports": "./src/index.js",
+  "exports": { ".": "./src/index.js" },
+  "files": ["src"],
+  "sideEffects": false,
+  "license": "Apache-2.0",
+  "keywords": ["video-editing", "timeline", "prism"],
   "scripts": {
     "test": "node --test test/*.test.js"
   }

@@ -4,9 +4,12 @@
 //! Decoding and compositing consume this plan but do not redefine edit timing.
 
 use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
+use prism_media::{DecodedVideoFrame, FfmpegReferenceDecoder};
 use prism_project::{Project, TrackKind};
 use prism_timeline::{RationalTime, TimeError};
 use std::{
+    collections::BTreeMap,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -120,6 +123,207 @@ pub struct AsyncDecodeWorker<Frame> {
     results: Receiver<DecodeResult<Frame>>,
     minimum_generation: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
+}
+
+/// Scheduling failures for the playback coordinator.
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum PlaybackError {
+    /// Timeline evaluation failed before any decoder work was submitted.
+    #[error("could not evaluate playback frame: {0}")]
+    Evaluation(#[from] EvaluationError),
+    /// A decoder queue rejected a scheduled source.
+    #[error("could not schedule source decode: {0}")]
+    Submit(#[from] SubmitError),
+    /// Request identifiers could not advance without wrapping.
+    #[error("playback request identifier overflowed")]
+    RequestIdOverflow,
+}
+
+/// One exact playback scheduling result.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlaybackSchedule {
+    /// Generation assigned to all source requests.
+    pub generation: u64,
+    /// Exact sequence time evaluated by the timeline.
+    pub sequence_time: RationalTime,
+    /// Decoder request IDs submitted for active video sources.
+    pub request_ids: Vec<u64>,
+}
+
+/// Playback coordinator joining exact timeline evaluation to bounded decoding.
+pub struct PlaybackEngine<Frame> {
+    worker: AsyncDecodeWorker<Frame>,
+    generation: u64,
+    next_request_id: u64,
+}
+
+/// Decoder source description used by the reference `FFmpeg` playback adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReferenceVideoSource {
+    /// Source media path.
+    pub path: PathBuf,
+    /// Zero-based video stream ordinal.
+    pub video_ordinal: u32,
+    /// Inspected frame width.
+    pub width: u32,
+    /// Inspected frame height.
+    pub height: u32,
+}
+
+/// Errors specific to the reference playback adapter.
+#[derive(Debug, Error)]
+pub enum ReferencePlaybackError {
+    /// Timeline scheduling or queue backpressure failed.
+    #[error("playback scheduling failed: {0}")]
+    Playback(#[from] PlaybackError),
+    /// A timeline source did not have an inspected decoder description.
+    #[error("no decoder source is registered for media asset {0:?}")]
+    MissingSource(MediaAssetId),
+}
+
+/// FFmpeg-backed playback adapter that executes decoding only on the worker.
+pub struct ReferenceVideoPlayback {
+    engine: PlaybackEngine<DecodedVideoFrame>,
+}
+
+impl ReferenceVideoPlayback {
+    /// Creates a reference playback adapter from inspected source descriptions.
+    #[must_use]
+    pub fn new(
+        executable: impl Into<PathBuf>,
+        queue_capacity: usize,
+        sources: BTreeMap<MediaAssetId, ReferenceVideoSource>,
+    ) -> Self {
+        let decoder = FfmpegReferenceDecoder::new(executable);
+        let engine = PlaybackEngine::new(queue_capacity, move |request| {
+            let source = sources.get(&request.source.media_id).ok_or_else(|| {
+                format!("missing media source {}", request.source.media_id.as_uuid())
+            })?;
+            decoder
+                .decode_video_frame_rgba(
+                    &source.path,
+                    source.video_ordinal,
+                    request.source.source_time,
+                    source.width,
+                    source.height,
+                )
+                .map_err(|error| error.to_string())
+        });
+        Self { engine }
+    }
+
+    /// Invalidates queued frames and advances the seek generation.
+    pub fn seek(&mut self) -> u64 {
+        self.engine.seek()
+    }
+
+    /// Schedules one exact sequence timestamp for reference decoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReferencePlaybackError`] when timeline evaluation fails or
+    /// the bounded decode queue rejects a source.
+    pub fn schedule_video(
+        &mut self,
+        project: &Project,
+        sequence_id: SequenceId,
+        sequence_time: RationalTime,
+    ) -> Result<PlaybackSchedule, ReferencePlaybackError> {
+        self.engine
+            .schedule_video(project, sequence_id, sequence_time)
+            .map_err(ReferencePlaybackError::from)
+    }
+
+    /// Waits for one decoded frame or decoder diagnostic.
+    ///
+    /// # Errors
+    ///
+    /// Returns a timeout or worker disconnection error when no frame arrives.
+    pub fn result_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<DecodeResult<DecodedVideoFrame>, RecvTimeoutError> {
+        self.engine.result_timeout(timeout)
+    }
+}
+
+impl<Frame: Send + 'static> PlaybackEngine<Frame> {
+    /// Creates a coordinator with a bounded decoder queue.
+    #[must_use]
+    pub fn new(
+        queue_capacity: usize,
+        decode: impl FnMut(&DecodeRequest) -> Result<Frame, String> + Send + 'static,
+    ) -> Self {
+        Self {
+            worker: AsyncDecodeWorker::spawn(queue_capacity, decode),
+            generation: 0,
+            next_request_id: 0,
+        }
+    }
+
+    /// Advances the seek/playback generation and invalidates older results.
+    pub fn seek(&mut self) -> u64 {
+        self.generation = self.generation.saturating_add(1);
+        self.worker.cancel_before(self.generation);
+        self.generation
+    }
+
+    /// Schedules all active visible video sources for one exact sequence time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PlaybackError`] when timeline evaluation or queue submission
+    /// fails. Requests already submitted in this call remain tagged with the
+    /// same generation and can be safely discarded by a later seek.
+    pub fn schedule_video(
+        &mut self,
+        project: &Project,
+        sequence_id: SequenceId,
+        sequence_time: RationalTime,
+    ) -> Result<PlaybackSchedule, PlaybackError> {
+        let plan = evaluate_video_frame(project, sequence_id, sequence_time)?;
+        let mut request_ids = Vec::with_capacity(plan.sources.len());
+        for source in plan.sources {
+            let request_id = self.next_request_id;
+            self.next_request_id = self
+                .next_request_id
+                .checked_add(1)
+                .ok_or(PlaybackError::RequestIdOverflow)?;
+            self.worker.try_submit(DecodeRequest {
+                request_id,
+                generation: self.generation,
+                source,
+            })?;
+            request_ids.push(request_id);
+        }
+        Ok(PlaybackSchedule {
+            generation: self.generation,
+            sequence_time: plan.sequence_time,
+            request_ids,
+        })
+    }
+
+    /// Polls one completed decode result without blocking the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns the worker receiver error when the queue is empty or stopped.
+    pub fn try_result(&self) -> Result<DecodeResult<Frame>, TryRecvError> {
+        self.worker.try_result()
+    }
+
+    /// Waits for one decoder result on a coordinator thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns timeout or disconnection when no result arrives before the
+    /// deadline or the decoder worker stops.
+    pub fn result_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<DecodeResult<Frame>, RecvTimeoutError> {
+        self.worker.result_timeout(timeout)
+    }
 }
 
 impl<Frame: Send + 'static> AsyncDecodeWorker<Frame> {
@@ -342,8 +546,8 @@ pub fn evaluate_audio_frame(
 #[cfg(test)]
 mod tests {
     use super::{
-        AsyncDecodeWorker, DecodeRequest, DecodeResult, EvaluationError, SubmitError,
-        VideoSourceRequest, evaluate_audio_frame, evaluate_video_frame,
+        AsyncDecodeWorker, DecodeRequest, DecodeResult, EvaluationError, PlaybackEngine,
+        SubmitError, VideoSourceRequest, evaluate_audio_frame, evaluate_video_frame,
     };
     use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
     use prism_project::{Clip, MediaAsset, Project, Sequence, Track, TrackKind};
@@ -601,6 +805,36 @@ mod tests {
         };
         assert_eq!(request.request_id, 4);
         assert_eq!(frame, 4);
+        Ok(())
+    }
+
+    #[test]
+    fn playback_engine_schedules_exact_sources_and_invalidates_prior_seeks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = fixture()?;
+        let mut engine = PlaybackEngine::new(4, |request| Ok(request.source.source_time));
+        let first = engine.schedule_video(
+            &fixture.project,
+            fixture.sequence_id,
+            RationalTime::new(3, 2)?,
+        )?;
+        assert_eq!(first.generation, 0);
+        assert_eq!(first.request_ids, vec![0]);
+        let generation = engine.seek();
+        assert_eq!(generation, 1);
+        let second = engine.schedule_video(
+            &fixture.project,
+            fixture.sequence_id,
+            RationalTime::new(3, 1)?,
+        )?;
+        assert_eq!(second.generation, 1);
+        assert_eq!(second.request_ids, vec![1]);
+        let result = engine.result_timeout(Duration::from_secs(1))?;
+        let DecodeResult::Ready { request, frame } = result else {
+            return Err("expected a current-generation frame".into());
+        };
+        assert_eq!(request.generation, 1);
+        assert_eq!(frame, RationalTime::new(20, 1)?);
         Ok(())
     }
 }

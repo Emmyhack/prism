@@ -138,12 +138,58 @@ cargo run -p prism-cli -- run-typescript-script \
   --permissions ./scripts/organize.permissions.json
 ```
 
-The Studio binary currently provides a real, UI-independent shell. Start it
-without a project or inspect a validated project through the persistence layer:
+Execute a validated recipe entry relative to its manifest. The permission
+review must match the manifest request, and materialized inputs are exposed to
+the worker as `PRISM_RECIPE_INPUTS`:
+
+```sh
+cargo run -p prism-cli -- run-recipe \
+  --project ./edit.prism --manifest ./recipes/organize/recipe.json \
+  --inputs ./recipes/organize/inputs.json \
+  --permissions ./recipes/organize/permissions.json \
+  --python /path/to/python
+```
+
+JavaScript recipes use `--node`; TypeScript recipes use
+`--tsc /path/to/tsc --node /path/to/node`.
+All recipe languages can instead use a reviewed runtime bundle:
+
+```sh
+cargo run -p prism-cli -- run-recipe \
+  --project ./edit.prism --manifest ./recipes/organize/recipe.json \
+  --inputs ./recipes/organize/inputs.json \
+  --permissions ./recipes/organize/permissions.json \
+  --runtime-bundle ./runtimes/runtime.json
+```
+
+Studio can inspect the combined scripting workspace and produce validated
+breakpoint snapshots for a transaction without changing the project:
+
+```sh
+cargo run -p prism-studio -- \
+  --script-workspace ./scripts ./scripts/permissions.json ./runtimes/runtime.json
+cargo run -p prism-studio -- \
+  --debug-transaction ./edit.prism ./transaction.json 1,3
+```
+
+The Studio binary launches the native professional editing workspace when
+started without arguments. Headless inspection remains available through the
+same binary for automation and diagnostics:
 
 ```sh
 cargo run -p prism-studio
 cargo run -p prism-studio -- --project ./edit.prism
+cargo run -p prism-studio -- --list-media ./edit.prism /usr/local/bin/ffprobe
+```
+
+`--list-media` probes every project source reference and returns deterministic
+browser data including media kind, duration, offline state, and diagnostics.
+
+Inspect the same typed command registry consumed by menus, tools, and shortcut
+adapters with:
+
+```sh
+cargo run -p prism-studio -- --list-commands
 ```
 
 Lock or unlock a track through the same validated command engine:

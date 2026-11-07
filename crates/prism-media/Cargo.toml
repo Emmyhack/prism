@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+prism-audio = { path = "../prism-audio" }
 prism-cache = { path = "../prism-cache" }
 prism-timeline = { path = "../prism-timeline" }
 serde.workspace = true

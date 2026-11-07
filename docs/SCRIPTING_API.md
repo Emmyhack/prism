@@ -54,11 +54,14 @@ fixed NodeNext/ES2022 compiler settings, and runs the compiled module through
 the same bounded Node worker; the checked-in module remains a pure protocol
 builder for editor tooling.
 
-Recipe requests now pass through the same Rust scripting boundary: manifest and
+Recipe requests pass through the same Rust scripting boundary: manifest and
 input validation produces an execution plan without starting a worker, and
 declared parameter defaults are materialized into the plan for every language.
-Runtime
-startup, capability enforcement, and command execution remain separate stages.
+`run-recipe` authorizes the manifest, resolves a contained entry path, injects
+the materialized values as `PRISM_RECIPE_INPUTS`, starts the declared language
+worker, and routes its stdout transaction through the normal command engine.
+Runtime startup, capability enforcement, and command execution remain separate
+stages.
 The Python, JavaScript, and TypeScript SDKs expose equivalent recipe-request
 builders that emit the same `{ manifest, inputs }` envelope; they do not grant
 permissions or bypass host validation.
@@ -66,8 +69,10 @@ Worker hosts must call the authorization-aware planning path with an explicit
 permission grant set; manifest declarations alone never grant access.
 The Rust host boundary also enforces serialized-payload and operation-count
 limits, supports cancellation before mutation, and uses one dry-run/commit path
-for all command execution. This is host supervision, not a claim of OS-level
-sandboxing or a completed Python/JavaScript runtime.
+for all command execution. Versioned runtime-bundle manifests resolve only
+contained Python, Node, and TypeScript compiler paths, allowing distributions
+to package reviewed runtime components without ambient PATH discovery. This is
+host supervision, not a claim of OS-level sandboxing.
 
 The `run-python-script` and `run-javascript-script` CLI paths now supervise
 explicit Python or Node executables,
@@ -81,6 +86,13 @@ boundary; OS-level sandboxing remains future work. The optional `--permissions` 
 before spawning and derives `project.read`, `project.write`, and
 `media.import` requirements again from the decoded transaction before mutation.
 Timeline markers are exposed through shared `addMarker` and `deleteMarker` operations. Marker times use exact rational values, and the core validates labels, ordering, and unique IDs.
+
+Studio exposes a typed scripting workspace model combining the script catalog,
+permission decisions, and runtime-bundle status. Permission grants can only be
+changed for capabilities the script requested. Its transaction debugger first
+validates the complete atomic command batch, then exposes step and breakpoint
+snapshots without mutating the project; committing remains an explicit separate
+action.
 
 Clip duplication is exposed through `duplicateClip`; it reuses the original
 media/source range while requiring a new clip ID and exact destination time.

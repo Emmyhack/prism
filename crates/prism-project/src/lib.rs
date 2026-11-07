@@ -1,5 +1,9 @@
 //! Authoritative in-memory project model, independent of persistence formats.
 
+mod multicam;
+
+pub use multicam::{CameraAngle, MulticamError, MulticamPlan, MulticamSwitch};
+
 use prism_core::{ClipId, MarkerId, MediaAssetId, ProjectId, SequenceId, TrackId, TransitionId};
 use prism_timeline::{RationalTime, TimeError};
 use std::collections::{BTreeMap, BTreeSet};

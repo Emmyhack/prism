@@ -4,7 +4,17 @@
 //! startup, project loading, and inspection behavior real and testable without
 //! coupling the domain model to a UI framework.
 
+/// Toolkit-neutral professional desktop workspace and design system.
+pub mod desktop;
+
+use prism_commands::{CommandCategory, CommandRegistry, UndoStrategy};
+use prism_media::{FfprobeInspector, MediaArtifactKind, MediaCatalog, MediaItemKind};
 use prism_persistence::{AutosaveCandidate, PersistenceError, list_autosaves, load};
+use prism_recipe::RecipePermission;
+use prism_script::{
+    DebugSnapshot, ExecutionError, PermissionGrantError, PermissionGrantSet, RuntimeBundleError,
+    RuntimeBundleManifest, TransactionDebugger, TransactionRequest,
+};
 use serde::Serialize;
 use std::{
     fs,
@@ -22,6 +32,13 @@ pub enum StudioCommand {
         /// Project database to open.
         project: PathBuf,
     },
+    /// Probe all media referenced by a project for the browser.
+    ListMedia {
+        /// Project database to inspect.
+        project: PathBuf,
+        /// Explicit `ffprobe` executable.
+        ffprobe: PathBuf,
+    },
     /// List revision-scoped autosaves for a project path.
     ListAutosaves {
         /// Active project path whose autosaves should be discovered.
@@ -29,6 +46,8 @@ pub enum StudioCommand {
     },
     /// Print the stable default keyboard bindings.
     ListShortcuts,
+    /// Print the command registry consumed by menus, tools, and shortcuts.
+    ListCommands,
     /// List supported scripts in a directory.
     ListScripts {
         /// Directory containing script files.
@@ -44,6 +63,38 @@ pub enum StudioCommand {
         /// Permission manifest JSON file.
         permissions: PathBuf,
     },
+    /// Persist one explicit permission decision.
+    SetPermission {
+        /// Permission review sidecar.
+        permissions: PathBuf,
+        /// Requested capability to update.
+        capability: RecipePermission,
+        /// New grant state.
+        granted: bool,
+    },
+    /// Inspect a packaged scripting runtime bundle.
+    InspectRuntime {
+        /// Runtime bundle manifest.
+        manifest: PathBuf,
+    },
+    /// Build the complete scripting workspace model consumed by Studio views.
+    ScriptWorkspace {
+        /// Script catalog directory.
+        directory: PathBuf,
+        /// Permission review sidecar.
+        permissions: PathBuf,
+        /// Runtime bundle manifest.
+        runtime: PathBuf,
+    },
+    /// Validate and inspect a transaction at operation breakpoints.
+    DebugTransaction {
+        /// Authoritative project database.
+        project: PathBuf,
+        /// Serialized transaction request.
+        request: PathBuf,
+        /// Zero-based operation breakpoints.
+        breakpoints: Vec<usize>,
+    },
 }
 
 /// Structured shell failures.
@@ -55,12 +106,24 @@ pub enum StudioError {
     /// Project loading failed.
     #[error("could not open project: {0}")]
     Persistence(#[from] PersistenceError),
+    /// Media probing failed before a catalog could be built.
+    #[error("could not build media catalog: {0}")]
+    Media(#[from] prism_media::MediaError),
     /// Summary serialization failed.
     #[error("could not serialize project summary: {0}")]
     Json(#[from] serde_json::Error),
     /// Script catalog filesystem access failed.
     #[error("could not inspect script catalog: {0}")]
     Io(#[from] std::io::Error),
+    /// A permission decision was invalid.
+    #[error("invalid script permission review: {0}")]
+    Permission(#[from] PermissionGrantError),
+    /// A packaged runtime manifest was invalid.
+    #[error("invalid scripting runtime bundle: {0}")]
+    Runtime(#[from] RuntimeBundleError),
+    /// Script transaction debugging failed validation.
+    #[error("could not debug script transaction: {0}")]
+    Debug(#[from] ExecutionError),
 }
 
 /// Stable, UI-independent project summary exposed to the shell and future UI.
@@ -87,6 +150,35 @@ pub struct ProjectSummary {
     pub muted_track_count: usize,
     /// Number of sequence markers.
     pub marker_count: usize,
+}
+
+/// Stable media catalog item exposed to the native browser adapter.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaCatalogSummary {
+    /// Referenced source path.
+    pub path: PathBuf,
+    /// Broad media classification.
+    pub kind: String,
+    /// Whether the source is currently unavailable.
+    pub offline: bool,
+    /// Probe diagnostic, when present.
+    pub diagnostic: Option<String>,
+    /// Exact duration represented as `value/timescale` when available.
+    pub duration: Option<String>,
+    /// Content-addressed thumbnail artifact key, when an asset identity exists.
+    pub thumbnail_cache_key: String,
+    /// Content-addressed waveform artifact key, when an asset identity exists.
+    pub waveform_cache_key: String,
+}
+
+fn media_kind_name(kind: MediaItemKind) -> &'static str {
+    match kind {
+        MediaItemKind::Video => "video",
+        MediaItemKind::Audio => "audio",
+        MediaItemKind::Image => "image",
+        MediaItemKind::Unknown => "unknown",
+    }
 }
 
 /// Stable autosave candidate summary exposed to recovery UI consumers.
@@ -135,6 +227,45 @@ pub struct ShortcutBinding {
     pub modifiers: Vec<String>,
 }
 
+/// UI-neutral command descriptor for menu and shortcut adapters.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandSummary {
+    /// Stable command identifier.
+    pub id: String,
+    /// User-facing command label.
+    pub label: String,
+    /// Registry category.
+    pub category: String,
+    /// Default shortcut, when one is assigned.
+    pub shortcut: Option<String>,
+    /// Undo classification.
+    pub undo: String,
+}
+
+fn command_summaries() -> Vec<CommandSummary> {
+    CommandRegistry::descriptors()
+        .iter()
+        .map(|descriptor| CommandSummary {
+            id: descriptor.id.to_owned(),
+            label: descriptor.label.to_owned(),
+            category: match descriptor.category {
+                CommandCategory::Project => "project",
+                CommandCategory::Timeline => "timeline",
+                CommandCategory::Playback => "playback",
+                CommandCategory::Application => "application",
+            }
+            .to_owned(),
+            shortcut: descriptor.shortcut.map(str::to_owned),
+            undo: match descriptor.undo {
+                UndoStrategy::Transaction => "transaction",
+                UndoStrategy::Ephemeral => "ephemeral",
+            }
+            .to_owned(),
+        })
+        .collect()
+}
+
 /// Supported authoring languages in the Studio script catalog.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -171,6 +302,34 @@ pub struct PermissionSummary {
     pub granted: Vec<String>,
     /// Requested capabilities not granted by the host.
     pub denied: Vec<String>,
+}
+
+/// Packaged runtime information exposed to the Studio scripting workspace.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeSummary {
+    /// Runtime bundle release.
+    pub version: String,
+    /// Resolved Python executable.
+    pub python: Option<PathBuf>,
+    /// Resolved Node executable.
+    pub node: Option<PathBuf>,
+    /// Resolved TypeScript compiler executable.
+    pub typescript_compiler: Option<PathBuf>,
+}
+
+/// Complete UI-independent state for the Studio scripting workspace.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptWorkspaceSummary {
+    /// Deterministically ordered authoring files.
+    pub scripts: Vec<ScriptSummary>,
+    /// Current requested/granted permission decisions.
+    pub permissions: PermissionSummary,
+    /// Validated packaged runtime availability.
+    pub runtime: RuntimeSummary,
+    /// Whether execution can proceed without another permission decision.
+    pub ready_to_run: bool,
 }
 
 fn script_language(path: &Path) -> Option<ScriptLanguage> {
@@ -227,22 +386,21 @@ pub fn list_scripts(directory: impl AsRef<Path>) -> Result<Vec<ScriptSummary>, S
 /// Returns a JSON error for malformed manifests or an I/O error when the file
 /// cannot be read.
 pub fn inspect_permissions(path: impl AsRef<Path>) -> Result<PermissionSummary, StudioError> {
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
-    let values = |field: &str| -> Result<Vec<String>, StudioError> {
-        let entries = value
-            .get(field)
-            .and_then(serde_json::Value::as_array)
-            .ok_or(StudioError::Usage)?;
-        let mut output = entries
-            .iter()
-            .map(|entry| entry.as_str().map(str::to_owned).ok_or(StudioError::Usage))
-            .collect::<Result<Vec<_>, _>>()?;
-        output.sort();
-        output.dedup();
-        Ok(output)
-    };
-    let requested = values("requested")?;
-    let granted = values("granted")?;
+    let review = read_permission_review(path)?;
+    let requested = review
+        .requested
+        .iter()
+        .copied()
+        .map(permission_name)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let granted = review
+        .granted
+        .iter()
+        .copied()
+        .map(permission_name)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
     let denied = requested
         .iter()
         .filter(|permission| granted.binary_search(permission).is_err())
@@ -253,6 +411,142 @@ pub fn inspect_permissions(path: impl AsRef<Path>) -> Result<PermissionSummary, 
         granted,
         denied,
     })
+}
+
+fn read_permission_review(path: impl AsRef<Path>) -> Result<PermissionGrantSet, StudioError> {
+    let review: PermissionGrantSet = serde_json::from_slice(&fs::read(path)?)?;
+    Ok(review.normalize()?)
+}
+
+fn permission_name(permission: RecipePermission) -> &'static str {
+    match permission {
+        RecipePermission::ProjectRead => "project.read",
+        RecipePermission::ProjectWrite => "project.write",
+        RecipePermission::MediaRead => "media.read",
+        RecipePermission::MediaImport => "media.import",
+        RecipePermission::ExportCreate => "export.create",
+        RecipePermission::FilesystemRead => "filesystem.read",
+        RecipePermission::FilesystemWrite => "filesystem.write",
+        RecipePermission::NetworkAccess => "network.access",
+        RecipePermission::PluginInvoke => "plugin.invoke",
+    }
+}
+
+/// Persists one requested permission decision and returns the updated review.
+///
+/// # Errors
+///
+/// Returns a permission error for undeclared capabilities, or an I/O/JSON
+/// error if the sidecar cannot be read or written.
+pub fn set_permission(
+    path: impl AsRef<Path>,
+    capability: RecipePermission,
+    granted: bool,
+) -> Result<PermissionSummary, StudioError> {
+    let path = path.as_ref();
+    let mut review = read_permission_review(path)?;
+    review.set_granted(capability, granted)?;
+    fs::write(path, serde_json::to_vec_pretty(&review)?)?;
+    inspect_permissions(path)
+}
+
+/// Loads and validates a packaged scripting runtime manifest.
+///
+/// # Errors
+///
+/// Returns a manifest, filesystem, or runtime validation error.
+pub fn inspect_runtime(path: impl AsRef<Path>) -> Result<RuntimeSummary, StudioError> {
+    let path = path.as_ref();
+    let manifest: RuntimeBundleManifest = serde_json::from_slice(&fs::read(path)?)?;
+    let directory = path.parent().ok_or(StudioError::Usage)?;
+    let runtime = manifest.resolve(directory)?;
+    Ok(RuntimeSummary {
+        version: runtime.version,
+        python: runtime.python,
+        node: runtime.node,
+        typescript_compiler: runtime.typescript_compiler,
+    })
+}
+
+/// Builds the complete scripting workspace state for graphical adapters.
+///
+/// # Errors
+///
+/// Returns a catalog, permission, runtime, or serialization boundary error.
+pub fn script_workspace(
+    directory: impl AsRef<Path>,
+    permissions: impl AsRef<Path>,
+    runtime: impl AsRef<Path>,
+) -> Result<ScriptWorkspaceSummary, StudioError> {
+    let permissions = inspect_permissions(permissions)?;
+    let ready_to_run = permissions.denied.is_empty();
+    Ok(ScriptWorkspaceSummary {
+        scripts: list_scripts(directory)?,
+        permissions,
+        runtime: inspect_runtime(runtime)?,
+        ready_to_run,
+    })
+}
+
+/// Probes every media reference in a project for a browser or relink view.
+///
+/// # Errors
+///
+/// Returns persistence errors while opening the project or media-probe errors
+/// while constructing the catalog.
+pub fn list_project_media(
+    project: impl AsRef<Path>,
+    ffprobe: impl Into<PathBuf>,
+) -> Result<Vec<MediaCatalogSummary>, StudioError> {
+    let project = load(project.as_ref())?;
+    let paths = project
+        .media
+        .values()
+        .map(|asset| PathBuf::from(&asset.source_path));
+    let catalog = MediaCatalog::probe(paths, &FfprobeInspector::new(ffprobe))?;
+    Ok(catalog
+        .entries()
+        .iter()
+        .map(|entry| MediaCatalogSummary {
+            path: entry.path.clone(),
+            kind: media_kind_name(entry.kind).to_owned(),
+            offline: entry.offline,
+            diagnostic: entry.diagnostic.clone(),
+            duration: entry
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.duration)
+                .map(|time| format!("{}/{}", time.value(), time.timescale())),
+            thumbnail_cache_key: entry
+                .artifact_key(MediaArtifactKind::Thumbnail, b"320x180")
+                .as_hex(),
+            waveform_cache_key: entry
+                .artifact_key(MediaArtifactKind::Waveform, b"1024")
+                .as_hex(),
+        })
+        .collect())
+}
+
+/// Validates a transaction and returns its initial and breakpoint snapshots.
+///
+/// The project is never mutated; committing remains a separate atomic action.
+///
+/// # Errors
+///
+/// Returns a project, file, JSON, protocol, revision, or command error.
+pub fn debug_transaction(
+    project: impl AsRef<Path>,
+    request: impl AsRef<Path>,
+    breakpoints: &[usize],
+) -> Result<Vec<DebugSnapshot>, StudioError> {
+    let project = load(project.as_ref())?;
+    let request: TransactionRequest = serde_json::from_slice(&fs::read(request)?)?;
+    let mut debugger = TransactionDebugger::start(&project, request, breakpoints)?;
+    let mut snapshots = vec![debugger.snapshot()];
+    while !snapshots.last().is_some_and(|snapshot| snapshot.complete) {
+        snapshots.push(debugger.continue_to_breakpoint());
+    }
+    Ok(snapshots)
 }
 
 /// Resolves a platform-neutral key event against the default shortcut map.
@@ -357,6 +651,12 @@ where
         [project_flag, project] if project_flag == "--project" => Ok(StudioCommand::Inspect {
             project: PathBuf::from(project),
         }),
+        [media_flag, project, ffprobe] if media_flag == "--list-media" => {
+            Ok(StudioCommand::ListMedia {
+                project: PathBuf::from(project),
+                ffprobe: PathBuf::from(ffprobe),
+            })
+        }
         [project_flag, project] if project_flag == "--list-autosaves" => {
             Ok(StudioCommand::ListAutosaves {
                 project: PathBuf::from(project),
@@ -365,6 +665,7 @@ where
         [shortcuts_flag] if shortcuts_flag == "--list-shortcuts" => {
             Ok(StudioCommand::ListShortcuts)
         }
+        [commands_flag] if commands_flag == "--list-commands" => Ok(StudioCommand::ListCommands),
         [scripts_flag, directory] if scripts_flag == "--list-scripts" => {
             Ok(StudioCommand::ListScripts {
                 directory: PathBuf::from(directory),
@@ -378,6 +679,50 @@ where
         [permissions_flag, permissions] if permissions_flag == "--inspect-permissions" => {
             Ok(StudioCommand::InspectPermissions {
                 permissions: PathBuf::from(permissions),
+            })
+        }
+        [permission_flag, permissions, capability, granted]
+            if permission_flag == "--set-permission" =>
+        {
+            let capability = serde_json::from_value(serde_json::Value::String(capability.clone()))?;
+            let granted = match granted.as_str() {
+                "true" => true,
+                "false" => false,
+                _ => return Err(StudioError::Usage),
+            };
+            Ok(StudioCommand::SetPermission {
+                permissions: PathBuf::from(permissions),
+                capability,
+                granted,
+            })
+        }
+        [runtime_flag, manifest] if runtime_flag == "--inspect-runtime" => {
+            Ok(StudioCommand::InspectRuntime {
+                manifest: PathBuf::from(manifest),
+            })
+        }
+        [workspace_flag, directory, permissions, runtime]
+            if workspace_flag == "--script-workspace" =>
+        {
+            Ok(StudioCommand::ScriptWorkspace {
+                directory: PathBuf::from(directory),
+                permissions: PathBuf::from(permissions),
+                runtime: PathBuf::from(runtime),
+            })
+        }
+        [debug_flag, project, request, breakpoints] if debug_flag == "--debug-transaction" => {
+            let breakpoints = if breakpoints.trim().is_empty() {
+                Vec::new()
+            } else {
+                breakpoints
+                    .split(',')
+                    .map(|value| value.parse::<usize>().map_err(|_| StudioError::Usage))
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            Ok(StudioCommand::DebugTransaction {
+                project: PathBuf::from(project),
+                request: PathBuf::from(request),
+                breakpoints,
             })
         }
         _ => Err(StudioError::Usage),
@@ -432,6 +777,9 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
             };
             Ok(Some(serde_json::to_string_pretty(&summary)?))
         }
+        StudioCommand::ListMedia { project, ffprobe } => Ok(Some(serde_json::to_string_pretty(
+            &list_project_media(project, ffprobe)?,
+        )?)),
         StudioCommand::ListAutosaves { project } => {
             let candidates = list_autosaves(&project)?
                 .into_iter()
@@ -442,6 +790,9 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
         StudioCommand::ListShortcuts => {
             Ok(Some(serde_json::to_string_pretty(&default_shortcuts())?))
         }
+        StudioCommand::ListCommands => {
+            Ok(Some(serde_json::to_string_pretty(&command_summaries())?))
+        }
         StudioCommand::ListScripts { directory } => Ok(Some(serde_json::to_string_pretty(
             &list_scripts(directory)?,
         )?)),
@@ -451,6 +802,36 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
         StudioCommand::InspectPermissions { permissions } => Ok(Some(
             serde_json::to_string_pretty(&inspect_permissions(permissions)?)?,
         )),
+        StudioCommand::SetPermission {
+            permissions,
+            capability,
+            granted,
+        } => Ok(Some(serde_json::to_string_pretty(&set_permission(
+            permissions,
+            capability,
+            granted,
+        )?)?)),
+        StudioCommand::InspectRuntime { manifest } => Ok(Some(serde_json::to_string_pretty(
+            &inspect_runtime(manifest)?,
+        )?)),
+        StudioCommand::ScriptWorkspace {
+            directory,
+            permissions,
+            runtime,
+        } => Ok(Some(serde_json::to_string_pretty(&script_workspace(
+            directory,
+            permissions,
+            runtime,
+        )?)?)),
+        StudioCommand::DebugTransaction {
+            project,
+            request,
+            breakpoints,
+        } => Ok(Some(serde_json::to_string_pretty(&debug_transaction(
+            project,
+            request,
+            &breakpoints,
+        )?)?)),
     }
 }
 
@@ -458,9 +839,10 @@ pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
 mod tests {
     use super::{
         AutosaveSummary, ProjectSummary, ScriptLanguage, ShortcutAction, StudioCommand,
-        StudioError, default_shortcuts, inspect_permissions, inspect_script, list_scripts, parse,
-        resolve_shortcut,
+        StudioError, default_shortcuts, inspect_permissions, inspect_runtime, inspect_script,
+        list_scripts, parse, resolve_shortcut, script_workspace, set_permission,
     };
+    use prism_recipe::RecipePermission;
     use std::path::Path;
 
     #[test]
@@ -482,12 +864,25 @@ mod tests {
             Ok(StudioCommand::ListShortcuts)
         ));
         assert!(matches!(
+            parse(vec!["--list-commands".to_owned()]),
+            Ok(StudioCommand::ListCommands)
+        ));
+        assert!(matches!(
             parse(vec!["--list-scripts".to_owned(), "scripts".to_owned()]),
             Ok(StudioCommand::ListScripts { directory }) if directory == Path::new("scripts")
         ));
         assert!(matches!(
             parse(vec!["--inspect-permissions".to_owned(), "permissions.json".to_owned()]),
             Ok(StudioCommand::InspectPermissions { permissions }) if permissions == Path::new("permissions.json")
+        ));
+        assert!(matches!(
+            parse(vec![
+                "--debug-transaction".to_owned(),
+                "edit.prism".to_owned(),
+                "request.json".to_owned(),
+                "1,3".to_owned()
+            ]),
+            Ok(StudioCommand::DebugTransaction { breakpoints, .. }) if breakpoints == vec![1, 3]
         ));
     }
 
@@ -612,6 +1007,39 @@ mod tests {
         assert_eq!(summary.granted, vec!["media.read"]);
         assert_eq!(summary.denied, vec!["project.write"]);
         std::fs::remove_file(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn scripting_workspace_combines_catalog_permissions_and_packaged_runtime()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("prism-studio-workspace-{nonce}"));
+        std::fs::create_dir_all(root.join("bin"))?;
+        std::fs::write(root.join("main.py"), "print('ok')\n")?;
+        std::fs::write(root.join("bin/python"), "runtime")?;
+        let permissions = root.join("permissions.json");
+        std::fs::write(
+            &permissions,
+            r#"{"requested":["project.read"],"granted":[]}"#,
+        )?;
+        let runtime = root.join("runtime.json");
+        std::fs::write(
+            &runtime,
+            r#"{"apiVersion":1,"version":"1.0.0","python":"bin/python","node":null,"typescriptCompiler":null}"#,
+        )?;
+
+        let pending = script_workspace(&root, &permissions, &runtime)?;
+        assert!(!pending.ready_to_run);
+        assert_eq!(pending.scripts.len(), 1);
+        assert!(inspect_runtime(&runtime)?.python.is_some());
+        let reviewed = set_permission(&permissions, RecipePermission::ProjectRead, true)?;
+        assert!(reviewed.denied.is_empty());
+        assert!(script_workspace(&root, &permissions, &runtime)?.ready_to_run);
+
+        std::fs::remove_dir_all(root)?;
         Ok(())
     }
 }

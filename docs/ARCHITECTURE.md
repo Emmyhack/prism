@@ -36,9 +36,9 @@ DTOs convert explicitly at boundaries and cannot be used as domain objects.
 | `prism-export` | validated encoding, typed geometry/frame-rate presets, temporary outputs, and atomic finalization | UI, bitrate/codec policy, project mutation |
 | `prism-audio` | allocation-free routed track/bus mixing, fades/crossfades, peak/RMS/dBFS analysis, normalization, dynamics compression, limiting, stateful one-pole filtering and stereo delay, block resampling, and cache-ready waveform primitives | UI, device ownership, project mutation |
 | `prism-cache` | content-addressed derived-artifact keys, atomic writes, finalized lookup, bounded eviction, and bounded background write/eviction scheduling | UI, project mutation |
-| `prism-color` | validated SDR transfer functions, CPU grading, interpolated per-channel 1D and trilinear 3D LUTs, RGB/luma histograms, per-column waveform scope, and U/V vectorscope primitives | UI, GPU handles |
-| `prism-compositor` | backend-independent linear RGBA Normal/Multiply/Screen/Additive/Overlay blend and transition equations | UI, GPU handles, project mutation |
-| `prism-effects` | exact-time scalar automation curves | UI, persistence formats |
+| `prism-color` | validated SDR/HDR transfer and display-transform primitives, CPU grading/LUTs, exact histogram/waveform/vectorscope accumulation, and backend-neutral normalized scope-presentation maps | UI, GPU handles, graphical scope overlays |
+| `prism-compositor` | backend-independent linear RGBA blend/transition equations plus validated coverage-mask, matte extraction, combination, and straight-alpha application primitives | UI, GPU handles, project mutation, mask shape authoring |
+| `prism-effects` | exact-time scalar automation curves and deterministic bounded CPU point tracking with forward/backward consistency | UI, persistence formats, tracking workflow ownership |
 | `prism-render` | deterministic render-graph dependency planning and explicit CPU pixel execution for source/blend/transition/output plus parameterized color gain, opacity, and blend modes | UI, GPU handles, codec I/O |
 | `prism-commands` | validation, transactions, events, undo | UI, language runtimes |
 | `prism-script` | versioned protocol DTOs, bounded/cancellable command execution, supervised external worker process boundary, and capability authorization | runtime-specific APIs |

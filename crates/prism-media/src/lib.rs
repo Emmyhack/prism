@@ -3,6 +3,9 @@
 //! The initial adapter invokes `ffprobe` as a reference implementation. Decode,
 //! playback, and export will use a separate library-backed worker architecture.
 
+use prism_cache::{
+    CacheLayout, CacheSubmitError, CacheWorker, CacheWriteRequest, CacheWriteResult,
+};
 use prism_timeline::{RationalTime, RoundingMode, TimeError};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -130,6 +133,355 @@ pub struct MediaMetadata {
     pub duration: Option<RationalTime>,
     /// Ordered media streams.
     pub streams: Vec<StreamMetadata>,
+}
+
+/// Broad media classification used by project browsers and import filters.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum MediaItemKind {
+    /// Video-bearing source.
+    Video,
+    /// Audio-only source.
+    Audio,
+    /// Still image or image sequence.
+    Image,
+    /// Unknown or unsupported source.
+    Unknown,
+}
+
+/// One real filesystem item presented by the media catalog.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MediaCatalogEntry {
+    /// Source path.
+    pub path: PathBuf,
+    /// Classification derived from probed streams or extension.
+    pub kind: MediaItemKind,
+    /// Probed metadata when inspection succeeded.
+    pub metadata: Option<MediaMetadata>,
+    /// Content fingerprint when the file was readable.
+    pub fingerprint: Option<MediaFingerprint>,
+    /// Whether the path is currently unavailable or inspection failed.
+    pub offline: bool,
+    /// Actionable probe diagnostic, when one exists.
+    pub diagnostic: Option<String>,
+}
+
+/// Stable derived-artifact families exposed to media browsers and background
+/// workers.  The enum keeps UI requests typed instead of passing ad-hoc cache
+/// operation strings between panels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MediaArtifactKind {
+    /// A representative RGBA frame for an asset tile.
+    Thumbnail,
+    /// Downsampled peak/RMS data for an audio or video clip.
+    Waveform,
+    /// A decoded preview frame used by a monitor.
+    PreviewFrame,
+}
+
+/// Errors returned while scheduling a derived media artifact.
+#[derive(Debug, Error)]
+pub enum MediaArtifactError {
+    /// Thumbnail dimensions or source bytes were invalid.
+    #[error("could not create media artifact: {0}")]
+    Media(#[from] MediaError),
+    /// Audio samples failed waveform validation.
+    #[error("could not generate waveform: {0}")]
+    Audio(#[from] prism_audio::AudioError),
+    /// The bounded artifact queue applied backpressure or stopped.
+    #[error("could not queue media artifact: {0}")]
+    Queue(#[from] CacheSubmitError),
+}
+
+/// Bounded asynchronous writer for derived media artifacts.
+pub struct MediaArtifactWorker {
+    worker: CacheWorker,
+    layout: CacheLayout,
+}
+
+impl MediaArtifactWorker {
+    /// Starts a worker rooted at `cache_root` with bounded queue capacity.
+    #[must_use]
+    pub fn spawn(cache_root: impl Into<PathBuf>, queue_capacity: usize) -> Self {
+        let layout = CacheLayout::new(cache_root);
+        Self {
+            worker: CacheWorker::spawn(layout.clone(), queue_capacity),
+            layout,
+        }
+    }
+
+    /// Queues a deterministic RGBA thumbnail write from a decoded frame.
+    ///
+    /// The source frame is resized before it enters the queue, keeping media
+    /// decoding and cache I/O off the UI thread while preserving backpressure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when frame dimensions are invalid or the bounded queue
+    /// is full or stopped.
+    pub fn schedule_thumbnail(
+        &self,
+        entry: &MediaCatalogEntry,
+        frame: &DecodedVideoFrame,
+        width: u32,
+        height: u32,
+    ) -> Result<prism_cache::CacheKey, MediaArtifactError> {
+        let thumbnail = frame.thumbnail(width, height)?;
+        let key = entry.artifact_key(
+            MediaArtifactKind::Thumbnail,
+            format!("{width}x{height}").as_bytes(),
+        );
+        self.worker.try_submit(CacheWriteRequest {
+            key,
+            extension: MediaArtifactKind::Thumbnail.extension().to_owned(),
+            contents: thumbnail.rgba,
+        })?;
+        Ok(key)
+    }
+
+    /// Queues a deterministic mono peak/RMS waveform artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid samples/window sizes or queue backpressure.
+    pub fn schedule_waveform(
+        &self,
+        entry: &MediaCatalogEntry,
+        samples: &[f32],
+        samples_per_point: usize,
+    ) -> Result<prism_cache::CacheKey, MediaArtifactError> {
+        let points = prism_audio::generate_waveform(samples, samples_per_point)?;
+        let mut contents = Vec::with_capacity(points.len() * 12);
+        for point in points {
+            contents.extend_from_slice(&point.min.to_le_bytes());
+            contents.extend_from_slice(&point.max.to_le_bytes());
+            contents.extend_from_slice(&point.rms.to_le_bytes());
+        }
+        let key = entry.artifact_key(
+            MediaArtifactKind::Waveform,
+            samples_per_point.to_string().as_bytes(),
+        );
+        self.worker.try_submit(CacheWriteRequest {
+            key,
+            extension: MediaArtifactKind::Waveform.extension().to_owned(),
+            contents,
+        })?;
+        Ok(key)
+    }
+
+    /// Returns the next completed artifact write without blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns the channel receive error when no result is ready or the worker
+    /// has disconnected.
+    pub fn try_result(&self) -> Result<CacheWriteResult, std::sync::mpsc::TryRecvError> {
+        self.worker.try_result()
+    }
+
+    /// Waits for one completed artifact write for at most `timeout`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a timeout or disconnected-channel error.
+    pub fn result_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<CacheWriteResult, std::sync::mpsc::RecvTimeoutError> {
+        self.worker.result_timeout(timeout)
+    }
+
+    /// Number of writes waiting for completion.
+    #[must_use]
+    pub fn pending_writes(&self) -> usize {
+        self.worker.pending_writes()
+    }
+
+    /// Reads a completed derived artifact, returning `None` on a cache miss.
+    ///
+    /// # Errors
+    ///
+    /// Returns a cache filesystem or extension validation error.
+    pub fn read_artifact(
+        &self,
+        key: prism_cache::CacheKey,
+        artifact: MediaArtifactKind,
+    ) -> Result<Option<Vec<u8>>, prism_cache::CacheError> {
+        self.layout.read(key, artifact.extension())
+    }
+
+    /// Returns the finalized path for a completed artifact, if present.
+    ///
+    /// # Errors
+    ///
+    /// Returns a cache extension validation error.
+    pub fn artifact_path(
+        &self,
+        key: prism_cache::CacheKey,
+        artifact: MediaArtifactKind,
+    ) -> Result<Option<PathBuf>, prism_cache::CacheError> {
+        self.layout.lookup(key, artifact.extension())
+    }
+}
+
+impl MediaArtifactKind {
+    /// Cache operation identifier.
+    #[must_use]
+    pub const fn operation(self) -> &'static str {
+        match self {
+            Self::Thumbnail => "thumbnail",
+            Self::Waveform => "waveform",
+            Self::PreviewFrame => "preview-frame",
+        }
+    }
+
+    /// Safe cache extension for the encoded artifact.
+    #[must_use]
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::Thumbnail | Self::PreviewFrame => "rgba",
+            Self::Waveform => "peaks",
+        }
+    }
+}
+
+impl MediaCatalogEntry {
+    /// Returns a content-addressed key for a derived artifact.
+    ///
+    /// Offline entries still receive a deterministic key from their path, so
+    /// queued work can be reconciled after relinking without using a path as a
+    /// cache filename. Online entries use the full content fingerprint.
+    #[must_use]
+    pub fn artifact_key(
+        &self,
+        artifact: MediaArtifactKind,
+        parameters: &[u8],
+    ) -> prism_cache::CacheKey {
+        if let Some(fingerprint) = &self.fingerprint {
+            return fingerprint.cache_key("media", artifact.operation(), parameters);
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(self.path.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        if let Ok(metadata) = fs::metadata(&self.path) {
+            hasher.update(metadata.len().to_be_bytes());
+            if let Ok(modified) = metadata.modified()
+                && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+            {
+                hasher.update(duration.as_nanos().to_be_bytes());
+            }
+        }
+        prism_cache::CacheKey::from_parts(
+            "media",
+            &hasher.finalize(),
+            artifact.operation(),
+            parameters,
+        )
+    }
+}
+
+/// Deterministic project media catalog built from real paths.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MediaCatalog {
+    entries: Vec<MediaCatalogEntry>,
+}
+
+impl MediaCatalog {
+    /// Builds a catalog from already-probed entries.
+    #[must_use]
+    pub fn from_entries(mut entries: Vec<MediaCatalogEntry>) -> Self {
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
+        Self { entries }
+    }
+
+    /// Probes each path without aborting the complete import batch on one bad item.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] only for a catastrophic catalog operation; per-file
+    /// probe failures are retained as entry diagnostics.
+    pub fn probe(
+        paths: impl IntoIterator<Item = PathBuf>,
+        inspector: &FfprobeInspector,
+    ) -> Result<Self, MediaError> {
+        let mut entries = Vec::new();
+        for path in paths {
+            if !path.is_file() {
+                entries.push(MediaCatalogEntry {
+                    path,
+                    kind: MediaItemKind::Unknown,
+                    metadata: None,
+                    fingerprint: None,
+                    offline: true,
+                    diagnostic: Some("media file is unavailable".to_owned()),
+                });
+                continue;
+            }
+            let fingerprint = fingerprint(&path).ok();
+            match inspector.inspect(&path) {
+                Ok(metadata) => {
+                    let kind = classify_metadata(&metadata);
+                    entries.push(MediaCatalogEntry {
+                        path,
+                        kind,
+                        metadata: Some(metadata),
+                        fingerprint,
+                        offline: false,
+                        diagnostic: None,
+                    });
+                }
+                Err(error) => entries.push(MediaCatalogEntry {
+                    path,
+                    kind: MediaItemKind::Unknown,
+                    metadata: None,
+                    fingerprint,
+                    offline: false,
+                    diagnostic: Some(error.to_string()),
+                }),
+            }
+        }
+        Ok(Self::from_entries(entries))
+    }
+
+    /// Returns all catalog entries in deterministic path order.
+    #[must_use]
+    pub fn entries(&self) -> &[MediaCatalogEntry] {
+        &self.entries
+    }
+
+    /// Filters entries by case-insensitive path/name query and optional kind.
+    #[must_use]
+    pub fn search(&self, query: &str, kind: Option<MediaItemKind>) -> Vec<&MediaCatalogEntry> {
+        let query = query.to_ascii_lowercase();
+        self.entries
+            .iter()
+            .filter(|entry| kind.is_none_or(|expected| entry.kind == expected))
+            .filter(|entry| {
+                entry
+                    .path
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains(&query)
+            })
+            .collect()
+    }
+}
+
+fn classify_metadata(metadata: &MediaMetadata) -> MediaItemKind {
+    if metadata
+        .streams
+        .iter()
+        .any(|stream| matches!(stream.kind, StreamKind::Video(_)))
+    {
+        MediaItemKind::Video
+    } else if metadata
+        .streams
+        .iter()
+        .any(|stream| matches!(stream.kind, StreamKind::Audio(_)))
+    {
+        MediaItemKind::Audio
+    } else {
+        MediaItemKind::Unknown
+    }
 }
 
 /// Metadata common to all media streams.
@@ -1169,14 +1521,130 @@ fn parse_decimal_time(field: &'static str, value: &str) -> Result<RationalTime, 
 #[cfg(test)]
 mod tests {
     use super::{
-        DecodedVideoFrame, FfmpegProxyGenerator, FrameRateEvidence, MediaError, MediaFingerprint,
-        MediaMetadata, MediaSourceSelection, PacketTimingEvidence, ProbeOutput, ProbePacket,
-        ProxyProfile, ProxyRequest, ProxyStatus, StreamKind, analyze_packet_timing,
+        DecodedVideoFrame, FfmpegProxyGenerator, FrameRateEvidence, MediaArtifactKind,
+        MediaArtifactWorker, MediaCatalog, MediaCatalogEntry, MediaError, MediaFingerprint,
+        MediaItemKind, MediaMetadata, MediaSourceSelection, PacketTimingEvidence, ProbeOutput,
+        ProbePacket, ProxyProfile, ProxyRequest, ProxyStatus, StreamKind, analyze_packet_timing,
         checked_rgba_length, fingerprint, format_seek_timestamp, parse_decimal_time, proxy_status,
         select_media_source,
     };
     use prism_timeline::RationalTime;
     use std::{fs, path::Path};
+
+    #[test]
+    fn media_catalog_sorts_and_filters_real_project_entries() {
+        let catalog = MediaCatalog::from_entries(vec![
+            MediaCatalogEntry {
+                path: Path::new("/media/z-roll.mp4").to_path_buf(),
+                kind: MediaItemKind::Video,
+                metadata: None,
+                fingerprint: None,
+                offline: false,
+                diagnostic: None,
+            },
+            MediaCatalogEntry {
+                path: Path::new("/media/A-dialogue.wav").to_path_buf(),
+                kind: MediaItemKind::Audio,
+                metadata: None,
+                fingerprint: None,
+                offline: false,
+                diagnostic: None,
+            },
+        ]);
+        assert_eq!(
+            catalog.entries()[0].path,
+            Path::new("/media/A-dialogue.wav")
+        );
+        assert_eq!(
+            catalog.search("DIALOGUE", Some(MediaItemKind::Audio)).len(),
+            1
+        );
+        assert!(catalog.search("missing", None).is_empty());
+    }
+
+    #[test]
+    fn artifact_keys_are_typed_and_deterministic_for_offline_entries() {
+        let entry = MediaCatalogEntry {
+            path: Path::new("/offline/shot.mov").to_path_buf(),
+            kind: MediaItemKind::Video,
+            metadata: None,
+            fingerprint: None,
+            offline: true,
+            diagnostic: Some("missing".to_owned()),
+        };
+        let first = entry.artifact_key(MediaArtifactKind::Thumbnail, b"320x180");
+        let second = entry.artifact_key(MediaArtifactKind::Thumbnail, b"320x180");
+        let waveform = entry.artifact_key(MediaArtifactKind::Waveform, b"48000");
+        assert_eq!(first, second);
+        assert_ne!(first, waveform);
+        assert_eq!(MediaArtifactKind::Thumbnail.extension(), "rgba");
+        assert_eq!(MediaArtifactKind::Waveform.operation(), "waveform");
+    }
+
+    #[test]
+    fn thumbnail_worker_writes_resized_rgba_artifact_off_thread()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "prism-media-artifact-worker-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let worker = MediaArtifactWorker::spawn(&root, 2);
+        let entry = MediaCatalogEntry {
+            path: Path::new("/offline/shot.mov").to_path_buf(),
+            kind: MediaItemKind::Video,
+            metadata: None,
+            fingerprint: None,
+            offline: true,
+            diagnostic: Some("fixture".to_owned()),
+        };
+        let frame = DecodedVideoFrame {
+            width: 2,
+            height: 2,
+            rgba: vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ],
+        };
+        let key = worker.schedule_thumbnail(&entry, &frame, 1, 1)?;
+        let result = worker.result_timeout(std::time::Duration::from_secs(1))?;
+        assert_eq!(result.key, key);
+        let path = result.result?;
+        assert_eq!(fs::read(path)?, vec![255, 0, 0, 255]);
+        assert_eq!(
+            worker.read_artifact(key, MediaArtifactKind::Thumbnail)?,
+            Some(vec![255, 0, 0, 255])
+        );
+        let _ = fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    #[test]
+    fn waveform_worker_serializes_peak_rms_points() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "prism-media-waveform-worker-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let worker = MediaArtifactWorker::spawn(&root, 2);
+        let entry = MediaCatalogEntry {
+            path: Path::new("/offline/dialogue.wav").to_path_buf(),
+            kind: MediaItemKind::Audio,
+            metadata: None,
+            fingerprint: None,
+            offline: true,
+            diagnostic: Some("fixture".to_owned()),
+        };
+        let key = worker.schedule_waveform(&entry, &[-1.0, 0.5, 1.0, 0.0], 2)?;
+        let result = worker.result_timeout(std::time::Duration::from_secs(1))?;
+        assert_eq!(result.key, key);
+        let path = result.result?;
+        let bytes = fs::read(path)?;
+        assert_eq!(bytes.len(), 2 * 12);
+        assert_eq!(bytes[0..4], (-1.0_f32).to_le_bytes());
+        assert_eq!(bytes[4..8], 0.5_f32.to_le_bytes());
+        let _ = fs::remove_dir_all(root);
+        Ok(())
+    }
 
     #[test]
     fn parses_probe_json_without_float_time() -> Result<(), Box<dyn std::error::Error>> {

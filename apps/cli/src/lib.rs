@@ -14,15 +14,19 @@ use prism_persistence::{
     PersistenceError, list_autosaves, load, recover_autosave, save_autosave, save_backup,
 };
 use prism_project::{Project, TrackKind, TransitionKind};
-use prism_recipe::RecipePermission;
+use prism_recipe::RecipeLanguage;
 use prism_script::{
-    ExternalScriptRunner, ProcessError, ProcessLimits, ScriptWorker, TransactionRequest,
-    TypeScriptCompiler,
+    ExternalScriptRunner, PermissionGrantSet, ProcessError, ProcessLimits, RecipeExecutionPlan,
+    RuntimeBundleManifest, ScriptWorker, TransactionRequest, TypeScriptCompiler,
 };
 use prism_timeline::{RationalTime, TimeError};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::atomic::AtomicBool;
-use std::{ffi::OsString, path::PathBuf, time::Duration};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -103,11 +107,15 @@ pub struct ExportVideoAudioArgs {
     pub ffprobe: PathBuf,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ScriptPermissionFile {
-    requested: Vec<RecipePermission>,
-    granted: Vec<RecipePermission>,
+type ScriptPermissionFile = PermissionGrantSet;
+
+fn read_permissions(path: impl AsRef<Path>) -> Result<ScriptPermissionFile, CliError> {
+    let permissions: ScriptPermissionFile = serde_json::from_slice(
+        &std::fs::read(path).map_err(|error| CliError::Command(error.to_string()))?,
+    )?;
+    permissions
+        .normalize()
+        .map_err(|error| CliError::Command(error.to_string()))
 }
 
 /// Successful CLI operation.
@@ -310,7 +318,7 @@ pub enum CliOutcome {
 pub enum CliError {
     /// No supported subcommand was supplied.
     #[error(
-        "usage: prism-cli <create-project|inspect|create-video-sequence|add-video-clip|add-audio-clip|move-video-clip|trim-video-clip|split-video-clip|delete-video-clip|duplicate-video-clip|ripple-delete-video-clip|add-transition|delete-transition|generate-proxy|set-track-locked|set-track-visible|set-track-muted|reorder-track|add-marker|delete-marker|script-transaction|run-python-script|run-javascript-script|run-typescript-script|validate-recipe|backup-project|autosave-project|list-autosaves|recover-autosave|export-track|export-preset-track|export-video-audio> ..."
+        "usage: prism-cli <create-project|inspect|create-video-sequence|add-video-clip|add-audio-clip|move-video-clip|trim-video-clip|split-video-clip|delete-video-clip|duplicate-video-clip|ripple-delete-video-clip|add-transition|delete-transition|generate-proxy|set-track-locked|set-track-visible|set-track-muted|reorder-track|add-marker|delete-marker|script-transaction|run-python-script|run-javascript-script|run-typescript-script|validate-recipe|run-recipe|backup-project|autosave-project|list-autosaves|recover-autosave|export-track|export-preset-track|export-video-audio> ..."
     )]
     Usage,
     /// A flag was unknown or repeated.
@@ -401,6 +409,7 @@ pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOutcome, 
         Some("run-javascript-script") => run_javascript_script(&arguments),
         Some("run-typescript-script") => run_typescript_script(&arguments),
         Some("validate-recipe") => run_validate_recipe(&arguments),
+        Some("run-recipe") => run_recipe(&arguments),
         Some("backup-project") => run_backup_project(&arguments),
         Some("autosave-project") => run_autosave_project(&arguments),
         Some("list-autosaves") => run_list_autosaves(&arguments),
@@ -925,6 +934,179 @@ fn run_validate_recipe(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
     })
 }
 
+fn run_recipe(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
+    let [
+        command,
+        project_flag,
+        project_path,
+        manifest_flag,
+        manifest_path,
+        inputs_flag,
+        inputs_path,
+        permissions_flag,
+        permissions_path,
+        runtime_flag,
+        runtime_path,
+        remaining @ ..,
+    ] = arguments
+    else {
+        return Err(CliError::Usage);
+    };
+    if command != "run-recipe"
+        || project_flag != "--project"
+        || manifest_flag != "--manifest"
+        || inputs_flag != "--inputs"
+        || permissions_flag != "--permissions"
+    {
+        return Err(CliError::Usage);
+    }
+
+    let manifest_path = PathBuf::from(manifest_path);
+    let manifest: prism_recipe::RecipeManifest = serde_json::from_slice(
+        &std::fs::read(&manifest_path).map_err(|error| CliError::Command(error.to_string()))?,
+    )?;
+    let inputs = serde_json::from_slice(
+        &std::fs::read(inputs_path).map_err(|error| CliError::Command(error.to_string()))?,
+    )?;
+    let permissions = read_permissions(permissions_path)?;
+    if permissions.requested != manifest.permissions {
+        return Err(CliError::Command(
+            "permission review does not match the recipe manifest".to_owned(),
+        ));
+    }
+    let plan = (prism_script::RecipeRequest { manifest, inputs })
+        .authorize_and_plan(&permissions.granted)
+        .map_err(|error| CliError::Command(error.to_string()))?;
+    let recipe_directory = manifest_path
+        .parent()
+        .ok_or_else(|| CliError::Command("recipe manifest has no parent directory".to_owned()))?;
+    let script_path = recipe_directory.join(&plan.manifest.entry);
+    if !script_path.is_file() {
+        return Err(CliError::Command(format!(
+            "recipe entry does not exist: {}",
+            script_path.display()
+        )));
+    }
+
+    execute_recipe_plan(
+        &PathBuf::from(project_path),
+        &plan,
+        &permissions,
+        runtime_flag,
+        runtime_path,
+        remaining,
+        &script_path,
+    )
+}
+
+fn execute_recipe_plan(
+    project_path: &Path,
+    plan: &RecipeExecutionPlan,
+    permissions: &ScriptPermissionFile,
+    runtime_flag: &OsString,
+    runtime_path: &OsString,
+    remaining: &[OsString],
+    script_path: &Path,
+) -> Result<CliOutcome, CliError> {
+    let mut project = load(project_path)?;
+    let revision = project.revision().to_string();
+    let input_json = serde_json::to_string(&plan.inputs)?;
+    let cancelled = AtomicBool::new(false);
+    let limits = ProcessLimits {
+        timeout: Duration::from_secs(30),
+        max_output_bytes: 8 * 1024 * 1024,
+    };
+    let output_directory = std::env::temp_dir().join(format!("prism-recipe-{}", Uuid::new_v4()));
+    let result = (|| {
+        let (interpreter, compiler) = resolve_recipe_runtime(
+            plan.manifest.language,
+            runtime_flag,
+            runtime_path,
+            remaining,
+        )?;
+        let executable_script = match compiler {
+            Some(compiler) => TypeScriptCompiler::new(compiler, limits).compile(
+                script_path,
+                &output_directory,
+                &plan.manifest.permissions,
+                &permissions.granted,
+                &cancelled,
+            )?,
+            None => script_path.to_path_buf(),
+        };
+        let output = ExternalScriptRunner::new(interpreter, limits).run_authorized(
+            &executable_script,
+            &[],
+            &[
+                ("PRISM_PROJECT_REVISION", revision),
+                ("PRISM_RECIPE_INPUTS", input_json),
+            ],
+            &plan.manifest.permissions,
+            &permissions.granted,
+            &cancelled,
+        )?;
+        let request: TransactionRequest = serde_json::from_slice(&output.stdout)?;
+        let execution = ScriptWorker::default()
+            .execute_authorized(&mut project, request, &cancelled, &permissions.granted)
+            .map_err(|error| CliError::Command(error.to_string()))?;
+        if !execution.dry_run {
+            save_atomic(&project, project_path)?;
+        }
+        Ok(CliOutcome::ScriptTransaction {
+            path: project_path.to_path_buf(),
+            revision: execution.revision,
+            dry_run: execution.dry_run,
+            event_count: execution.event_count,
+        })
+    })();
+    if plan.manifest.language == RecipeLanguage::TypeScript {
+        let _ = std::fs::remove_dir_all(output_directory);
+    }
+    result
+}
+
+fn resolve_recipe_runtime(
+    language: RecipeLanguage,
+    runtime_flag: &OsString,
+    runtime_path: &OsString,
+    remaining: &[OsString],
+) -> Result<(PathBuf, Option<PathBuf>), CliError> {
+    match language {
+        RecipeLanguage::Python if runtime_flag == "--python" && remaining.is_empty() => {
+            Ok((PathBuf::from(runtime_path), None))
+        }
+        RecipeLanguage::JavaScript if runtime_flag == "--node" && remaining.is_empty() => {
+            Ok((PathBuf::from(runtime_path), None))
+        }
+        RecipeLanguage::TypeScript
+            if runtime_flag == "--tsc" && remaining.len() == 2 && remaining[0] == "--node" =>
+        {
+            Ok((
+                PathBuf::from(&remaining[1]),
+                Some(PathBuf::from(runtime_path)),
+            ))
+        }
+        _ if runtime_flag == "--runtime-bundle" && remaining.is_empty() => {
+            let manifest_path = PathBuf::from(runtime_path);
+            let manifest: RuntimeBundleManifest = serde_json::from_slice(
+                &std::fs::read(&manifest_path)
+                    .map_err(|error| CliError::Command(error.to_string()))?,
+            )?;
+            let directory = manifest_path.parent().ok_or_else(|| {
+                CliError::Command("runtime bundle manifest has no parent directory".to_owned())
+            })?;
+            let bundle = manifest
+                .resolve(directory)
+                .map_err(|error| CliError::Command(error.to_string()))?;
+            let (interpreter, compiler) = bundle
+                .for_language(language)
+                .map_err(|error| CliError::Command(error.to_string()))?;
+            Ok((interpreter.to_path_buf(), compiler.map(Path::to_path_buf)))
+        }
+        _ => Err(CliError::Usage),
+    }
+}
+
 fn run_backup_project(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
     let [
         command,
@@ -1076,9 +1258,7 @@ fn run_typescript_script(arguments: &[OsString]) -> Result<CliOutcome, CliError>
     }
     let project_path = PathBuf::from(project_path);
     let script_path = PathBuf::from(script_path);
-    let permissions: ScriptPermissionFile = serde_json::from_slice(
-        &std::fs::read(permissions_path).map_err(|error| CliError::Command(error.to_string()))?,
-    )?;
+    let permissions = read_permissions(permissions_path)?;
     let mut project = load(&project_path)?;
     let revision = project.revision().to_string();
     let cancelled = AtomicBool::new(false);
@@ -1183,9 +1363,7 @@ fn run_language_script(
     let mut project = load(&project_path)?;
     let revision = project.revision().to_string();
     let permissions = match permission_path {
-        Some(path) => serde_json::from_slice::<ScriptPermissionFile>(
-            &std::fs::read(path).map_err(|error| CliError::Command(error.to_string()))?,
-        )?,
+        Some(path) => read_permissions(path)?,
         None => ScriptPermissionFile {
             requested: Vec::new(),
             granted: Vec::new(),

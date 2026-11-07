@@ -1,8 +1,8 @@
-//! Validated SDR transfer-function primitives.
+//! Validated color-management and display-transform primitives.
 //!
 //! These functions operate on normalized, non-negative channel values. They
-//! are building blocks for a color-managed render graph; HDR metadata and
-//! display-specific transfer pipelines remain separate concerns.
+//! are building blocks for a color-managed render graph, including a bounded
+//! metadata-driven PQ Rec.2020 to SDR Rec.709 display transform.
 
 use thiserror::Error;
 
@@ -65,6 +65,201 @@ pub enum ColorError {
     /// A LUT had too few samples or contained an invalid value.
     #[error("LUT must contain at least two normalized finite samples")]
     InvalidLut,
+    /// HDR mastering or content-light metadata was inconsistent.
+    #[error("HDR static metadata is invalid")]
+    InvalidHdrMetadata,
+    /// HDR display-transform luminance parameters were invalid.
+    #[error("HDR display transform parameters are invalid")]
+    InvalidDisplayTransform,
+}
+
+/// Static HDR mastering and content-light metadata in cd/m² (nits).
+///
+/// This is the validated engine representation of the luminance fields
+/// commonly carried by mastering-display and content-light-level metadata.
+/// Chromaticity coordinates remain the responsibility of the declared color
+/// primaries.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HdrStaticMetadata {
+    /// Mastering display minimum luminance.
+    pub mastering_min_luminance: f32,
+    /// Mastering display peak luminance.
+    pub mastering_max_luminance: f32,
+    /// Maximum content light level.
+    pub max_content_light_level: f32,
+    /// Maximum frame-average light level.
+    pub max_frame_average_light_level: f32,
+}
+
+impl HdrStaticMetadata {
+    /// Validates finite, ordered luminance metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ColorError::InvalidHdrMetadata`] if values are non-finite,
+    /// negative, unordered, or outside the 10,000-nit PQ system range.
+    pub fn validate(self) -> Result<(), ColorError> {
+        let values = [
+            self.mastering_min_luminance,
+            self.mastering_max_luminance,
+            self.max_content_light_level,
+            self.max_frame_average_light_level,
+        ];
+        if values.iter().any(|value| !value.is_finite())
+            || self.mastering_min_luminance < 0.0
+            || self.mastering_max_luminance <= self.mastering_min_luminance
+            || self.mastering_max_luminance > 10_000.0
+            || self.max_content_light_level <= 0.0
+            || self.max_content_light_level > 10_000.0
+            || self.max_frame_average_light_level <= 0.0
+            || self.max_frame_average_light_level > self.max_content_light_level
+        {
+            return Err(ColorError::InvalidHdrMetadata);
+        }
+        Ok(())
+    }
+
+    fn effective_peak(self) -> f32 {
+        self.max_content_light_level
+    }
+}
+
+/// Deterministic PQ Rec.2020 to SDR Rec.709 display transform.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PqToSdrDisplayTransform {
+    /// Validated source mastering/content-light metadata.
+    pub metadata: HdrStaticMetadata,
+    /// Target SDR display peak in cd/m².
+    pub target_peak_luminance: f32,
+    /// Fraction of target peak below which luminance remains unchanged.
+    pub knee_start: f32,
+}
+
+/// Configurable HDR-to-SDR display transform. This is the shared path for PQ
+/// and HLG sources, with explicit source primaries and transfer metadata.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HdrToSdrDisplayTransform {
+    /// Source transfer function (PQ or HLG).
+    pub source_transfer: TransferFunction,
+    /// Source RGB primaries.
+    pub source_primaries: ColorPrimaries,
+    /// Validated mastering/content-light metadata.
+    pub metadata: HdrStaticMetadata,
+    /// Target SDR display peak in cd/m².
+    pub target_peak_luminance: f32,
+    /// Fraction of target peak below which luminance remains unchanged.
+    pub knee_start: f32,
+}
+
+impl HdrToSdrDisplayTransform {
+    /// Validates the transform configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ColorError`] when metadata or transform parameters are invalid.
+    pub fn validate(self) -> Result<(), ColorError> {
+        self.metadata.validate()?;
+        if !matches!(
+            self.source_transfer,
+            TransferFunction::Pq | TransferFunction::Hlg
+        ) || !self.target_peak_luminance.is_finite()
+            || !(48.0..=1_000.0).contains(&self.target_peak_luminance)
+            || !self.knee_start.is_finite()
+            || !(0.0..1.0).contains(&self.knee_start)
+        {
+            return Err(ColorError::InvalidDisplayTransform);
+        }
+        Ok(())
+    }
+
+    /// Maps HDR source encoding into normalized Rec.709 SDR encoding.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ColorError`] when the configuration or input RGB is invalid.
+    pub fn apply(self, encoded: Rgb) -> Result<Rgb, ColorError> {
+        self.validate()?;
+        let decoded = encoded.decode(self.source_transfer)?;
+        let nits = [
+            decoded.red * 10_000.0,
+            decoded.green * 10_000.0,
+            decoded.blue * 10_000.0,
+        ];
+        let luminance = 0.2627 * nits[0] + 0.6780 * nits[1] + 0.0593 * nits[2];
+        let target = self.target_peak_luminance;
+        let knee = target * self.knee_start;
+        let mapped = if luminance <= knee {
+            luminance
+        } else {
+            let source_peak = self.metadata.effective_peak().max(target);
+            let distance = target - knee;
+            let source_distance = source_peak - knee;
+            let normalization = 1.0 - (-source_distance / distance).exp();
+            (knee
+                + distance * (1.0 - (-(luminance.min(source_peak) - knee) / distance).exp())
+                    / normalization)
+                .min(target)
+        };
+        let scale = if luminance <= f32::EPSILON {
+            0.0
+        } else {
+            mapped / luminance
+        };
+        let target_linear = [
+            nits[0] * scale / target,
+            nits[1] * scale / target,
+            nits[2] * scale / target,
+        ];
+        let xyz = multiply(primary_matrix(self.source_primaries), target_linear);
+        let rec709 = multiply(inverse_primary_matrix(ColorPrimaries::Rec709), xyz);
+        Rgb::new(
+            rec709[0].clamp(0.0, 1.0),
+            rec709[1].clamp(0.0, 1.0),
+            rec709[2].clamp(0.0, 1.0),
+        )?
+        .encode(TransferFunction::Rec709)
+    }
+}
+
+impl PqToSdrDisplayTransform {
+    /// Validates transform metadata and display parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ColorError::InvalidHdrMetadata`] or
+    /// [`ColorError::InvalidDisplayTransform`] for invalid configuration.
+    pub fn validate(self) -> Result<(), ColorError> {
+        self.metadata.validate()?;
+        if !self.target_peak_luminance.is_finite()
+            || !(48.0..=1_000.0).contains(&self.target_peak_luminance)
+            || !self.knee_start.is_finite()
+            || !(0.0..1.0).contains(&self.knee_start)
+        {
+            return Err(ColorError::InvalidDisplayTransform);
+        }
+        Ok(())
+    }
+
+    /// Maps normalized PQ Rec.2020 into normalized Rec.709 display encoding.
+    ///
+    /// The transform decodes absolute PQ luminance, applies a smooth
+    /// luminance-preserving highlight roll-off whose source endpoint is driven
+    /// by validated static metadata, converts primaries in linear light, clips
+    /// the target gamut, and applies the Rec.709 transfer function.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ColorError`] for invalid configuration or input RGB.
+    pub fn apply(self, encoded_rec2020: Rgb) -> Result<Rgb, ColorError> {
+        HdrToSdrDisplayTransform {
+            source_transfer: TransferFunction::Pq,
+            source_primaries: ColorPrimaries::Rec2020,
+            metadata: self.metadata,
+            target_peak_luminance: self.target_peak_luminance,
+            knee_start: self.knee_start,
+        }
+        .apply(encoded_rec2020)
+    }
 }
 
 /// Converts a linear-light RGB value between D65 working spaces.
@@ -150,6 +345,75 @@ pub const HISTOGRAM_BINS: usize = 256;
 
 /// Number of bins per axis in the normalized vectorscope.
 pub const VECTORSCOPE_BINS: usize = 256;
+
+/// Density scaling used to prepare exact scope counts for presentation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScopeDensityScale {
+    /// Normalize counts directly against the peak bin.
+    Linear,
+    /// Apply `ln(1 + count)` before peak normalization to reveal sparse detail.
+    Logarithmic,
+}
+
+/// Backend-neutral normalized scope density image.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScopePresentation {
+    /// Presentation width in bins.
+    pub width: usize,
+    /// Presentation height in bins.
+    pub height: usize,
+    /// Row-major density values in `[0, 1]`.
+    pub density: Box<[f32]>,
+    /// Highest exact source-bin count used for normalization.
+    pub peak_count: u64,
+    /// Scaling applied to source counts.
+    pub scale: ScopeDensityScale,
+}
+
+impl ScopePresentation {
+    fn from_counts(
+        width: usize,
+        height: usize,
+        counts: impl IntoIterator<Item = u64>,
+        scale: ScopeDensityScale,
+    ) -> Self {
+        let counts: Vec<u64> = counts.into_iter().collect();
+        let peak_count = counts.iter().copied().max().unwrap_or(0);
+        let density = if peak_count == 0 {
+            vec![0.0; counts.len()]
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            let peak = peak_count as f32;
+            counts
+                .into_iter()
+                .map(|count| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let count = count as f32;
+                    match scale {
+                        ScopeDensityScale::Linear => count / peak,
+                        ScopeDensityScale::Logarithmic => count.ln_1p() / peak.ln_1p(),
+                    }
+                })
+                .collect()
+        };
+        Self {
+            width,
+            height,
+            density: density.into_boxed_slice(),
+            peak_count,
+            scale,
+        }
+    }
+
+    /// Returns one density value, or `None` for an out-of-range coordinate.
+    #[must_use]
+    pub fn value(&self, x: usize, y: usize) -> Option<f32> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.density.get(y * self.width + x).copied()
+    }
+}
 
 /// Exact integer RGB histogram for a validated pixel sample set.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -400,6 +664,19 @@ impl WaveformScope {
             .iter()
             .rposition(|&count| count > 0)
     }
+
+    /// Produces a row-major normalized density map for a scope renderer.
+    ///
+    /// The exact scope stores column-major bins; presentation rows are flipped
+    /// so black is at the bottom and white is at the top.
+    #[must_use]
+    pub fn presentation(&self, scale: ScopeDensityScale) -> ScopePresentation {
+        let counts = (0..HISTOGRAM_BINS).flat_map(|row| {
+            let luma_bin = HISTOGRAM_BINS - 1 - row;
+            (0..self.width).map(move |column| self.bins[column * HISTOGRAM_BINS + luma_bin])
+        });
+        ScopePresentation::from_counts(self.width, HISTOGRAM_BINS, counts, scale)
+    }
 }
 
 /// Deterministic U/V chroma vectorscope for validated SDR RGB samples.
@@ -463,7 +740,7 @@ impl Vectorscope {
         if u >= VECTORSCOPE_BINS || v >= VECTORSCOPE_BINS {
             return None;
         }
-        Some(self.bins[u * VECTORSCOPE_BINS + v])
+        Some(self.bins[v * VECTORSCOPE_BINS + u])
     }
 
     /// Returns the most populated chroma bin and its count.
@@ -477,6 +754,17 @@ impl Vectorscope {
             .and_then(|(index, count)| {
                 (count > 0).then_some((index % VECTORSCOPE_BINS, index / VECTORSCOPE_BINS, count))
             })
+    }
+
+    /// Produces a normalized density map retaining U/V coordinate layout.
+    #[must_use]
+    pub fn presentation(&self, scale: ScopeDensityScale) -> ScopePresentation {
+        ScopePresentation::from_counts(
+            VECTORSCOPE_BINS,
+            VECTORSCOPE_BINS,
+            self.bins.iter().copied(),
+            scale,
+        )
     }
 }
 
@@ -908,9 +1196,10 @@ fn encode_channel(channel: f32, transfer: TransferFunction) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ColorAdjustment, ColorError, ColorPrimaries, HISTOGRAM_BINS, LumaHistogram, Lut1d, Lut3d,
-        Rgb, RgbHistogram, RgbLut, TransferFunction, VECTORSCOPE_BINS, Vectorscope, WaveformScope,
-        convert_linear,
+        ColorAdjustment, ColorError, ColorPrimaries, HISTOGRAM_BINS, HdrStaticMetadata,
+        HdrToSdrDisplayTransform, LumaHistogram, Lut1d, Lut3d, PqToSdrDisplayTransform, Rgb,
+        RgbHistogram, RgbLut, ScopeDensityScale, TransferFunction, VECTORSCOPE_BINS, Vectorscope,
+        WaveformScope, convert_linear,
     };
 
     #[test]
@@ -1172,6 +1461,149 @@ mod tests {
             }]),
             Err(ColorError::NonFinite)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn waveform_presentation_is_row_major_flipped_and_scaled() -> Result<(), ColorError> {
+        let scope = WaveformScope::from_pixels(
+            1,
+            &[
+                Rgb::new(0.0, 0.0, 0.0)?,
+                Rgb::new(0.0, 0.0, 0.0)?,
+                Rgb::new(1.0, 1.0, 1.0)?,
+            ],
+        )?;
+        let linear = scope.presentation(ScopeDensityScale::Linear);
+        let logarithmic = scope.presentation(ScopeDensityScale::Logarithmic);
+        assert_eq!(
+            (linear.width, linear.height, linear.peak_count),
+            (1, 256, 2)
+        );
+        assert!((linear.value(0, 255).unwrap_or_default() - 1.0).abs() < f32::EPSILON);
+        assert!((linear.value(0, 0).unwrap_or_default() - 0.5).abs() < f32::EPSILON);
+        assert!(logarithmic.value(0, 0).unwrap_or_default() > 0.5);
+        assert_eq!(linear.value(1, 0), None);
+        assert_eq!(linear.value(0, 256), None);
+        Ok(())
+    }
+
+    #[test]
+    fn vectorscope_presentation_preserves_uv_coordinates() -> Result<(), ColorError> {
+        let red = Rgb::new(1.0, 0.0, 0.0)?;
+        let green = Rgb::new(0.0, 1.0, 0.0)?;
+        let scope = Vectorscope::from_pixels(&[red, red, green])?;
+        let (u, v, count) = scope.peak_bin().unwrap_or_default();
+        assert_eq!(count, 2);
+        assert_eq!(scope.bin_count(u, v), Some(2));
+        let presentation = scope.presentation(ScopeDensityScale::Linear);
+        assert_eq!((presentation.width, presentation.height), (256, 256));
+        assert_eq!(presentation.peak_count, 2);
+        assert!((presentation.value(u, v).unwrap_or_default() - 1.0).abs() < f32::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn empty_scope_presentation_is_zero_density() {
+        let presentation = Vectorscope::new().presentation(ScopeDensityScale::Logarithmic);
+        assert_eq!(presentation.peak_count, 0);
+        assert!(presentation.density.iter().all(|value| *value == 0.0));
+    }
+
+    fn hdr_metadata() -> HdrStaticMetadata {
+        HdrStaticMetadata {
+            mastering_min_luminance: 0.005,
+            mastering_max_luminance: 1_000.0,
+            max_content_light_level: 1_000.0,
+            max_frame_average_light_level: 400.0,
+        }
+    }
+
+    #[test]
+    fn hdr_static_metadata_rejects_inconsistent_luminance() {
+        assert!(hdr_metadata().validate().is_ok());
+        assert_eq!(
+            HdrStaticMetadata {
+                max_frame_average_light_level: 1_001.0,
+                ..hdr_metadata()
+            }
+            .validate(),
+            Err(ColorError::InvalidHdrMetadata)
+        );
+        assert_eq!(
+            HdrStaticMetadata {
+                mastering_max_luminance: f32::NAN,
+                ..hdr_metadata()
+            }
+            .validate(),
+            Err(ColorError::InvalidHdrMetadata)
+        );
+    }
+
+    #[test]
+    fn pq_display_transform_preserves_shadows_and_rolls_peak_to_white() -> Result<(), ColorError> {
+        let transform = PqToSdrDisplayTransform {
+            metadata: hdr_metadata(),
+            target_peak_luminance: 100.0,
+            knee_start: 0.75,
+        };
+        let pq_at_nits = |nits: f32| {
+            Rgb::new(nits / 10_000.0, nits / 10_000.0, nits / 10_000.0)?
+                .encode(TransferFunction::Pq)
+        };
+        let black = transform.apply(pq_at_nits(0.0)?)?;
+        let shadow = transform.apply(pq_at_nits(50.0)?)?;
+        let highlight = transform.apply(pq_at_nits(200.0)?)?;
+        let peak = transform.apply(pq_at_nits(1_000.0)?)?;
+        assert_eq!(black, Rgb::new(0.0, 0.0, 0.0)?);
+        let expected_shadow = Rgb::new(0.5, 0.5, 0.5)?.encode(TransferFunction::Rec709)?;
+        assert!((shadow.red - expected_shadow.red).abs() < 2.0e-4);
+        assert!(shadow.red < highlight.red && highlight.red < peak.red);
+        assert!((peak.red - 1.0).abs() < 2.0e-4);
+        assert!((peak.red - peak.green).abs() < 2.0e-4);
+        assert!((peak.green - peak.blue).abs() < 2.0e-4);
+        Ok(())
+    }
+
+    #[test]
+    fn pq_display_transform_validates_configuration_and_gamut_maps() -> Result<(), ColorError> {
+        let invalid = PqToSdrDisplayTransform {
+            metadata: hdr_metadata(),
+            target_peak_luminance: 0.0,
+            knee_start: 0.75,
+        };
+        assert_eq!(
+            invalid.apply(Rgb::new(0.0, 0.0, 0.0)?),
+            Err(ColorError::InvalidDisplayTransform)
+        );
+        let transform = PqToSdrDisplayTransform {
+            metadata: hdr_metadata(),
+            target_peak_luminance: 100.0,
+            knee_start: 0.75,
+        };
+        let saturated_rec2020 = Rgb::new(0.1, 0.0, 0.0)?.encode(TransferFunction::Pq)?;
+        let mapped = transform.apply(saturated_rec2020)?;
+        mapped.validate()?;
+        assert!(mapped.red >= mapped.green && mapped.red >= mapped.blue);
+        Ok(())
+    }
+
+    #[test]
+    fn configurable_transform_supports_hlg_and_rejects_sdr_sources() -> Result<(), ColorError> {
+        let transform = HdrToSdrDisplayTransform {
+            source_transfer: TransferFunction::Hlg,
+            source_primaries: ColorPrimaries::Rec2020,
+            metadata: hdr_metadata(),
+            target_peak_luminance: 100.0,
+            knee_start: 0.75,
+        };
+        let white = transform.apply(Rgb::new(1.0, 1.0, 1.0)?)?;
+        assert!(white.red > 0.99 && white.green > 0.99 && white.blue > 0.99);
+        let invalid = HdrToSdrDisplayTransform {
+            source_transfer: TransferFunction::Rec709,
+            ..transform
+        };
+        assert_eq!(invalid.validate(), Err(ColorError::InvalidDisplayTransform));
         Ok(())
     }
 }

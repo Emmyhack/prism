@@ -27,6 +27,32 @@ pub enum TransitionKind {
     Dissolve,
 }
 
+/// Channel used to derive a normalized compositing matte.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MatteSource {
+    /// Use source alpha directly.
+    Alpha,
+    /// Use one minus source alpha.
+    InvertedAlpha,
+    /// Use linear Rec.709 luma multiplied by source alpha.
+    Luma,
+    /// Use one minus alpha-weighted linear Rec.709 luma.
+    InvertedLuma,
+}
+
+/// Boolean-style operation for combining two coverage masks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MaskOperation {
+    /// Replace the destination with the incoming mask.
+    Replace,
+    /// Add coverage and clamp it to one.
+    Add,
+    /// Remove incoming coverage from the destination.
+    Subtract,
+    /// Keep only coverage shared by both masks.
+    Intersect,
+}
+
 /// Linear-light, normalized RGBA color.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rgba {
@@ -52,6 +78,154 @@ pub enum CompositorError {
     /// Transition progress was outside `[0, 1]`.
     #[error("transition progress must be between 0.0 and 1.0")]
     InvalidProgress,
+    /// Mask dimensions were zero, overflowing, or did not match storage.
+    #[error("mask dimensions do not match its coverage values")]
+    InvalidMaskDimensions,
+    /// A mask coverage value was non-finite or outside `[0, 1]`.
+    #[error("mask coverage must be finite and between 0.0 and 1.0")]
+    InvalidMaskCoverage,
+    /// Mask, matte, and pixel buffers must have identical dimensions.
+    #[error("mask and image dimensions do not match")]
+    MaskSizeMismatch,
+}
+
+/// Owned normalized per-pixel coverage mask.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CoverageMask {
+    /// Mask width in pixels.
+    pub width: usize,
+    /// Mask height in pixels.
+    pub height: usize,
+    /// Row-major normalized coverage values.
+    pub coverage: Box<[f32]>,
+}
+
+impl CoverageMask {
+    /// Creates a validated coverage mask.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompositorError::InvalidMaskDimensions`] or
+    /// [`CompositorError::InvalidMaskCoverage`] for malformed input.
+    pub fn new(width: usize, height: usize, coverage: Vec<f32>) -> Result<Self, CompositorError> {
+        if width == 0
+            || height == 0
+            || width
+                .checked_mul(height)
+                .is_none_or(|count| count != coverage.len())
+        {
+            return Err(CompositorError::InvalidMaskDimensions);
+        }
+        if coverage
+            .iter()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+        {
+            return Err(CompositorError::InvalidMaskCoverage);
+        }
+        Ok(Self {
+            width,
+            height,
+            coverage: coverage.into_boxed_slice(),
+        })
+    }
+
+    /// Derives coverage from validated straight-alpha RGBA pixels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompositorError`] for invalid dimensions or pixels.
+    pub fn from_matte(
+        width: usize,
+        height: usize,
+        pixels: &[Rgba],
+        source: MatteSource,
+    ) -> Result<Self, CompositorError> {
+        if width == 0
+            || height == 0
+            || width
+                .checked_mul(height)
+                .is_none_or(|count| count != pixels.len())
+        {
+            return Err(CompositorError::InvalidMaskDimensions);
+        }
+        let mut coverage = Vec::with_capacity(pixels.len());
+        for &pixel in pixels {
+            pixel.validate()?;
+            let luma =
+                (0.2126 * pixel.red + 0.7152 * pixel.green + 0.0722 * pixel.blue) * pixel.alpha;
+            coverage.push(match source {
+                MatteSource::Alpha => pixel.alpha,
+                MatteSource::InvertedAlpha => 1.0 - pixel.alpha,
+                MatteSource::Luma => luma,
+                MatteSource::InvertedLuma => 1.0 - luma,
+            });
+        }
+        Self::new(width, height, coverage)
+    }
+
+    /// Combines another same-sized mask into this mask without allocation.
+    ///
+    /// Validation occurs before modification, so errors leave `self`
+    /// unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompositorError::MaskSizeMismatch`] when dimensions differ,
+    /// or [`CompositorError::InvalidMaskCoverage`] for invalid values.
+    pub fn combine(
+        &mut self,
+        incoming: &Self,
+        operation: MaskOperation,
+    ) -> Result<(), CompositorError> {
+        if self.width != incoming.width || self.height != incoming.height {
+            return Err(CompositorError::MaskSizeMismatch);
+        }
+        if self
+            .coverage
+            .iter()
+            .chain(incoming.coverage.iter())
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+        {
+            return Err(CompositorError::InvalidMaskCoverage);
+        }
+        for (destination, &source) in self.coverage.iter_mut().zip(&incoming.coverage) {
+            *destination = match operation {
+                MaskOperation::Replace => source,
+                MaskOperation::Add => (*destination + source).min(1.0),
+                MaskOperation::Subtract => (*destination - source).max(0.0),
+                MaskOperation::Intersect => *destination * source,
+            };
+        }
+        Ok(())
+    }
+
+    /// Applies coverage to straight-alpha pixels in place.
+    ///
+    /// RGB remains unmodified and alpha is multiplied by coverage. All inputs
+    /// are validated before modification, providing atomic failure behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompositorError`] for a size mismatch or invalid pixel/mask.
+    pub fn apply_to(&self, pixels: &mut [Rgba]) -> Result<(), CompositorError> {
+        if pixels.len() != self.coverage.len() {
+            return Err(CompositorError::MaskSizeMismatch);
+        }
+        if self
+            .coverage
+            .iter()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+        {
+            return Err(CompositorError::InvalidMaskCoverage);
+        }
+        for &pixel in pixels.iter() {
+            pixel.validate()?;
+        }
+        for (pixel, &coverage) in pixels.iter_mut().zip(&self.coverage) {
+            pixel.alpha *= coverage;
+        }
+        Ok(())
+    }
 }
 
 /// Evaluates one transition pixel at normalized progress.
@@ -198,7 +372,8 @@ fn composite_channel(
 #[cfg(test)]
 mod tests {
     use super::{
-        BlendMode, CompositorError, Rgba, TransitionKind, composite_over, transition_pixel,
+        BlendMode, CompositorError, CoverageMask, MaskOperation, MatteSource, Rgba, TransitionKind,
+        composite_over, transition_pixel,
     };
 
     #[test]
@@ -268,6 +443,95 @@ mod tests {
         assert_eq!(
             transition_pixel(outgoing, incoming, 1.1, TransitionKind::Dissolve),
             Err(CompositorError::InvalidProgress)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn matte_sources_extract_alpha_and_alpha_weighted_luma() -> Result<(), CompositorError> {
+        let pixels = [
+            Rgba::new(1.0, 1.0, 1.0, 0.25)?,
+            Rgba::new(0.0, 0.0, 0.0, 0.75)?,
+        ];
+        let alpha = CoverageMask::from_matte(2, 1, &pixels, MatteSource::Alpha)?;
+        let inverted = CoverageMask::from_matte(2, 1, &pixels, MatteSource::InvertedAlpha)?;
+        let luma = CoverageMask::from_matte(2, 1, &pixels, MatteSource::Luma)?;
+        let inverted_luma = CoverageMask::from_matte(2, 1, &pixels, MatteSource::InvertedLuma)?;
+        assert_eq!(&*alpha.coverage, &[0.25, 0.75]);
+        assert_eq!(&*inverted.coverage, &[0.75, 0.25]);
+        assert!((luma.coverage[0] - 0.25).abs() < 1.0e-6);
+        assert!(luma.coverage[1].abs() < f32::EPSILON);
+        assert!((inverted_luma.coverage[0] - 0.75).abs() < 1.0e-6);
+        assert!((inverted_luma.coverage[1] - 1.0).abs() < f32::EPSILON);
+        Ok(())
+    }
+
+    #[test]
+    fn mask_operations_are_bounded_and_deterministic() -> Result<(), CompositorError> {
+        let incoming = CoverageMask::new(2, 1, vec![0.75, 0.25])?;
+        let mut add = CoverageMask::new(2, 1, vec![0.5, 0.5])?;
+        add.combine(&incoming, MaskOperation::Add)?;
+        assert_eq!(&*add.coverage, &[1.0, 0.75]);
+        let mut subtract = CoverageMask::new(2, 1, vec![0.5, 0.5])?;
+        subtract.combine(&incoming, MaskOperation::Subtract)?;
+        assert_eq!(&*subtract.coverage, &[0.0, 0.25]);
+        let mut intersect = CoverageMask::new(2, 1, vec![0.5, 0.5])?;
+        intersect.combine(&incoming, MaskOperation::Intersect)?;
+        assert_eq!(&*intersect.coverage, &[0.375, 0.125]);
+        intersect.combine(&incoming, MaskOperation::Replace)?;
+        assert_eq!(intersect, incoming);
+        Ok(())
+    }
+
+    #[test]
+    fn applying_mask_changes_only_alpha_and_fails_atomically() -> Result<(), CompositorError> {
+        let mask = CoverageMask::new(2, 1, vec![0.5, 0.0])?;
+        let mut pixels = [
+            Rgba::new(0.2, 0.4, 0.6, 0.8)?,
+            Rgba::new(1.0, 0.5, 0.25, 1.0)?,
+        ];
+        mask.apply_to(&mut pixels)?;
+        assert_eq!(pixels[0], Rgba::new(0.2, 0.4, 0.6, 0.4)?);
+        assert_eq!(pixels[1], Rgba::new(1.0, 0.5, 0.25, 0.0)?);
+
+        let mut invalid_pixels = [
+            Rgba::new(0.2, 0.4, 0.6, 0.8)?,
+            Rgba {
+                red: f32::NAN,
+                green: 0.0,
+                blue: 0.0,
+                alpha: 1.0,
+            },
+        ];
+        let original = invalid_pixels;
+        assert_eq!(
+            mask.apply_to(&mut invalid_pixels),
+            Err(CompositorError::NonFinite)
+        );
+        assert_eq!(invalid_pixels[0], original[0]);
+        assert!(invalid_pixels[1].red.is_nan());
+        Ok(())
+    }
+
+    #[test]
+    fn masks_reject_bad_dimensions_coverage_and_combinations() -> Result<(), CompositorError> {
+        assert_eq!(
+            CoverageMask::new(2, 2, vec![0.0; 3]),
+            Err(CompositorError::InvalidMaskDimensions)
+        );
+        assert_eq!(
+            CoverageMask::new(1, 1, vec![f32::NAN]),
+            Err(CompositorError::InvalidMaskCoverage)
+        );
+        let mut one = CoverageMask::new(1, 1, vec![1.0])?;
+        let two = CoverageMask::new(2, 1, vec![1.0, 1.0])?;
+        assert_eq!(
+            one.combine(&two, MaskOperation::Add),
+            Err(CompositorError::MaskSizeMismatch)
+        );
+        assert_eq!(
+            one.apply_to(&mut []),
+            Err(CompositorError::MaskSizeMismatch)
         );
         Ok(())
     }

@@ -1,12 +1,15 @@
 import unittest
 
 from prism import (
-    AddMarker, AddTransition, CreateSequence, CreateTrack, DeleteClip, DeleteMarker, DeleteTransition, DuplicateClip, ImportMedia, InsertClip, MoveClip, SetMediaProxy,
+    API_VERSION, AddMarker, AddTransition, CreateSequence, CreateTrack, DeleteClip, DeleteMarker, DeleteTransition, DuplicateClip, ImportMedia, InsertClip, MoveClip, SetMediaProxy,
     RationalTime, RecipeRequest, ReorderTrack, RippleDelete, RollEdit, SetTrackLocked, SetTrackMuted, SetTrackVisible, SlideEdit, SlipClip, SplitClip, TransactionRequest, TrimClip,
 )
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_exports_protocol_version(self) -> None:
+        self.assertEqual(API_VERSION, "1")
+
     def test_emits_cli_compatible_exact_transaction(self) -> None:
         request = TransactionRequest(
             "python-test",
@@ -50,6 +53,7 @@ class ProtocolTests(unittest.TestCase):
             },
         )
         self.assertTrue(request.to_json().endswith("\n"))
+        self.assertEqual(RecipeRequest({"id": "minimal"}).as_dict()["inputs"], {})
 
     def test_emits_remaining_core_clip_operations(self) -> None:
         time = RationalTime(1, 8)
@@ -90,6 +94,8 @@ class ProtocolTests(unittest.TestCase):
             SetTrackLocked("s", "t", True).as_dict(),
             {"type": "setTrackLocked", "sequenceId": "s", "trackId": "t", "locked": True},
         )
+        with self.assertRaises(TypeError):
+            SetTrackLocked("s", "t", 1).as_dict()
 
     def test_emits_track_reorder_operation(self) -> None:
         self.assertEqual(

@@ -4,6 +4,13 @@
 //! explicitly configured `FFmpeg` executable. Multi-clip timeline rendering,
 //! effects, and production codec distribution remain separate milestones.
 
+mod codec;
+
+pub use codec::{
+    AudioCodec, CodecCapabilities, CodecPolicyError, ContainerFormat, ExportCodecPolicy,
+    ResolvedCodecPolicy, VideoCodec, VideoProfile,
+};
+
 use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
 use prism_media::{FfprobeInspector, MediaError, StreamKind};
 use prism_project::{Project, TrackKind};

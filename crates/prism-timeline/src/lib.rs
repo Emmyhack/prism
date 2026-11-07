@@ -1,5 +1,9 @@
 //! Exact timeline time types and arithmetic policies.
 
+mod retiming;
+
+pub use retiming::{RetimeError, RetimePoint, TimeMap};
+
 use std::cmp::Ordering;
 use thiserror::Error;
 
@@ -198,6 +202,35 @@ impl RationalTime {
         normalize_wide(numerator, denominator)
     }
 
+    /// Scales this duration by the exact ratio `numerator / denominator`.
+    ///
+    /// This is the primitive used by retiming curves: it preserves rational
+    /// frame times and therefore cannot accumulate floating-point drift.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::DivisionByZero`] when `denominator` is zero, or
+    /// [`TimeError::Overflow`] when the exact result is not representable.
+    pub fn checked_mul_ratio(self, numerator: Self, denominator: Self) -> Result<Self, TimeError> {
+        if denominator.is_zero() {
+            return Err(TimeError::DivisionByZero);
+        }
+        let value = i128::from(self.value)
+            .checked_mul(i128::from(numerator.value))
+            .and_then(|value| value.checked_mul(i128::from(denominator.timescale)))
+            .ok_or(TimeError::Overflow)?;
+        let timescale = u128::from(self.timescale)
+            .checked_mul(u128::from(numerator.timescale))
+            .and_then(|scale| scale.checked_mul(u128::from(denominator.value.unsigned_abs())))
+            .ok_or(TimeError::Overflow)?;
+        let signed_value = if denominator.is_negative() {
+            value.checked_neg().ok_or(TimeError::Overflow)?
+        } else {
+            value
+        };
+        normalize_wide(signed_value, timescale)
+    }
+
     /// Converts this time to integer ticks at `target_timescale` using an
     /// explicit rounding policy.
     ///
@@ -246,11 +279,12 @@ impl RationalTime {
     }
 }
 
-fn normalize_wide(value: i128, timescale: u64) -> Result<RationalTime, TimeError> {
+fn normalize_wide(value: i128, timescale: impl Into<u128>) -> Result<RationalTime, TimeError> {
+    let timescale = timescale.into();
     let magnitude = u128::try_from(value.abs()).map_err(|_| TimeError::Overflow)?;
-    let divisor = gcd_u128(magnitude, u128::from(timescale));
+    let divisor = gcd_u128(magnitude, timescale);
     let value = value / i128::try_from(divisor).map_err(|_| TimeError::Overflow)?;
-    let timescale = u128::from(timescale) / divisor;
+    let timescale = timescale / divisor;
     RationalTime::new(
         i64::try_from(value).map_err(|_| TimeError::Overflow)?,
         u32::try_from(timescale).map_err(|_| TimeError::Overflow)?,

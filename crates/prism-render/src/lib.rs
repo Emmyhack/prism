@@ -153,6 +153,66 @@ pub enum CpuRenderError {
     /// A supplied CPU operation contained an invalid parameter.
     #[error("invalid CPU operation for node {0}")]
     InvalidOperation(NodeId),
+    /// A frame had zero/overflowing dimensions or the wrong pixel count.
+    #[error("CPU frame dimensions do not match its pixels")]
+    InvalidFrameDimensions,
+    /// Source frames in one graph evaluation had different dimensions.
+    #[error("source frame {node} dimensions do not match {expected_width}x{expected_height}")]
+    SourceFrameSizeMismatch {
+        /// Source node with incompatible dimensions.
+        node: NodeId,
+        /// Required frame width.
+        expected_width: usize,
+        /// Required frame height.
+        expected_height: usize,
+    },
+}
+
+/// Owned linear-light RGBA CPU frame resource.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CpuFrame {
+    /// Frame width in pixels.
+    pub width: usize,
+    /// Frame height in pixels.
+    pub height: usize,
+    /// Row-major straight-alpha pixels.
+    pub pixels: Box<[Rgba]>,
+}
+
+impl CpuFrame {
+    /// Creates a frame after validating dimensions and every pixel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CpuRenderError::InvalidFrameDimensions`] or
+    /// [`CpuRenderError::Compositor`] for malformed input.
+    pub fn new(width: usize, height: usize, pixels: Vec<Rgba>) -> Result<Self, CpuRenderError> {
+        if width == 0
+            || height == 0
+            || width
+                .checked_mul(height)
+                .is_none_or(|count| count != pixels.len())
+        {
+            return Err(CpuRenderError::InvalidFrameDimensions);
+        }
+        for &pixel in &pixels {
+            pixel.validate()?;
+        }
+        Ok(Self {
+            width,
+            height,
+            pixels: pixels.into_boxed_slice(),
+        })
+    }
+
+    /// Returns a pixel by coordinate, or `None` outside the frame.
+    #[must_use]
+    pub fn pixel(&self, x: usize, y: usize) -> Option<Rgba> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.pixels.get(y * self.width + x).copied()
+    }
 }
 
 /// Parameterized operations supported by the CPU pixel executor.
@@ -267,6 +327,147 @@ pub fn evaluate_cpu_pixel_with_operations(
         .get(&output)
         .copied()
         .ok_or(CpuRenderError::MissingSource(output))
+}
+
+/// Evaluates a full-frame CPU graph using default operations.
+///
+/// # Errors
+///
+/// Returns [`CpuRenderError`] for graph, source-resource, operation, or
+/// compositor failures.
+pub fn evaluate_cpu_frame(
+    graph: &RenderGraph,
+    output: NodeId,
+    sources: &BTreeMap<NodeId, CpuFrame>,
+    transition_progress: f32,
+) -> Result<CpuFrame, CpuRenderError> {
+    evaluate_cpu_frame_with_operations(
+        graph,
+        output,
+        sources,
+        transition_progress,
+        &BTreeMap::new(),
+    )
+}
+
+/// Evaluates full-frame CPU resources through the supported graph subset.
+///
+/// All source resources are validated before graph evaluation. Every
+/// intermediate frame retains the common source dimensions, and node
+/// operations are applied per pixel in stable row-major order.
+///
+/// # Errors
+///
+/// Returns [`CpuRenderError`] for invalid output selection, dependencies,
+/// source frames, operations, unsupported nodes, or compositor failures.
+pub fn evaluate_cpu_frame_with_operations(
+    graph: &RenderGraph,
+    output: NodeId,
+    sources: &BTreeMap<NodeId, CpuFrame>,
+    transition_progress: f32,
+    operations: &BTreeMap<NodeId, CpuPixelOperation>,
+) -> Result<CpuFrame, CpuRenderError> {
+    let output_node = graph.node(output).ok_or(CpuRenderError::OutputNotFound)?;
+    if output_node.kind != NodeKind::Output {
+        return Err(CpuRenderError::NotOutputNode);
+    }
+    for frame in sources.values() {
+        if frame.width == 0
+            || frame.height == 0
+            || frame
+                .width
+                .checked_mul(frame.height)
+                .is_none_or(|count| count != frame.pixels.len())
+        {
+            return Err(CpuRenderError::InvalidFrameDimensions);
+        }
+        for &pixel in &frame.pixels {
+            pixel.validate()?;
+        }
+    }
+
+    let mut dimensions = None;
+    let mut values = BTreeMap::<NodeId, CpuFrame>::new();
+    for node_id in graph.evaluation_order()? {
+        let node = graph
+            .node(node_id)
+            .ok_or(CpuRenderError::MissingSource(node_id))?;
+        let frame = match node.kind {
+            NodeKind::MediaSource => {
+                let source = sources
+                    .get(&node_id)
+                    .ok_or(CpuRenderError::MissingSource(node_id))?;
+                if let Some((width, height)) = dimensions {
+                    if source.width != width || source.height != height {
+                        return Err(CpuRenderError::SourceFrameSizeMismatch {
+                            node: node_id,
+                            expected_width: width,
+                            expected_height: height,
+                        });
+                    }
+                } else {
+                    dimensions = Some((source.width, source.height));
+                }
+                source.clone()
+            }
+            NodeKind::Blend | NodeKind::Transition => {
+                let left = evaluated_frame(&values, node_id, node.inputs[0])?;
+                let right = evaluated_frame(&values, node_id, node.inputs[1])?;
+                let mode = match (node.kind, operations.get(&node_id).copied()) {
+                    (NodeKind::Blend, Some(CpuPixelOperation::Blend(mode))) => Some(mode),
+                    (NodeKind::Blend, None) => Some(BlendMode::Normal),
+                    (NodeKind::Transition, None) => None,
+                    _ => return Err(CpuRenderError::InvalidOperation(node_id)),
+                };
+                let pixels = left
+                    .pixels
+                    .iter()
+                    .copied()
+                    .zip(right.pixels.iter().copied())
+                    .map(|(left, right)| match mode {
+                        Some(mode) => composite_over(left, right, mode),
+                        None => transition_pixel(
+                            left,
+                            right,
+                            transition_progress,
+                            TransitionKind::Dissolve,
+                        ),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                CpuFrame::new(left.width, left.height, pixels)?
+            }
+            NodeKind::Transform | NodeKind::Color => {
+                let input = evaluated_frame(&values, node_id, node.inputs[0])?;
+                let operation = operations
+                    .get(&node_id)
+                    .copied()
+                    .ok_or(CpuRenderError::UnsupportedNode(node.kind))?;
+                let pixels = input
+                    .pixels
+                    .iter()
+                    .copied()
+                    .map(|pixel| apply_operation(node_id, pixel, operation))
+                    .collect::<Result<Vec<_>, _>>()?;
+                CpuFrame::new(input.width, input.height, pixels)?
+            }
+            NodeKind::Output => evaluated_frame(&values, node_id, node.inputs[0])?.clone(),
+            unsupported => return Err(CpuRenderError::UnsupportedNode(unsupported)),
+        };
+        values.insert(node_id, frame);
+    }
+    values
+        .remove(&output)
+        .ok_or(CpuRenderError::MissingSource(output))
+}
+
+fn evaluated_frame(
+    values: &BTreeMap<NodeId, CpuFrame>,
+    node: NodeId,
+    input: NodeId,
+) -> Result<&CpuFrame, CpuRenderError> {
+    values
+        .get(&input)
+        .ok_or(CpuRenderError::MissingEvaluatedInput { node, input })
 }
 
 fn apply_operation(

@@ -5,6 +5,7 @@
 //! not execute scripts or grant capabilities.
 
 use std::collections::BTreeMap;
+use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -140,6 +141,9 @@ pub enum RecipeError {
     /// A script entry is required.
     #[error("recipe entry must not be empty")]
     EmptyEntry,
+    /// The script entry must remain inside the recipe directory.
+    #[error("recipe entry must be a relative path contained by the recipe directory")]
+    UnsafeEntry,
     /// Numeric bounds are malformed.
     #[error("invalid numeric bounds for parameter {name}")]
     InvalidBounds {
@@ -205,6 +209,17 @@ impl RecipeManifest {
         }
         if self.entry.trim().is_empty() {
             return Err(RecipeError::EmptyEntry);
+        }
+        let entry = Path::new(&self.entry);
+        if entry.is_absolute()
+            || entry.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(RecipeError::UnsafeEntry);
         }
         for (name, schema) in &self.parameters {
             if !schema_bounds_valid(schema) {
@@ -431,5 +446,15 @@ mod tests {
                 permission: RecipePermission::ProjectWrite
             })
         );
+    }
+
+    #[test]
+    fn manifest_rejects_entries_outside_the_recipe_directory() {
+        let mut recipe = manifest();
+        recipe.entry = "../outside.ts".to_owned();
+        assert_eq!(recipe.validate(), Err(RecipeError::UnsafeEntry));
+
+        recipe.entry = "/absolute/main.ts".to_owned();
+        assert_eq!(recipe.validate(), Err(RecipeError::UnsafeEntry));
     }
 }

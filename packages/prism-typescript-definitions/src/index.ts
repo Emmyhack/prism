@@ -43,7 +43,8 @@ export interface DeleteClipOperation { readonly type: "deleteClip"; readonly seq
 export interface TransactionRequest { readonly requestId: string; readonly apiVersion: typeof API_VERSION; readonly expectedRevision: number; readonly label: string; readonly dryRun: boolean; readonly operations: readonly Operation[]; }
 
 export function recipeRequest(options: { manifest: RecipeManifest; inputs?: Readonly<Record<string, unknown>> }): RecipeRequest {
-  if (!options?.manifest || typeof options.manifest !== "object") throw new TypeError("manifest must be an object");
+  if (!options?.manifest || typeof options.manifest !== "object" || Array.isArray(options.manifest)) throw new TypeError("manifest must be an object");
+  if (options.inputs === null || (options.inputs !== undefined && (typeof options.inputs !== "object" || Array.isArray(options.inputs)))) throw new TypeError("inputs must be an object");
   return { manifest: options.manifest, inputs: options.inputs ?? {} };
 }
 
@@ -57,7 +58,10 @@ export function setMediaProxy(mediaId: string, proxyPath: string | null): SetMed
   return { type: "setMediaProxy", mediaId, proxyPath };
 }
 export function createSequence(id: string, name: string): CreateSequenceOperation { return { type: "createSequence", id, name }; }
-export function createTrack(sequenceId: string, id: string, kind: "video" | "audio"): CreateTrackOperation { return { type: "createTrack", sequenceId, id, kind }; }
+export function createTrack(sequenceId: string, id: string, kind: "video" | "audio"): CreateTrackOperation {
+  if (kind !== "video" && kind !== "audio") throw new TypeError("kind must be video or audio");
+  return { type: "createTrack", sequenceId, id, kind };
+}
 export function setTrackLocked(sequenceId: string, trackId: string, locked: boolean): SetTrackLockedOperation {
   if (typeof locked !== "boolean") throw new TypeError("locked must be a boolean");
   return { type: "setTrackLocked", sequenceId, trackId, locked };
@@ -83,7 +87,10 @@ export function duplicateClip(sequenceId: string, trackId: string, clipId: strin
   return { type: "duplicateClip", sequenceId, trackId, clipId, newClipId, timelineStart };
 }
 export function rippleDelete(sequenceId: string, trackId: string, clipId: string): RippleDeleteOperation { return { type: "rippleDelete", sequenceId, trackId, clipId }; }
-export function addTransition(sequenceId: string, id: string, outgoingClip: string, incomingClip: string, duration: RationalTime, kind: "dissolve" = "dissolve"): AddTransitionOperation { return { type: "addTransition", sequenceId, id, outgoingClip, incomingClip, duration, kind }; }
+export function addTransition(sequenceId: string, id: string, outgoingClip: string, incomingClip: string, duration: RationalTime, kind: "dissolve" = "dissolve"): AddTransitionOperation {
+  if (kind !== "dissolve") throw new TypeError("kind must be dissolve");
+  return { type: "addTransition", sequenceId, id, outgoingClip, incomingClip, duration, kind };
+}
 export function deleteTransition(sequenceId: string, transitionId: string): DeleteTransitionOperation { return { type: "deleteTransition", sequenceId, transitionId }; }
 export function insertClip(sequenceId: string, trackId: string, id: string, mediaId: string, timelineStart: RationalTime, sourceStart: RationalTime, sourceDuration: RationalTime): InsertClipOperation {
   return { type: "insertClip", sequenceId, trackId, id, mediaId, timelineStart, sourceStart, sourceDuration };

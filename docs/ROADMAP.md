@@ -9,10 +9,11 @@
 7. Phase 6: optional intelligent tools issuing ordinary reviewed commands.
 8. Phase 7: collaboration only after local workflows are reliable.
 
-Command/protocol architecture is built from Phase 0; Phase 3 now has a bounded
-trusted Python process path that feeds transactions through the host, while
-complete language authoring and runtime experiences remain ahead rather than
-being retrofitted after visual editing.
+Command/protocol architecture is built from Phase 0; Phase 3 now has bounded
+Python, JavaScript, and TypeScript process paths, reviewed runtime bundles,
+permission decisions, recipe execution, SDK parity, transaction debugging, and
+a native Studio scripting surface. These feed transactions through the same
+host and command engine rather than bypassing visual editing semantics.
 Recipe and plugin manifest validation now provide the declarative safety boundary;
 runtime loading and distribution remain later milestones.
 Content-addressed cache keys and bounded age/size eviction now provide the

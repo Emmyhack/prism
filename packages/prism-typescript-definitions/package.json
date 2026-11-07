@@ -1,7 +1,12 @@
 {
   "name": "@prism/editor-types",
   "version": "0.1.0",
-  "main": "dist/index.js",
+  "description": "TypeScript declarations for Prism's versioned editing protocol",
+  "type": "module",
   "types": "src/index.ts",
-  "description": "TypeScript declarations for Prism's versioned editing protocol"
+  "exports": { ".": { "types": "./src/index.ts" } },
+  "files": ["src", "index.d.ts"],
+  "sideEffects": false,
+  "license": "Apache-2.0",
+  "keywords": ["video-editing", "timeline", "prism", "typescript"]
 }

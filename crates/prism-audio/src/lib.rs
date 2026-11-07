@@ -7,6 +7,10 @@
 use std::f32::consts::FRAC_PI_4;
 use thiserror::Error;
 
+const LOUDNESS_BLOCK_FRAMES: usize = 19_200;
+const LOUDNESS_STEP_FRAMES: usize = 4_800;
+const LOUDNESS_ABSOLUTE_GATE: f64 = -70.0;
+
 /// Audio processing validation failures.
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum AudioError {
@@ -55,6 +59,161 @@ pub enum AudioError {
     /// Delay time, feedback, or wet mix is invalid.
     #[error("invalid stereo delay parameter")]
     InvalidDelayParameter,
+    /// Integrated loudness currently has validated coefficients for 48 kHz.
+    #[error("integrated loudness measurement requires a 48000 Hz sample rate")]
+    UnsupportedLoudnessSampleRate,
+}
+
+/// Result of an ITU-R BS.1770 / EBU R128 integrated loudness measurement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IntegratedLoudness {
+    /// Gated programme loudness in LUFS. Digital silence is negative infinity.
+    pub lufs: f64,
+    /// Number of overlapping 400 ms blocks considered before gating.
+    pub block_count: usize,
+    /// Number of blocks retained by both the -70 LUFS absolute gate and the
+    /// relative gate 10 LU below the absolute-gated mean.
+    pub gated_block_count: usize,
+}
+
+/// Measures stereo programme loudness using BS.1770 K-weighting and EBU R128
+/// integrated gating.
+///
+/// Input must be interleaved stereo at 48 kHz. The meter evaluates 400 ms
+/// blocks at 100 ms intervals, applies the -70 LUFS absolute gate, then the
+/// relative gate 10 LU below the remaining programme mean. A shorter final
+/// fragment is intentionally excluded. The implementation allocates working
+/// buffers and is intended for offline analysis, not a realtime callback.
+///
+/// # Errors
+///
+/// Returns [`AudioError::UnsupportedLoudnessSampleRate`],
+/// [`AudioError::OddInterleavedBuffer`], or [`AudioError::NonFiniteSample`]
+/// for invalid input.
+pub fn measure_integrated_loudness(
+    samples: &[f32],
+    sample_rate: u32,
+) -> Result<IntegratedLoudness, AudioError> {
+    if sample_rate != 48_000 {
+        return Err(AudioError::UnsupportedLoudnessSampleRate);
+    }
+    if !samples.len().is_multiple_of(2) {
+        return Err(AudioError::OddInterleavedBuffer);
+    }
+    if samples.iter().any(|sample| !sample.is_finite()) {
+        return Err(AudioError::NonFiniteSample);
+    }
+
+    let frame_count = samples.len() / 2;
+    let block_count = frame_count
+        .saturating_sub(LOUDNESS_BLOCK_FRAMES)
+        .checked_div(LOUDNESS_STEP_FRAMES)
+        .map_or(0, |count| {
+            count + usize::from(frame_count >= LOUDNESS_BLOCK_FRAMES)
+        });
+    let mut energies = Vec::with_capacity(block_count);
+    let mut left = KWeighting::default();
+    let mut right = KWeighting::default();
+    let mut weighted = Vec::with_capacity(samples.len());
+    for frame in samples.chunks_exact(2) {
+        weighted.push(left.process(f64::from(frame[0])));
+        weighted.push(right.process(f64::from(frame[1])));
+    }
+    for start in
+        (0..=frame_count.saturating_sub(LOUDNESS_BLOCK_FRAMES)).step_by(LOUDNESS_STEP_FRAMES)
+    {
+        if start + LOUDNESS_BLOCK_FRAMES > frame_count {
+            break;
+        }
+        let mut sum = 0.0;
+        for frame in weighted[start * 2..(start + LOUDNESS_BLOCK_FRAMES) * 2].chunks_exact(2) {
+            sum += frame[0] * frame[0] + frame[1] * frame[1];
+        }
+        energies.push(sum / 19_200.0);
+    }
+
+    let absolute: Vec<f64> = energies
+        .iter()
+        .copied()
+        .filter(|energy| energy_to_lufs(*energy) >= LOUDNESS_ABSOLUTE_GATE)
+        .collect();
+    if absolute.is_empty() {
+        return Ok(IntegratedLoudness {
+            lufs: f64::NEG_INFINITY,
+            block_count: energies.len(),
+            gated_block_count: 0,
+        });
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let absolute_mean = absolute.iter().sum::<f64>() / absolute.len() as f64;
+    let relative_gate = energy_to_lufs(absolute_mean) - 10.0;
+    let gated: Vec<f64> = absolute
+        .into_iter()
+        .filter(|energy| energy_to_lufs(*energy) >= relative_gate)
+        .collect();
+    #[allow(clippy::cast_precision_loss)]
+    let mean = gated.iter().sum::<f64>() / gated.len() as f64;
+    Ok(IntegratedLoudness {
+        lufs: energy_to_lufs(mean),
+        block_count: energies.len(),
+        gated_block_count: gated.len(),
+    })
+}
+
+fn energy_to_lufs(energy: f64) -> f64 {
+    if energy == 0.0 {
+        f64::NEG_INFINITY
+    } else {
+        -0.691 + 10.0 * energy.log10()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct BiquadState {
+    input_1: f64,
+    input_2: f64,
+    output_1: f64,
+    output_2: f64,
+}
+
+impl BiquadState {
+    fn process(&mut self, input: f64, numerator: [f64; 3], denominator: [f64; 2]) -> f64 {
+        let output =
+            numerator[0] * input + numerator[1] * self.input_1 + numerator[2] * self.input_2
+                - denominator[0] * self.output_1
+                - denominator[1] * self.output_2;
+        self.input_2 = self.input_1;
+        self.input_1 = input;
+        self.output_2 = self.output_1;
+        self.output_1 = output;
+        output
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct KWeighting {
+    shelf: BiquadState,
+    high_pass: BiquadState,
+}
+
+impl KWeighting {
+    fn process(&mut self, input: f64) -> f64 {
+        // BS.1770 reference coefficients for 48 kHz.
+        let shelved = self.shelf.process(
+            input,
+            [
+                1.535_124_859_586_97,
+                -2.691_696_189_406_38,
+                1.198_392_810_852_85,
+            ],
+            [-1.690_659_293_182_41, 0.732_480_774_215_85],
+        );
+        self.high_pass.process(
+            shelved,
+            [1.0, -2.0, 1.0],
+            [-1.990_047_454_833_98, 0.990_072_250_366_21],
+        )
+    }
 }
 
 /// Deterministic amplitude summary for one waveform display bucket.
@@ -394,7 +553,7 @@ impl AudioFades {
     ///
     /// Returns [`AudioError::OddInterleavedBuffer`],
     /// [`AudioError::InvalidFadeGain`], or [`AudioError::NonFiniteSample`].
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     pub fn linear(samples: &mut [f32], start_gain: f32, end_gain: f32) -> Result<(), AudioError> {
         if !samples.len().is_multiple_of(2) {
             return Err(AudioError::OddInterleavedBuffer);
@@ -1155,7 +1314,7 @@ mod tests {
         AudioAnalysis, AudioBus, AudioBusMixer, AudioError, AudioFades, AudioMixer, BusRoute,
         DynamicsCompressor, FilterKind, Limiter, LinearResampler, OnePoleFilter, PeakNormalizer,
         RoutedStereoTrack, StereoDelay, StereoGainPan, StereoTrack, StreamingLinearResampler,
-        WaveformPoint, generate_stereo_waveform, generate_waveform,
+        WaveformPoint, generate_stereo_waveform, generate_waveform, measure_integrated_loudness,
     };
 
     #[test]
@@ -1500,6 +1659,58 @@ mod tests {
         streaming.reset();
         let mut reset_output = [0.0; 2];
         assert_eq!(streaming.process(&[0.0, 1.0], &mut reset_output)?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn integrated_loudness_measures_silence_and_validates_input() -> Result<(), AudioError> {
+        let silence = vec![0.0; 48_000 * 2];
+        let measurement = measure_integrated_loudness(&silence, 48_000)?;
+        assert!(measurement.lufs.is_infinite() && measurement.lufs.is_sign_negative());
+        assert_eq!(measurement.block_count, 7);
+        assert_eq!(measurement.gated_block_count, 0);
+        assert_eq!(
+            measure_integrated_loudness(&silence, 44_100),
+            Err(AudioError::UnsupportedLoudnessSampleRate)
+        );
+        assert_eq!(
+            measure_integrated_loudness(&[0.0], 48_000),
+            Err(AudioError::OddInterleavedBuffer)
+        );
+        assert_eq!(
+            measure_integrated_loudness(&[f32::NAN, 0.0], 48_000),
+            Err(AudioError::NonFiniteSample)
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn integrated_loudness_tracks_known_gain_delta() -> Result<(), AudioError> {
+        let mut full_scale = Vec::with_capacity(48_000 * 4);
+        let mut half_scale = Vec::with_capacity(48_000 * 4);
+        for frame in 0..48_000 * 2 {
+            let sample =
+                (2.0 * std::f64::consts::PI * 1_000.0 * f64::from(frame) / 48_000.0).sin() as f32;
+            full_scale.extend_from_slice(&[sample, sample]);
+            half_scale.extend_from_slice(&[sample * 0.5, sample * 0.5]);
+        }
+        let full = measure_integrated_loudness(&full_scale, 48_000)?;
+        let half = measure_integrated_loudness(&half_scale, 48_000)?;
+        assert!((full.lufs - 0.007).abs() < 0.01, "{}", full.lufs);
+        assert!((full.lufs - half.lufs - 6.020_599_913).abs() < 1.0e-6);
+        assert_eq!(full.block_count, 17);
+        assert_eq!(full.gated_block_count, full.block_count);
+        Ok(())
+    }
+
+    #[test]
+    fn integrated_loudness_relative_gate_excludes_quiet_programme() -> Result<(), AudioError> {
+        let mut samples = vec![0.5; 48_000 * 2 * 2];
+        samples.extend(vec![0.005; 48_000 * 2 * 2]);
+        let measurement = measure_integrated_loudness(&samples, 48_000)?;
+        assert!(measurement.gated_block_count < measurement.block_count);
+        assert!(measurement.gated_block_count > 0);
         Ok(())
     }
 }

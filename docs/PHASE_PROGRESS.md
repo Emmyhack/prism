@@ -39,13 +39,19 @@ Remaining acceptance work:
 
 ## Phase 3 — scripting runtimes and SDKs
 
-Current state: in development.
+Current state: implemented and tested.
 
 The shared protocol, bounded worker host, SDK builders, transaction validation,
 Studio script catalog/diagnostics boundary, normalized permission review
-boundary, and explicit TypeScript source-map compilation are implemented.
-Runtime packaging, graphical permissions UI, interactive debugging, and the
-graphical Studio scripting workspace remain acceptance gaps.
+boundary, explicit TypeScript source-map compilation, and authorized
+Python/JavaScript/TypeScript recipe execution are implemented. Versioned
+contained runtime bundles, persisted permission decisions, a combined Studio
+workspace model, and a non-mutating step/breakpoint transaction debugger now
+close the corresponding host boundaries. The native Studio workspace exposes
+the script catalog, runtime health, permission review, diagnostics, debugger,
+and run controls. Python, JavaScript, and TypeScript SDK packaging metadata and
+parity tests are complete. Phase 3 has no remaining source acceptance gaps;
+signed distribution artifacts remain part of the cross-platform release gate.
 
 ## Phase 4 — advanced professional processing
 
@@ -53,10 +59,34 @@ Current state: in development.
 
 The color, audio, compositing, and render foundations are functional. D65
 Rec.709, Display P3, and Rec.2020 linear-light primaries conversion plus
-normalized PQ and HLG transfer functions are implemented and tested. HDR
-display transforms, scopes UI, advanced
-tracking/retiming, multicamera workflows, and production codec coverage remain
-unimplemented.
+normalized PQ and HLG transfer functions are implemented and tested. Offline
+48 kHz stereo integrated-LUFS measurement now applies BS.1770 K-weighting and
+EBU R128 absolute/relative gates. Validated static HDR luminance metadata now
+drives a tested PQ Rec.2020 to SDR Rec.709 display transform with smooth
+highlight roll-off. Scope accumulation now has normalized backend-neutral
+waveform/vectorscope presentation maps. Metadata persistence/codec propagation,
+graphical scope overlays, and runtime process wiring/packaged encoder coverage
+remain incomplete. Export now has a tested typed container/codec/profile policy
+against explicit capabilities, plus runtime-name discovery for known muxers and
+encoder families.
+Playback now has a tested coordinator that joins exact timeline evaluation to
+bounded asynchronous decode scheduling, with seek-generation invalidation and
+stale-result suppression. Native decoder surfaces, audio sync, and monitor
+presentation remain. Tracking now has a tested bounded integer-pixel CPU point-match
+primitive with forward/backward consistency reporting; pyramidal, subpixel,
+planar, mask, persistence, and graphical tracking workflows remain.
+Exact piecewise retiming supports variable speed, freeze, reverse, and
+fractional-frame lookup without drift. Multicamera planning validates exact
+angle offsets and deterministic switch boundaries; timeline command,
+persistence, playback, and UI integration remain.
+CPU compositing now also includes validated normalized coverage masks, alpha
+and luma matte extraction, deterministic mask combination, and atomic
+straight-alpha application. Shape rasterization, feathering, tracked-mask
+binding, render-graph integration, and GPU parity remain.
+Waveform and vectorscope accumulators now expose backend-neutral normalized
+presentation maps with peak-count metadata, coordinate access, and explicit
+linear or logarithmic density scaling. Graticules, legal-range overlays,
+color-space labels, and graphical scope rendering remain.
 
 ## Phase 5 — extensibility
 

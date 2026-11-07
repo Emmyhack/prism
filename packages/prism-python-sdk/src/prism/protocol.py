@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from typing import Any
 
@@ -18,7 +18,7 @@ class RecipeRequest:
     """
 
     manifest: dict[str, Any]
-    inputs: dict[str, Any]
+    inputs: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         if not isinstance(self.manifest, dict):
@@ -79,6 +79,8 @@ class SetTrackLocked:
     locked: bool
 
     def as_dict(self) -> dict[str, Any]:
+        if not isinstance(self.locked, bool):
+            raise TypeError("locked must be a boolean")
         return {
             "type": "setTrackLocked",
             "sequenceId": self.sequence_id,

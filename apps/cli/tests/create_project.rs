@@ -167,6 +167,83 @@ fn validates_recipe_manifest_and_inputs_without_execution() -> Result<(), Box<dy
 
 #[cfg(unix)]
 #[test]
+fn executes_authorized_python_recipe_with_materialized_inputs()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let test_directory =
+        std::env::temp_dir().join(format!("prism-cli-run-recipe-test-{}", Uuid::new_v4()));
+    fs::create_dir(&test_directory)?;
+    let project_path = test_directory.join("project.prism");
+    let manifest_path = test_directory.join("recipe.json");
+    let inputs_path = test_directory.join("inputs.json");
+    let permissions_path = test_directory.join("permissions.json");
+    let entry_path = test_directory.join("main.py");
+    let runtime_path = test_directory.join("python");
+    let runtime_manifest_path = test_directory.join("runtime.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+            "id":"prism.example.recipe",
+            "version":"1.0.0",
+            "apiVersion":1,
+            "language":"python",
+            "entry":"main.py",
+            "permissions":["project.read"],
+            "parameters":{"clipCount":{"type":"integer","minimum":1,"maximum":20,"default":5}}
+        }"#,
+    )?;
+    fs::write(&inputs_path, "{}")?;
+    fs::write(
+        &permissions_path,
+        r#"{"requested":["project.read"],"granted":["project.read"]}"#,
+    )?;
+    fs::write(&entry_path, "# recipe entry")?;
+    fs::write(
+        &runtime_path,
+        r#"#!/bin/sh
+test "$PRISM_RECIPE_INPUTS" = '{"clipCount":5}' || exit 12
+printf '{"requestId":"recipe","apiVersion":"1","expectedRevision":%s,"label":"Recipe","dryRun":true,"operations":[{"type":"createSequence","id":"11111111-1111-4111-8111-111111111111","name":"Recipe sequence"}]}' "$PRISM_PROJECT_REVISION"
+"#,
+    )?;
+    fs::set_permissions(&runtime_path, fs::Permissions::from_mode(0o755))?;
+    fs::write(
+        &runtime_manifest_path,
+        r#"{"apiVersion":1,"version":"1.0.0","python":"python","node":null,"typescriptCompiler":null}"#,
+    )?;
+
+    let binary = env!("CARGO_BIN_EXE_prism-cli");
+    let created = Command::new(binary)
+        .args(["create-project", "--project"])
+        .arg(&project_path)
+        .args(["--name", "Recipe test"])
+        .output()?;
+    assert!(created.status.success());
+    let executed = Command::new(binary)
+        .args(["run-recipe", "--project"])
+        .arg(&project_path)
+        .args(["--manifest"])
+        .arg(&manifest_path)
+        .args(["--inputs"])
+        .arg(&inputs_path)
+        .args(["--permissions"])
+        .arg(&permissions_path)
+        .args(["--runtime-bundle"])
+        .arg(&runtime_manifest_path)
+        .output()?;
+    assert!(
+        executed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&executed.stdout).contains("Validated"));
+
+    fs::remove_dir_all(test_directory)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn generates_proxy_with_explicit_ffmpeg_boundary() -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
 

@@ -7,6 +7,260 @@ use prism_project::{
 use prism_timeline::RationalTime;
 use thiserror::Error;
 
+/// Stable command categories used by menus, toolbars, shortcuts, and panels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommandCategory {
+    /// Project and media management.
+    Project,
+    /// Timeline editing operations.
+    Timeline,
+    /// Playback and monitor controls.
+    Playback,
+    /// Application and workspace controls.
+    Application,
+}
+
+/// Undo behavior declared by a registered command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UndoStrategy {
+    /// The command commits one atomic transaction and can be undone.
+    Transaction,
+    /// The command changes only ephemeral UI state.
+    Ephemeral,
+}
+
+/// A command descriptor shared by every Prism UI surface.
+#[derive(Clone, Copy, Debug)]
+pub struct CommandDescriptor {
+    /// Stable machine-readable identifier.
+    pub id: &'static str,
+    /// User-facing label.
+    pub label: &'static str,
+    /// Menu/toolbar category.
+    pub category: CommandCategory,
+    /// Default keyboard shortcut label.
+    pub shortcut: Option<&'static str>,
+    /// Declared undo behavior.
+    pub undo: UndoStrategy,
+    /// Context predicate evaluated before execution.
+    pub enabled: fn(&Project) -> bool,
+}
+
+impl CommandDescriptor {
+    /// Returns whether this command is currently enabled for the project.
+    #[must_use]
+    pub fn is_enabled(self, project: &Project) -> bool {
+        (self.enabled)(project)
+    }
+
+    /// Executes the supplied typed command through the authoritative engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation or invariant error as direct command
+    /// execution. The descriptor itself is intentionally metadata-only so
+    /// adapters cannot bypass command validation.
+    pub fn execute(
+        self,
+        project: &mut Project,
+        command: Command,
+    ) -> Result<Vec<Event>, CommandError> {
+        if !(self.enabled)(project) {
+            return Err(CommandError::Disabled { command: self.id });
+        }
+        CommandEngine::execute(project, command)
+    }
+}
+
+/// Stable registry for commands exposed by the current editing shell.
+pub struct CommandRegistry;
+
+impl CommandRegistry {
+    /// Returns the initial command set shared by menus, shortcuts, and tools.
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
+    pub const fn descriptors() -> &'static [CommandDescriptor] {
+        &[
+            CommandDescriptor {
+                id: "project.import_media",
+                label: "Import Media",
+                category: CommandCategory::Project,
+                shortcut: Some("Cmd+I"),
+                undo: UndoStrategy::Transaction,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "project.relink_media",
+                label: "Relink Media",
+                category: CommandCategory::Project,
+                shortcut: None,
+                undo: UndoStrategy::Transaction,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "timeline.add_marker",
+                label: "Add Marker",
+                category: CommandCategory::Timeline,
+                shortcut: Some("M"),
+                undo: UndoStrategy::Transaction,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "timeline.razor",
+                label: "Razor Tool",
+                category: CommandCategory::Timeline,
+                shortcut: Some("C"),
+                undo: UndoStrategy::Transaction,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "timeline.undo",
+                label: "Undo",
+                category: CommandCategory::Timeline,
+                shortcut: Some("Cmd+Z"),
+                undo: UndoStrategy::Transaction,
+                enabled: has_revision,
+            },
+            CommandDescriptor {
+                id: "playback.play_pause",
+                label: "Play/Pause",
+                category: CommandCategory::Playback,
+                shortcut: Some("Space"),
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "playback.source_monitor",
+                label: "Source Monitor",
+                category: CommandCategory::Playback,
+                shortcut: Some("Shift+2"),
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "playback.program_monitor",
+                label: "Program Monitor",
+                category: CommandCategory::Playback,
+                shortcut: Some("Shift+4"),
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "export.queue",
+                label: "Queue Export",
+                category: CommandCategory::Project,
+                shortcut: None,
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "scripting.review_permissions",
+                label: "Review Script Permissions",
+                category: CommandCategory::Project,
+                shortcut: None,
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "scripting.run",
+                label: "Run Script",
+                category: CommandCategory::Project,
+                shortcut: None,
+                undo: UndoStrategy::Transaction,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "application.file",
+                label: "File Menu",
+                category: CommandCategory::Application,
+                shortcut: None,
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "application.edit",
+                label: "Edit Menu",
+                category: CommandCategory::Application,
+                shortcut: None,
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "application.window",
+                label: "Window Menu",
+                category: CommandCategory::Application,
+                shortcut: None,
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "application.help",
+                label: "Help Menu",
+                category: CommandCategory::Application,
+                shortcut: None,
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "timeline.clip_menu",
+                label: "Clip Menu",
+                category: CommandCategory::Timeline,
+                shortcut: None,
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "timeline.sequence_menu",
+                label: "Sequence Menu",
+                category: CommandCategory::Timeline,
+                shortcut: None,
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "timeline.markers_menu",
+                label: "Markers Menu",
+                category: CommandCategory::Timeline,
+                shortcut: Some("M"),
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "graphics.menu",
+                label: "Graphics Menu",
+                category: CommandCategory::Application,
+                shortcut: None,
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "application.save",
+                label: "Save Project",
+                category: CommandCategory::Application,
+                shortcut: Some("Cmd+S"),
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+        ]
+    }
+
+    /// Finds a descriptor by its stable identifier.
+    #[must_use]
+    pub fn find(id: &str) -> Option<CommandDescriptor> {
+        Self::descriptors()
+            .iter()
+            .copied()
+            .find(|command| command.id == id)
+    }
+}
+
+fn always_enabled(_: &Project) -> bool {
+    true
+}
+fn has_revision(project: &Project) -> bool {
+    project.revision() > 0
+}
+
 /// Mutation requests accepted by the authoritative command engine.
 #[derive(Debug)]
 pub enum Command {
@@ -15,6 +269,13 @@ pub enum Command {
         /// Stable asset ID.
         id: MediaAssetId,
         /// Source path selected by the user.
+        source_path: String,
+    },
+    /// Updates the authoritative source path for an existing media asset.
+    RelinkMedia {
+        /// Stable asset ID.
+        media_id: MediaAssetId,
+        /// New source path selected by the user.
         source_path: String,
     },
     /// Sets or clears a relinked proxy path for an imported media asset.
@@ -253,6 +514,11 @@ pub enum Event {
         /// Imported asset.
         id: MediaAssetId,
     },
+    /// A media asset's source path changed through an explicit relink.
+    MediaRelinked {
+        /// Updated asset identifier.
+        id: MediaAssetId,
+    },
     /// A media asset's proxy path changed.
     MediaProxyUpdated {
         /// Updated asset identifier.
@@ -395,6 +661,12 @@ pub enum Event {
 /// Structured command failure.
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum CommandError {
+    /// The command is unavailable in the current project context.
+    #[error("command is disabled in the current context: {command}")]
+    Disabled {
+        /// Stable command identifier.
+        command: &'static str,
+    },
     /// User-provided text failed validation.
     #[error("{field} must not be empty")]
     EmptyField {
@@ -453,6 +725,9 @@ pub enum CommandError {
     /// A stable ID already exists.
     #[error("object identifier already exists")]
     DuplicateId,
+    /// The same source path is already referenced by the project.
+    #[error("media source path is already imported")]
+    DuplicateMediaPath,
     /// A project invariant prevented the commit.
     #[error("project could not commit: {0}")]
     Commit(String),
@@ -613,6 +888,10 @@ impl CommandEngine {
     fn apply(project: &mut Project, command: Command) -> Result<Event, CommandError> {
         match command {
             Command::ImportMedia { id, source_path } => import_media(project, id, source_path),
+            Command::RelinkMedia {
+                media_id,
+                source_path,
+            } => relink_media(project, media_id, source_path),
             Command::SetMediaProxy {
                 media_id,
                 proxy_path,
@@ -806,6 +1085,13 @@ fn import_media(
     if project.media.contains_key(&id) {
         return Err(CommandError::DuplicateId);
     }
+    if project
+        .media
+        .values()
+        .any(|asset| asset.source_path == source_path)
+    {
+        return Err(CommandError::DuplicateMediaPath);
+    }
     project.media.insert(
         id,
         MediaAsset {
@@ -836,6 +1122,31 @@ fn set_media_proxy(
         .ok_or(CommandError::MediaNotFound)?;
     asset.proxy_path = proxy_path;
     Ok(Event::MediaProxyUpdated { id: media_id })
+}
+
+fn relink_media(
+    project: &mut Project,
+    media_id: MediaAssetId,
+    source_path: String,
+) -> Result<Event, CommandError> {
+    if source_path.trim().is_empty() {
+        return Err(CommandError::EmptyField {
+            field: "source_path",
+        });
+    }
+    if project
+        .media
+        .iter()
+        .any(|(id, asset)| *id != media_id && asset.source_path == source_path)
+    {
+        return Err(CommandError::DuplicateMediaPath);
+    }
+    let asset = project
+        .media
+        .get_mut(&media_id)
+        .ok_or(CommandError::MediaNotFound)?;
+    asset.source_path = source_path;
+    Ok(Event::MediaRelinked { id: media_id })
 }
 
 fn create_sequence(
@@ -1626,10 +1937,69 @@ fn ensure_range_available(
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, CommandEngine, CommandError, Event};
+    use super::{Command, CommandEngine, CommandError, CommandRegistry, Event};
     use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
     use prism_project::{Project, TrackKind, TransitionKind};
     use prism_timeline::{RationalTime, TimeError};
+
+    #[test]
+    fn registry_exposes_stable_descriptors_and_context_predicates() -> Result<(), CommandError> {
+        let project = Project::new("Test");
+        let undo = CommandRegistry::find("timeline.undo").ok_or(CommandError::EmptyTransaction)?;
+        assert_eq!(undo.label, "Undo");
+        assert_eq!(undo.shortcut, Some("Cmd+Z"));
+        assert!(!undo.is_enabled(&project));
+        let play =
+            CommandRegistry::find("playback.play_pause").ok_or(CommandError::EmptyTransaction)?;
+        assert!(play.is_enabled(&project));
+        Ok(())
+    }
+
+    #[test]
+    fn registry_execution_keeps_validation_and_undo_transactional() -> Result<(), CommandError> {
+        let mut project = Project::new("Test");
+        let create =
+            CommandRegistry::find("project.import_media").ok_or(CommandError::EmptyTransaction)?;
+        let media_id = MediaAssetId::new();
+        create.execute(
+            &mut project,
+            Command::ImportMedia {
+                id: media_id,
+                source_path: "/tmp/source.mp4".to_owned(),
+            },
+        )?;
+        assert_eq!(project.media.len(), 1);
+        assert_eq!(project.revision(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn relink_media_updates_path_and_is_undoable() -> Result<(), CommandError> {
+        let mut project = Project::new("Test");
+        let media_id = MediaAssetId::new();
+        CommandEngine::execute(
+            &mut project,
+            Command::ImportMedia {
+                id: media_id,
+                source_path: "/offline/original.mov".to_owned(),
+            },
+        )?;
+        let relink =
+            CommandRegistry::find("project.relink_media").ok_or(CommandError::EmptyTransaction)?;
+        let outcome = relink.execute(
+            &mut project,
+            Command::RelinkMedia {
+                media_id,
+                source_path: "/Volumes/Media/original.mov".to_owned(),
+            },
+        )?;
+        assert_eq!(outcome, vec![Event::MediaRelinked { id: media_id }]);
+        assert_eq!(
+            project.media[&media_id].source_path,
+            "/Volumes/Media/original.mov"
+        );
+        Ok(())
+    }
 
     #[test]
     fn rejected_command_does_not_advance_revision() {
