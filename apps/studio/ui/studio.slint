@@ -56,6 +56,12 @@ component MenuItem inherits Rectangle {
 component TrackHeader inherits Rectangle {
     in property <string> name;
     in property <string> kind;
+    in-out property <bool> locked: false;
+    in-out property <bool> muted: false;
+    in-out property <bool> track-visible: true;
+    callback lock-toggled();
+    callback mute-toggled();
+    callback visibility-toggled();
     height: 54px;
     background: #252525;
     border-color: #383838;
@@ -74,9 +80,18 @@ component TrackHeader inherits Rectangle {
         color: #949494;
         font-size: 9px;
     }
-    Text { x: 92px; y: 10px; text: "M"; color: #949494; font-size: 9px; }
-    Text { x: 110px; y: 10px; text: "S"; color: #949494; font-size: 9px; }
-    Text { x: 92px; y: 29px; text: "▣"; color: #949494; font-size: 9px; }
+    Rectangle { x: 88px; y: 6px; width: 18px; height: 16px; background: muted ? #694b4b : transparent;
+        Text { text: "M"; color: muted ? #f0b0b0 : #949494; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; }
+        TouchArea { clicked => { root.muted = !root.muted; root.mute-toggled(); } }
+    }
+    Rectangle { x: 108px; y: 6px; width: 18px; height: 16px; background: locked ? #5f5530 : transparent;
+        Text { text: "L"; color: locked ? #f5d37b : #949494; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; }
+        TouchArea { clicked => { root.locked = !root.locked; root.lock-toggled(); } }
+    }
+    Rectangle { x: 88px; y: 26px; width: 18px; height: 16px; background: root.track-visible ? transparent : #4b4b4b;
+        Text { text: "◉"; color: root.track-visible ? #70d6a3 : #777777; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; }
+        TouchArea { clicked => { root.track-visible = !root.track-visible; root.visibility-toggled(); } }
+    }
 }
 
 export component PrismStudio inherits Window {
@@ -384,10 +399,10 @@ export component PrismStudio inherits Window {
                     Rectangle {
                         width: 154px; background: #252525;
                         VerticalLayout { spacing: 1px;
-                            TrackHeader { name: "V2"; kind: "VIDEO"; }
-                            TrackHeader { name: "V1"; kind: "VIDEO"; }
-                            TrackHeader { name: "A1"; kind: "AUDIO · STEREO"; }
-                            TrackHeader { name: "A2"; kind: "AUDIO · STEREO"; }
+                            TrackHeader { name: "V2"; kind: "VIDEO"; lock-toggled => { root.command-invoked("timeline.toggle_track_lock"); } mute-toggled => { root.command-invoked("timeline.toggle_track_mute"); } visibility-toggled => { root.command-invoked("timeline.toggle_track_visibility"); } }
+                            TrackHeader { name: "V1"; kind: "VIDEO"; lock-toggled => { root.command-invoked("timeline.toggle_track_lock"); } mute-toggled => { root.command-invoked("timeline.toggle_track_mute"); } visibility-toggled => { root.command-invoked("timeline.toggle_track_visibility"); } }
+                            TrackHeader { name: "A1"; kind: "AUDIO · STEREO"; lock-toggled => { root.command-invoked("timeline.toggle_track_lock"); } mute-toggled => { root.command-invoked("timeline.toggle_track_mute"); } visibility-toggled => { root.command-invoked("timeline.toggle_track_visibility"); } }
+                            TrackHeader { name: "A2"; kind: "AUDIO · STEREO"; lock-toggled => { root.command-invoked("timeline.toggle_track_lock"); } mute-toggled => { root.command-invoked("timeline.toggle_track_mute"); } visibility-toggled => { root.command-invoked("timeline.toggle_track_visibility"); } }
                         }
                     }
                     Rectangle {
