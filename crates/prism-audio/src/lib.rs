@@ -1111,6 +1111,99 @@ impl AudioAnalysis {
     }
 }
 
+/// Stateful stereo peak meter suitable for realtime UI updates.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StereoMeter {
+    left_peak: f32,
+    right_peak: f32,
+    left_hold: f32,
+    right_hold: f32,
+    left_rms: f32,
+    right_rms: f32,
+    clipped: bool,
+}
+
+/// A stable snapshot of the current stereo meter state.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StereoMeterSnapshot {
+    /// Current left-channel peak amplitude.
+    pub left_peak: f32,
+    /// Current right-channel peak amplitude.
+    pub right_peak: f32,
+    /// Peak-hold left-channel amplitude.
+    pub left_hold: f32,
+    /// Peak-hold right-channel amplitude.
+    pub right_hold: f32,
+    /// Current left-channel RMS amplitude.
+    pub left_rms: f32,
+    /// Current right-channel RMS amplitude.
+    pub right_rms: f32,
+    /// Whether any sample has clipped since the last reset.
+    pub clipped: bool,
+}
+
+impl StereoMeter {
+    /// Updates the meter from one interleaved stereo block.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for odd interleaved buffers or non-finite samples.
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+    pub fn update(&mut self, samples: &[f32]) -> Result<(), AudioError> {
+        if !samples.len().is_multiple_of(2) {
+            return Err(AudioError::OddInterleavedBuffer);
+        }
+        if samples.iter().any(|sample| !sample.is_finite()) {
+            return Err(AudioError::NonFiniteSample);
+        }
+        if samples.is_empty() {
+            self.left_peak = 0.0;
+            self.right_peak = 0.0;
+            self.left_rms = 0.0;
+            self.right_rms = 0.0;
+            return Ok(());
+        }
+        let mut left_sum = 0.0_f64;
+        let mut right_sum = 0.0_f64;
+        self.left_peak = 0.0;
+        self.right_peak = 0.0;
+        for frame in samples.chunks_exact(2) {
+            self.left_peak = self.left_peak.max(frame[0].abs());
+            self.right_peak = self.right_peak.max(frame[1].abs());
+            left_sum += f64::from(frame[0]) * f64::from(frame[0]);
+            right_sum += f64::from(frame[1]) * f64::from(frame[1]);
+            self.clipped |= frame[0].abs() >= 1.0 || frame[1].abs() >= 1.0;
+        }
+        let frame_count = (samples.len() / 2) as f64;
+        self.left_rms = (left_sum / frame_count).sqrt() as f32;
+        self.right_rms = (right_sum / frame_count).sqrt() as f32;
+        self.left_hold = self.left_hold.max(self.left_peak);
+        self.right_hold = self.right_hold.max(self.right_peak);
+        Ok(())
+    }
+
+    /// Clears peak-hold and clipping indicators without changing current levels.
+    pub fn reset_peaks(&mut self) {
+        self.left_hold = self.left_peak;
+        self.right_hold = self.right_peak;
+        self.clipped = false;
+    }
+
+    /// Returns a copy of the current meter state.
+    #[must_use]
+    pub const fn snapshot(self) -> StereoMeterSnapshot {
+        StereoMeterSnapshot {
+            left_peak: self.left_peak,
+            right_peak: self.right_peak,
+            left_hold: self.left_hold,
+            right_hold: self.right_hold,
+            left_rms: self.left_rms,
+            right_rms: self.right_rms,
+            clipped: self.clipped,
+        }
+    }
+}
+
 fn amplitude_to_dbfs(amplitude: f32) -> f32 {
     if amplitude == 0.0 {
         f32::NEG_INFINITY
@@ -1313,8 +1406,9 @@ mod tests {
     use super::{
         AudioAnalysis, AudioBus, AudioBusMixer, AudioError, AudioFades, AudioMixer, BusRoute,
         DynamicsCompressor, FilterKind, Limiter, LinearResampler, OnePoleFilter, PeakNormalizer,
-        RoutedStereoTrack, StereoDelay, StereoGainPan, StereoTrack, StreamingLinearResampler,
-        WaveformPoint, generate_stereo_waveform, generate_waveform, measure_integrated_loudness,
+        RoutedStereoTrack, StereoDelay, StereoGainPan, StereoMeter, StereoTrack,
+        StreamingLinearResampler, WaveformPoint, generate_stereo_waveform, generate_waveform,
+        measure_integrated_loudness,
     };
 
     #[test]
@@ -1323,6 +1417,24 @@ mod tests {
         StereoGainPan::new().process(&mut samples)?;
         assert!((samples[0] - 0.707_106_77).abs() < 1e-6);
         assert!((samples[1] - 0.353_553_38).abs() < 1e-6);
+        Ok(())
+    }
+
+    #[test]
+    fn stereo_meter_tracks_channels_hold_and_clipping() -> Result<(), AudioError> {
+        let mut meter = StereoMeter::default();
+        meter.update(&[0.25, -0.5, 1.1, 0.75])?;
+        let snapshot = meter.snapshot();
+        assert!((snapshot.left_peak - 1.1).abs() < f32::EPSILON);
+        assert!((snapshot.right_peak - 0.75).abs() < f32::EPSILON);
+        assert!((snapshot.left_hold - 1.1).abs() < f32::EPSILON);
+        assert!(snapshot.clipped);
+        meter.update(&[0.1, 0.2])?;
+        assert!((meter.snapshot().left_hold - 1.1).abs() < f32::EPSILON);
+        meter.reset_peaks();
+        assert!(!meter.snapshot().clipped);
+        assert!((meter.snapshot().left_hold - 0.1).abs() < f32::EPSILON);
+        assert_eq!(meter.update(&[0.1]), Err(AudioError::OddInterleavedBuffer));
         Ok(())
     }
 
