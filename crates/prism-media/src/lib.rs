@@ -268,6 +268,46 @@ impl MediaArtifactWorker {
         Ok(key)
     }
 
+    /// Queues a deterministic stereo peak/RMS waveform artifact.
+    ///
+    /// Each point is serialized as six little-endian `f32` values in the
+    /// order left-min, left-max, left-rms, right-min, right-max, right-rms.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid samples/window sizes or queue backpressure.
+    pub fn schedule_stereo_waveform(
+        &self,
+        entry: &MediaCatalogEntry,
+        interleaved_samples: &[f32],
+        frames_per_point: usize,
+    ) -> Result<prism_cache::CacheKey, MediaArtifactError> {
+        let points = prism_audio::generate_stereo_waveform(interleaved_samples, frames_per_point)?;
+        let mut contents = Vec::with_capacity(points.len() * 24);
+        for point in points {
+            for value in [
+                point.left.min,
+                point.left.max,
+                point.left.rms,
+                point.right.min,
+                point.right.max,
+                point.right.rms,
+            ] {
+                contents.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        let key = entry.artifact_key(
+            MediaArtifactKind::Waveform,
+            format!("stereo:{frames_per_point}").as_bytes(),
+        );
+        self.worker.try_submit(CacheWriteRequest {
+            key,
+            extension: MediaArtifactKind::Waveform.extension().to_owned(),
+            contents,
+        })?;
+        Ok(key)
+    }
+
     /// Returns the next completed artifact write without blocking.
     ///
     /// # Errors
@@ -1642,6 +1682,34 @@ mod tests {
         assert_eq!(bytes.len(), 2 * 12);
         assert_eq!(bytes[0..4], (-1.0_f32).to_le_bytes());
         assert_eq!(bytes[4..8], 0.5_f32.to_le_bytes());
+        let _ = fs::remove_dir_all(root);
+        Ok(())
+    }
+
+    #[test]
+    fn stereo_waveform_worker_preserves_channel_peaks() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "prism-media-stereo-waveform-worker-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let worker = MediaArtifactWorker::spawn(&root, 2);
+        let entry = MediaCatalogEntry {
+            path: Path::new("/offline/stereo.wav").to_path_buf(),
+            kind: MediaItemKind::Audio,
+            metadata: None,
+            fingerprint: None,
+            offline: true,
+            diagnostic: Some("fixture".to_owned()),
+        };
+        let key = worker.schedule_stereo_waveform(&entry, &[-1.0, 0.25, 0.5, 1.0], 2)?;
+        let result = worker.result_timeout(std::time::Duration::from_secs(1))?;
+        assert_eq!(result.key, key);
+        let path = result.result?;
+        let bytes = fs::read(path)?;
+        assert_eq!(bytes.len(), 24);
+        assert_eq!(bytes[0..4], (-1.0_f32).to_le_bytes());
+        assert_eq!(bytes[12..16], 0.25_f32.to_le_bytes());
         let _ = fs::remove_dir_all(root);
         Ok(())
     }
