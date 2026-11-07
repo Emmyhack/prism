@@ -189,12 +189,10 @@ export component PrismStudio inherits Window {
                     ScrollView {
                         VerticalLayout {
                             padding: 5px; spacing: 1px;
-                            for asset[index] in ["Interview_A.cam", "Interview_B.cam", "City_Broll_01", "Main Sequence", "normalize_audio.py", "social_cut.ts"] : Rectangle {
-                                height: 30px; border-radius: 1px;
-                                background: index == 3 ? #383838 : #262626;
-                                Rectangle { x: 7px; y: 8px; width: 14px; height: 14px; border-radius: 3px; background: index == 3 ? #3985c5 : #383838; }
-                                Text { x: 29px; y: 3px; text: asset; color: #e4e8f1; font-size: 10px; }
-                                Text { x: 29px; y: 17px; text: index == 3 ? "Sequence · 24 fps" : index > 3 ? "Script · Ready" : "UHD · 24 fps"; color: #949494; font-size: 9px; }
+                            Rectangle {
+                                height: 54px; border-radius: 2px; background: #262626;
+                                Text { y: 10px; width: parent.width; text: "No media imported"; color: #b9bec8; font-size: 11px; horizontal-alignment: center; }
+                                Text { y: 29px; width: parent.width; text: "Import media to populate this panel"; color: #747b86; font-size: 9px; horizontal-alignment: center; }
                             }
                         }
                     }
@@ -243,9 +241,7 @@ export component PrismStudio inherits Window {
                             Rectangle {
                                 horizontal-stretch: 1; background: #080808;
                                 border-color: root.active-monitor == "PROGRAM" ? #3985c5 : #383838; border-width: 1px;
-                                Rectangle { x: parent.width / 2 - 45px; y: parent.height / 2 - 18px; width: 90px; height: 36px; background: #151515;
-                                    Text { text: "PRISM"; color: #555555; font-size: 18px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
-                                }
+                                Text { width: parent.width; y: parent.height / 2 - 8px; text: "No sequence output"; color: #686868; font-size: 11px; horizontal-alignment: center; }
                                 Text { x: 10px; y: parent.height - 26px; text: "00:00:17:12      Fit ▾                  1/2 ▾"; color: #65b4ed; font-size: 10px; font-family: "monospace"; }
                                 Text { x: 10px; y: 8px; text: "MAIN SEQUENCE"; color: #65b4ed; font-size: 9px; }
                             }
