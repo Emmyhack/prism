@@ -366,6 +366,9 @@ export component PrismStudio inherits Window {
                         ToolButton { glyph: "⇥"; label: "Trim tool (T)"; active: root.active-tool == 2; invoked => { root.active-tool = 2; } }
                         Rectangle { width: 1px; height: 20px; background: #3c3c3c; }
                         ToolButton { glyph: "⌁"; label: "Snapping (S)"; active: root.snapping; invoked => { root.snapping = !root.snapping; } }
+                        ToolButton { glyph: "⇥"; label: "Insert edit"; invoked => { root.export-status = "INSERT EDIT"; root.command-invoked("timeline.insert_clip"); } }
+                        ToolButton { glyph: "⌫"; label: "Ripple delete"; invoked => { root.export-status = "RIPPLE DELETE"; root.command-invoked("timeline.ripple_delete"); } }
+                        ToolButton { glyph: "⌁"; label: "Apply transition"; invoked => { root.export-status = "TRANSITION"; root.command-invoked("timeline.add_transition"); } }
                         Rectangle { horizontal-stretch: 1; }
                         Text { text: "MAIN SEQUENCE"; color: #d0d0d0; font-size: 10px; font-weight: 600; }
                         Rectangle { horizontal-stretch: 1; }
