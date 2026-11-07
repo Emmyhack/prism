@@ -114,6 +114,38 @@ impl CommandRegistry {
                 enabled: always_enabled,
             },
             CommandDescriptor {
+                id: "timeline.delete_marker",
+                label: "Delete Marker",
+                category: CommandCategory::Timeline,
+                shortcut: None,
+                undo: UndoStrategy::Transaction,
+                enabled: has_revision,
+            },
+            CommandDescriptor {
+                id: "timeline.toggle_track_lock",
+                label: "Toggle Track Lock",
+                category: CommandCategory::Timeline,
+                shortcut: None,
+                undo: UndoStrategy::Transaction,
+                enabled: has_revision,
+            },
+            CommandDescriptor {
+                id: "timeline.toggle_track_visibility",
+                label: "Toggle Track Visibility",
+                category: CommandCategory::Timeline,
+                shortcut: None,
+                undo: UndoStrategy::Transaction,
+                enabled: has_revision,
+            },
+            CommandDescriptor {
+                id: "timeline.toggle_track_mute",
+                label: "Toggle Track Mute",
+                category: CommandCategory::Timeline,
+                shortcut: None,
+                undo: UndoStrategy::Transaction,
+                enabled: has_revision,
+            },
+            CommandDescriptor {
                 id: "timeline.razor",
                 label: "Razor Tool",
                 category: CommandCategory::Timeline,
@@ -2003,6 +2035,8 @@ mod tests {
         assert!(CommandRegistry::find("project.set_proxy").is_some());
         assert!(CommandRegistry::find("timeline.insert_clip").is_some());
         assert!(CommandRegistry::find("timeline.ripple_delete").is_some());
+        assert!(CommandRegistry::find("timeline.toggle_track_lock").is_some());
+        assert!(CommandRegistry::find("timeline.toggle_track_mute").is_some());
         Ok(())
     }
 
