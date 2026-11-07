@@ -89,6 +89,8 @@ export component PrismStudio inherits Window {
 
     in-out property <int> active-tool: 0;
     in-out property <bool> playing: false;
+    in-out property <bool> source-playing: false;
+    in-out property <bool> program-playing: false;
     in-out property <bool> snapping: true;
     in-out property <string> active-workspace: "EDIT";
     in-out property <string> active-monitor: "PROGRAM";
@@ -214,13 +216,13 @@ export component PrismStudio inherits Window {
                                 width: 58px; height: 24px; border-radius: 3px;
                                 background: root.active-monitor == "SOURCE" ? #343044 : transparent;
                                 Text { text: "SOURCE"; color: root.active-monitor == "SOURCE" ? #f0edff : #949494; font-size: 9px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
-                                TouchArea { clicked => { root.active-monitor = "SOURCE"; root.command-invoked("playback.source_monitor"); } }
+                                TouchArea { clicked => { root.active-monitor = "SOURCE"; root.playing = root.source-playing; root.command-invoked("playback.source_monitor"); } }
                             }
                             Rectangle {
                                 width: 68px; height: 24px; border-radius: 3px;
                                 background: root.active-monitor == "PROGRAM" ? #343044 : transparent;
                                 Text { text: "PROGRAM"; color: root.active-monitor == "PROGRAM" ? #f0edff : #949494; font-size: 9px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
-                                TouchArea { clicked => { root.active-monitor = "PROGRAM"; root.command-invoked("playback.program_monitor"); } }
+                                TouchArea { clicked => { root.active-monitor = "PROGRAM"; root.playing = root.program-playing; root.command-invoked("playback.program_monitor"); } }
                             }
                             Rectangle { horizontal-stretch: 1; }
                             Text { text: "Fit  ▾"; color: #949494; font-size: 9px; }
@@ -255,9 +257,22 @@ export component PrismStudio inherits Window {
                             padding-left: 14px; padding-right: 14px; spacing: 8px; alignment: center;
                             Text { text: "00:00:17:12"; color: #e0e0e0; font-size: 13px; font-family: "monospace"; }
                             Rectangle { horizontal-stretch: 1; }
-                            ToolButton { glyph: "|◀"; label: "Previous edit"; }
-                            ToolButton { glyph: root.playing ? "■" : "▶"; label: root.playing ? "Stop" : "Play"; active: root.playing; invoked => { root.playing = !root.playing; } }
-                            ToolButton { glyph: "▶|"; label: "Next edit"; }
+                            ToolButton { glyph: "|◀"; label: "Previous frame"; invoked => { root.command-invoked("playback.step_backward"); } }
+                            ToolButton {
+                                glyph: root.playing ? "■" : "▶";
+                                label: root.playing ? "Stop" : "Play";
+                                active: root.playing;
+                                invoked => {
+                                    root.playing = !root.playing;
+                                    if (root.active-monitor == "SOURCE") {
+                                        root.source-playing = root.playing;
+                                    } else {
+                                        root.program-playing = root.playing;
+                                    }
+                                    root.command-invoked("playback.play_pause");
+                                }
+                            }
+                            ToolButton { glyph: "▶|"; label: "Next frame"; invoked => { root.command-invoked("playback.step_forward"); } }
                             Rectangle { horizontal-stretch: 1; }
                             Text { text: "Fit  ⌄"; color: #b8b8b8; font-size: 10px; }
                         }

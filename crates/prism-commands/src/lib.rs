@@ -146,6 +146,22 @@ impl CommandRegistry {
                 enabled: always_enabled,
             },
             CommandDescriptor {
+                id: "playback.step_backward",
+                label: "Step Back One Frame",
+                category: CommandCategory::Playback,
+                shortcut: Some("Left"),
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "playback.step_forward",
+                label: "Step Forward One Frame",
+                category: CommandCategory::Playback,
+                shortcut: Some("Right"),
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
                 id: "export.queue",
                 label: "Queue Export",
                 category: CommandCategory::Project,
