@@ -135,6 +135,57 @@ impl WorkspaceStore {
         fs::write(&temporary, bytes)?;
         fs::rename(temporary, &self.path)
     }
+
+    /// Saves or replaces a named preset while preserving deterministic order.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-input, serialization, or filesystem errors.
+    pub fn upsert(
+        &self,
+        presets: &mut Vec<WorkspacePreset>,
+        preset: WorkspacePreset,
+    ) -> Result<(), io::Error> {
+        if preset.name.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "workspace name is empty",
+            ));
+        }
+        if let Some(existing) = presets.iter_mut().find(|item| item.name == preset.name) {
+            *existing = preset;
+        } else {
+            presets.push(preset);
+            presets.sort_by(|left, right| left.name.cmp(&right.name));
+        }
+        self.save(presets)
+    }
+
+    /// Deletes a named preset and persists the resulting collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns serialization or filesystem errors.
+    pub fn delete(
+        &self,
+        presets: &mut Vec<WorkspacePreset>,
+        name: &str,
+    ) -> Result<bool, io::Error> {
+        let before = presets.len();
+        presets.retain(|preset| preset.name != name);
+        self.save(presets)?;
+        Ok(before != presets.len())
+    }
+
+    /// Clears all custom presets and persists the empty collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns serialization or filesystem errors.
+    pub fn reset(&self, presets: &mut Vec<WorkspacePreset>) -> Result<(), io::Error> {
+        presets.clear();
+        self.save(presets)
+    }
 }
 
 impl WorkspaceLayout {
@@ -510,6 +561,44 @@ mod tests {
         }];
         store.save(&presets)?;
         assert_eq!(store.load()?, presets);
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_preset_lifecycle_is_deterministic() -> Result<(), Box<dyn std::error::Error>> {
+        let path = std::env::temp_dir().join(format!(
+            "prism-workspace-lifecycle-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = WorkspaceStore::new(&path);
+        let mut presets = Vec::new();
+        store.upsert(
+            &mut presets,
+            WorkspacePreset {
+                name: "Zed".to_owned(),
+                layout: WorkspaceLayout::for_viewport(Size::new(1_024, 640)),
+            },
+        )?;
+        store.upsert(
+            &mut presets,
+            WorkspacePreset {
+                name: "Edit".to_owned(),
+                layout: WorkspaceLayout::for_viewport(Size::new(1_440, 900)),
+            },
+        )?;
+        assert_eq!(
+            presets
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Edit", "Zed"]
+        );
+        assert!(store.delete(&mut presets, "Edit")?);
+        assert!(!store.delete(&mut presets, "Missing")?);
+        store.reset(&mut presets)?;
+        assert!(presets.is_empty());
         let _ = std::fs::remove_file(path);
         Ok(())
     }
