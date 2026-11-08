@@ -209,6 +209,18 @@ pub enum ShortcutAction {
     RollTool,
     /// Toggle playback.
     PlayPause,
+    /// Insert source material at the playhead.
+    Insert,
+    /// Ripple-delete the selected edit.
+    RippleDelete,
+    /// Step one frame backward.
+    StepBackward,
+    /// Step one frame forward.
+    StepForward,
+    /// Toggle timeline snapping.
+    ToggleSnap,
+    /// Add a sequence marker.
+    AddMarker,
     /// Undo the last transaction.
     Undo,
     /// Redo the last transaction.
@@ -612,6 +624,36 @@ pub fn default_shortcuts() -> Vec<ShortcutBinding> {
         ShortcutBinding {
             action: ShortcutAction::PlayPause,
             key: "Space".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::Insert,
+            key: ",".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::RippleDelete,
+            key: "Backspace".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::StepBackward,
+            key: "Left".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::StepForward,
+            key: "Right".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::ToggleSnap,
+            key: "S".to_owned(),
+            modifiers: vec![],
+        },
+        ShortcutBinding {
+            action: ShortcutAction::AddMarker,
+            key: "M".to_owned(),
             modifiers: vec![],
         },
         ShortcutBinding {

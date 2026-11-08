@@ -507,7 +507,14 @@ impl DesktopState {
             ShortcutAction::SlideTool => self.tool = EditTool::Slide,
             ShortcutAction::RollTool => self.tool = EditTool::Roll,
             ShortcutAction::PlayPause => self.toggle_playback(),
-            ShortcutAction::Undo | ShortcutAction::Redo => {}
+            ShortcutAction::ToggleSnap => self.snapping = !self.snapping,
+            ShortcutAction::Insert
+            | ShortcutAction::RippleDelete
+            | ShortcutAction::StepBackward
+            | ShortcutAction::StepForward
+            | ShortcutAction::AddMarker
+            | ShortcutAction::Undo
+            | ShortcutAction::Redo => {}
         }
     }
 }
