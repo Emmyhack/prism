@@ -4,6 +4,7 @@
 //! interaction state, and design tokens here makes the editing experience stable
 //! across macOS, Windows, and Linux without coupling it to a renderer.
 
+use prism_export::{ExportJobId, ExportJobState, ExportQueue, ExportQueueError};
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
@@ -440,6 +441,82 @@ pub struct DesktopState {
     pub inspector_open: bool,
 }
 
+/// UI-facing adapter for the authoritative export queue.
+#[derive(Clone, Debug, Default)]
+pub struct ExportController {
+    queue: ExportQueue,
+    active_job: Option<ExportJobId>,
+}
+
+impl ExportController {
+    /// Creates a controller with no queued exports.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Queues a destination and selects it as the active job.
+    pub fn queue(&mut self, output: PathBuf) -> ExportJobId {
+        let id = self.queue.enqueue(output);
+        self.active_job = Some(id);
+        id
+    }
+
+    /// Starts the selected job when a worker is ready.
+    ///
+    /// # Errors
+    ///
+    /// Returns the queue transition error when no job is selected or the job
+    /// is not queued.
+    pub fn start(&mut self) -> Result<(), ExportQueueError> {
+        self.queue
+            .start(self.active_job.ok_or(ExportQueueError::UnknownJob)?)
+    }
+
+    /// Requests cancellation of the selected job.
+    ///
+    /// # Errors
+    ///
+    /// Returns the queue transition error when no job is selected or the job
+    /// is not active.
+    pub fn cancel(&mut self) -> Result<(), ExportQueueError> {
+        self.queue
+            .cancel(self.active_job.ok_or(ExportQueueError::UnknownJob)?)
+    }
+
+    /// Requeues the selected failed/cancelled job.
+    ///
+    /// # Errors
+    ///
+    /// Returns the queue transition error when no job is selected or the job
+    /// is not terminal and retryable.
+    pub fn retry(&mut self) -> Result<(), ExportQueueError> {
+        self.queue
+            .retry(self.active_job.ok_or(ExportQueueError::UnknownJob)?)
+    }
+
+    /// Removes the selected terminal job and clears selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns the queue transition error when no job is selected or the job
+    /// is still active.
+    pub fn remove(&mut self) -> Result<(), ExportQueueError> {
+        let id = self.active_job.ok_or(ExportQueueError::UnknownJob)?;
+        self.queue.remove(id)?;
+        self.active_job = None;
+        Ok(())
+    }
+
+    /// Returns the selected job's authoritative state.
+    #[must_use]
+    pub fn state(&self) -> Option<&ExportJobState> {
+        self.active_job
+            .and_then(|id| self.queue.get(id))
+            .map(|job| &job.state)
+    }
+}
+
 impl Default for DesktopState {
     fn default() -> Self {
         Self {
@@ -522,9 +599,11 @@ impl DesktopState {
 #[cfg(test)]
 mod tests {
     use super::{
-        DesktopState, EditTool, MIN_VIEWPORT, PanelId, Size, TransportState, WorkspaceKind,
-        WorkspaceLayout, WorkspacePreset, WorkspaceStore,
+        DesktopState, EditTool, ExportController, MIN_VIEWPORT, PanelId, Size, TransportState,
+        WorkspaceKind, WorkspaceLayout, WorkspacePreset, WorkspaceStore,
     };
+    use prism_export::ExportJobState;
+    use std::path::PathBuf;
 
     #[test]
     fn wide_layout_matches_familiar_nle_regions_without_overlap() {
@@ -634,6 +713,22 @@ mod tests {
         state.select_tool(EditTool::Razor);
         assert_eq!(state.transport, TransportState::Playing);
         assert_eq!(state.tool, EditTool::Razor);
+    }
+
+    #[test]
+    fn export_controller_tracks_authoritative_queue_lifecycle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut controller = ExportController::new();
+        assert!(controller.state().is_none());
+        controller.queue(PathBuf::from("deliver.mp4"));
+        assert_eq!(controller.state(), Some(&ExportJobState::Queued));
+        controller.start()?;
+        controller.cancel()?;
+        controller.retry()?;
+        controller.cancel()?;
+        controller.remove()?;
+        assert!(controller.state().is_none());
+        Ok(())
     }
 
     #[test]
