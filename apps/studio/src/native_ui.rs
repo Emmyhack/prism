@@ -15,6 +15,10 @@ fn command_status(id: &str, label: &'static str) -> &'static str {
         "timeline.toggle_track_lock" => "TRACK LOCK TOGGLED",
         "timeline.toggle_track_mute" => "TRACK MUTE TOGGLED",
         "timeline.toggle_track_visibility" => "TRACK VISIBILITY TOGGLED",
+        "export.queue" => "EXPORT QUEUED",
+        "export.cancel" => "EXPORT CANCELLATION REQUESTED",
+        "export.retry" => "EXPORT RETRY REQUESTED",
+        "export.remove" => "EXPORT JOB REMOVED",
         _ => label,
     }
 }
@@ -50,6 +54,22 @@ mod tests {
         assert_eq!(
             command_status("timeline.ripple_delete", "Ripple Delete"),
             "RIPPLE DELETE REQUESTED"
+        );
+        assert_eq!(
+            command_status("export.queue", "Queue Export"),
+            "EXPORT QUEUED"
+        );
+        assert_eq!(
+            command_status("export.cancel", "Cancel Export"),
+            "EXPORT CANCELLATION REQUESTED"
+        );
+        assert_eq!(
+            command_status("export.retry", "Retry Export"),
+            "EXPORT RETRY REQUESTED"
+        );
+        assert_eq!(
+            command_status("export.remove", "Remove Export Job"),
+            "EXPORT JOB REMOVED"
         );
         assert_eq!(command_status("unknown.command", "Unknown"), "Unknown");
     }
