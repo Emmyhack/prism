@@ -16,6 +16,7 @@ use prism_media::{FfprobeInspector, MediaError, StreamKind};
 use prism_project::{Project, TrackKind};
 use prism_timeline::{RationalTime, RoundingMode, TimeError};
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     fmt::Write as _,
     fs,
@@ -48,6 +49,207 @@ pub struct BasicMp4ExportRequest {
 #[derive(Clone, Debug, Default)]
 pub struct ExportCancellation {
     cancelled: Arc<AtomicBool>,
+}
+
+/// Stable identifier for a queued export job.
+pub type ExportJobId = Uuid;
+
+/// Lifecycle state reported by the export queue.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExportJobState {
+    /// Waiting for an available worker.
+    Queued,
+    /// Encoder is actively processing the job.
+    Running {
+        /// Encoder completion percentage from 0 through 100.
+        progress_percent: u8,
+    },
+    /// Export completed and was atomically finalized.
+    Completed,
+    /// User requested cancellation before completion.
+    Cancelled,
+    /// Export failed; the message is actionable and safe to display.
+    Failed {
+        /// Actionable encoder or validation failure.
+        message: String,
+    },
+}
+
+/// Lightweight queue record suitable for UI subscriptions and persistence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExportJob {
+    /// Stable job identifier.
+    pub id: ExportJobId,
+    /// Destination selected by the user.
+    pub output: PathBuf,
+    /// Current lifecycle state.
+    pub state: ExportJobState,
+}
+
+/// Deterministic in-memory export queue state machine.
+///
+/// Encoding is intentionally performed by an external worker. This type owns
+/// only lifecycle transitions so a UI cannot display progress that has not
+/// been reported by the actual encoder.
+#[derive(Clone, Debug, Default)]
+pub struct ExportQueue {
+    jobs: BTreeMap<ExportJobId, ExportJob>,
+}
+
+impl ExportQueue {
+    /// Creates an empty queue.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a destination to the queue and returns its stable identifier.
+    pub fn enqueue(&mut self, output: PathBuf) -> ExportJobId {
+        let id = Uuid::new_v4();
+        self.jobs.insert(
+            id,
+            ExportJob {
+                id,
+                output,
+                state: ExportJobState::Queued,
+            },
+        );
+        id
+    }
+
+    /// Returns a job snapshot without exposing mutable queue internals.
+    #[must_use]
+    pub fn get(&self, id: ExportJobId) -> Option<&ExportJob> {
+        self.jobs.get(&id)
+    }
+
+    /// Returns jobs in stable identifier order.
+    pub fn jobs(&self) -> impl Iterator<Item = &ExportJob> {
+        self.jobs.values()
+    }
+
+    /// Marks a queued job as running at zero progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the job is unknown or is not queued.
+    pub fn start(&mut self, id: ExportJobId) -> Result<(), ExportQueueError> {
+        let job = self.job_mut(id)?;
+        if !matches!(job.state, ExportJobState::Queued) {
+            return Err(ExportQueueError::InvalidTransition);
+        }
+        job.state = ExportJobState::Running {
+            progress_percent: 0,
+        };
+        Ok(())
+    }
+
+    /// Reports monotonic encoder progress in the inclusive range 0..=100.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unknown, terminal, backwards, or out-of-range progress.
+    pub fn report_progress(
+        &mut self,
+        id: ExportJobId,
+        progress_percent: u8,
+    ) -> Result<(), ExportQueueError> {
+        if progress_percent > 100 {
+            return Err(ExportQueueError::InvalidProgress);
+        }
+        let job = self.job_mut(id)?;
+        let ExportJobState::Running {
+            progress_percent: current,
+        } = job.state
+        else {
+            return Err(ExportQueueError::InvalidTransition);
+        };
+        if progress_percent < current {
+            return Err(ExportQueueError::NonMonotonicProgress);
+        }
+        job.state = ExportJobState::Running { progress_percent };
+        Ok(())
+    }
+
+    /// Records successful atomic finalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the job is unknown or has not reached 100 percent.
+    pub fn complete(&mut self, id: ExportJobId) -> Result<(), ExportQueueError> {
+        let job = self.job_mut(id)?;
+        if !matches!(
+            job.state,
+            ExportJobState::Running {
+                progress_percent: 100
+            }
+        ) {
+            return Err(ExportQueueError::InvalidTransition);
+        }
+        job.state = ExportJobState::Completed;
+        Ok(())
+    }
+
+    /// Requests cancellation for a queued or running job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the job is unknown or already terminal.
+    pub fn cancel(&mut self, id: ExportJobId) -> Result<(), ExportQueueError> {
+        let job = self.job_mut(id)?;
+        if !matches!(
+            job.state,
+            ExportJobState::Queued | ExportJobState::Running { .. }
+        ) {
+            return Err(ExportQueueError::InvalidTransition);
+        }
+        job.state = ExportJobState::Cancelled;
+        Ok(())
+    }
+
+    /// Records an encoder or validation failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the job is unknown or already terminal.
+    pub fn fail(
+        &mut self,
+        id: ExportJobId,
+        message: impl Into<String>,
+    ) -> Result<(), ExportQueueError> {
+        let job = self.job_mut(id)?;
+        if !matches!(
+            job.state,
+            ExportJobState::Queued | ExportJobState::Running { .. }
+        ) {
+            return Err(ExportQueueError::InvalidTransition);
+        }
+        job.state = ExportJobState::Failed {
+            message: message.into(),
+        };
+        Ok(())
+    }
+
+    fn job_mut(&mut self, id: ExportJobId) -> Result<&mut ExportJob, ExportQueueError> {
+        self.jobs.get_mut(&id).ok_or(ExportQueueError::UnknownJob)
+    }
+}
+
+/// Errors raised when a queue lifecycle transition is invalid.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
+pub enum ExportQueueError {
+    /// The supplied identifier is not present in this queue.
+    #[error("export job is unknown")]
+    UnknownJob,
+    /// The job is not in a state that permits this operation.
+    #[error("invalid export job state transition")]
+    InvalidTransition,
+    /// Progress exceeded 100 percent.
+    #[error("export progress must be between 0 and 100")]
+    InvalidProgress,
+    /// Progress moved backwards.
+    #[error("export progress must be monotonic")]
+    NonMonotonicProgress,
 }
 
 impl ExportCancellation {
@@ -1123,15 +1325,63 @@ impl Drop for TemporaryExport {
 #[cfg(test)]
 mod tests {
     use super::{
-        BasicMp4ExportRequest, ExportCancellation, ExportError, ExportPreset,
-        SequenceExportSegment, SingleTrackMp4ExportRequest, VideoAudioMp4ExportRequest,
-        build_audio_concat_filter, build_video_audio_ffmpeg_arguments, format_timestamp,
-        plan_single_audio_track, plan_single_video_track, validate_request,
+        BasicMp4ExportRequest, ExportCancellation, ExportError, ExportJobState, ExportPreset,
+        ExportQueue, ExportQueueError, SequenceExportSegment, SingleTrackMp4ExportRequest,
+        VideoAudioMp4ExportRequest, build_audio_concat_filter, build_video_audio_ffmpeg_arguments,
+        format_timestamp, plan_single_audio_track, plan_single_video_track, validate_request,
     };
     use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
     use prism_project::{Clip, MediaAsset, Project, Sequence, Track, TrackKind};
     use prism_timeline::RationalTime;
     use std::{fs, path::PathBuf};
+
+    #[test]
+    fn export_queue_enforces_monotonic_real_progress() -> Result<(), ExportQueueError> {
+        let mut queue = ExportQueue::new();
+        let id = queue.enqueue(PathBuf::from("deliver.mp4"));
+        assert_eq!(
+            queue.get(id).map(|job| &job.state),
+            Some(&ExportJobState::Queued)
+        );
+        queue.start(id)?;
+        queue.report_progress(id, 40)?;
+        assert_eq!(
+            queue.report_progress(id, 39),
+            Err(ExportQueueError::NonMonotonicProgress)
+        );
+        queue.report_progress(id, 100)?;
+        queue.complete(id)?;
+        assert_eq!(
+            queue.get(id).map(|job| &job.state),
+            Some(&ExportJobState::Completed)
+        );
+        assert_eq!(queue.cancel(id), Err(ExportQueueError::InvalidTransition));
+        Ok(())
+    }
+
+    #[test]
+    fn export_queue_cancellation_and_failure_are_terminal() -> Result<(), ExportQueueError> {
+        let mut queue = ExportQueue::new();
+        let cancelled = queue.enqueue(PathBuf::from("cancelled.mp4"));
+        queue.cancel(cancelled)?;
+        assert_eq!(
+            queue.start(cancelled),
+            Err(ExportQueueError::InvalidTransition)
+        );
+
+        let failed = queue.enqueue(PathBuf::from("failed.mp4"));
+        queue.start(failed)?;
+        queue.fail(failed, "encoder unavailable")?;
+        assert_eq!(
+            queue.report_progress(failed, 1),
+            Err(ExportQueueError::InvalidTransition)
+        );
+        assert!(matches!(
+            queue.get(failed).map(|job| &job.state),
+            Some(ExportJobState::Failed { message }) if message == "encoder unavailable"
+        ));
+        Ok(())
+    }
 
     #[test]
     fn timestamp_format_uses_exact_named_rounding() -> Result<(), Box<dyn std::error::Error>> {
