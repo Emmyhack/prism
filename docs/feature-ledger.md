@@ -16,7 +16,7 @@ implemented when it updates authoritative state and has a regression test.
 | Source/Program playback | partial | Exact timeline evaluation now feeds a bounded `PlaybackEngine`; a typed `ReferenceVideoPlayback` adapter connects inspected media sources to the existing off-thread FFmpeg RGBA decoder with seek generations and stale-result suppression. Native decoder surfaces, audio sync, frame stepping, and monitor presentation remain. |
 | Color and scopes | partial | CPU color/HDR/scope foundations and COLOR workspace presentation affordances are implemented; backend-fed overlays and GPU parity remain. |
 | Audio | partial | Offline BS.1770/EBU R128 LUFS foundation and stateful stereo peak/RMS meter with peak-hold/clipping reset are tested; realtime mixer, devices, and sync remain. |
-| Export | partial | Typed capabilities, runtime-name discovery, and deterministic FFmpeg argument mapping are tested; request-level policy selection and packaged encoder execution remain. |
+| Export | partial | Typed capabilities, runtime-name discovery, deterministic FFmpeg argument mapping, and a validated queued-job lifecycle (progress, cancellation, terminal failure) are tested; request-level policy selection, worker integration, and packaged encoder execution remain. |
 | Scripting | implemented, tested | Permissioned Python/JavaScript/TypeScript protocol, runtime manifests, debugger, SDK parity, and package tests. |
 
 ## Audit boundary
