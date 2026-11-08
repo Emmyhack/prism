@@ -234,6 +234,30 @@ impl CommandRegistry {
                 enabled: always_enabled,
             },
             CommandDescriptor {
+                id: "export.cancel",
+                label: "Cancel Export",
+                category: CommandCategory::Project,
+                shortcut: None,
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "export.retry",
+                label: "Retry Export",
+                category: CommandCategory::Project,
+                shortcut: None,
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
+                id: "export.remove",
+                label: "Remove Export Job",
+                category: CommandCategory::Project,
+                shortcut: None,
+                undo: UndoStrategy::Ephemeral,
+                enabled: always_enabled,
+            },
+            CommandDescriptor {
                 id: "scripting.review_permissions",
                 label: "Review Script Permissions",
                 category: CommandCategory::Project,
@@ -2037,6 +2061,12 @@ mod tests {
         assert!(CommandRegistry::find("timeline.ripple_delete").is_some());
         assert!(CommandRegistry::find("timeline.toggle_track_lock").is_some());
         assert!(CommandRegistry::find("timeline.toggle_track_mute").is_some());
+        assert_eq!(
+            CommandRegistry::find("export.cancel").map(|command| command.label),
+            Some("Cancel Export")
+        );
+        assert!(CommandRegistry::find("export.retry").is_some());
+        assert!(CommandRegistry::find("export.remove").is_some());
         Ok(())
     }
 
