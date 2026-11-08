@@ -230,6 +230,47 @@ impl ExportQueue {
         Ok(())
     }
 
+    /// Requeues a cancelled or failed job for another real encoder attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the job is unknown or is not cancelled/failed.
+    pub fn retry(&mut self, id: ExportJobId) -> Result<(), ExportQueueError> {
+        let job = self.job_mut(id)?;
+        if !matches!(
+            job.state,
+            ExportJobState::Cancelled | ExportJobState::Failed { .. }
+        ) {
+            return Err(ExportQueueError::InvalidTransition);
+        }
+        job.state = ExportJobState::Queued;
+        Ok(())
+    }
+
+    /// Removes a terminal job from the queue and returns its final snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the job is unknown or still active.
+    pub fn remove(&mut self, id: ExportJobId) -> Result<ExportJob, ExportQueueError> {
+        let can_remove = self
+            .jobs
+            .get(&id)
+            .ok_or(ExportQueueError::UnknownJob)
+            .map(|job| {
+                matches!(
+                    job.state,
+                    ExportJobState::Completed
+                        | ExportJobState::Cancelled
+                        | ExportJobState::Failed { .. }
+                )
+            })?;
+        if !can_remove {
+            return Err(ExportQueueError::InvalidTransition);
+        }
+        self.jobs.remove(&id).ok_or(ExportQueueError::UnknownJob)
+    }
+
     fn job_mut(&mut self, id: ExportJobId) -> Result<&mut ExportJob, ExportQueueError> {
         self.jobs.get_mut(&id).ok_or(ExportQueueError::UnknownJob)
     }
@@ -1380,6 +1421,19 @@ mod tests {
             queue.get(failed).map(|job| &job.state),
             Some(ExportJobState::Failed { message }) if message == "encoder unavailable"
         ));
+        queue.retry(failed)?;
+        assert_eq!(
+            queue.get(failed).map(|job| &job.state),
+            Some(&ExportJobState::Queued)
+        );
+        assert_eq!(
+            queue.remove(failed),
+            Err(ExportQueueError::InvalidTransition)
+        );
+        queue.cancel(failed)?;
+        let removed = queue.remove(failed)?;
+        assert_eq!(removed.id, failed);
+        assert_eq!(queue.get(failed), None);
         Ok(())
     }
 
