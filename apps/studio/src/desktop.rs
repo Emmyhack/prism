@@ -495,6 +495,43 @@ impl ExportController {
             .retry(self.active_job.ok_or(ExportQueueError::UnknownJob)?)
     }
 
+    /// Reports progress received from the active encoder worker.
+    ///
+    /// # Errors
+    ///
+    /// Returns the queue transition error when no job is selected or progress
+    /// is invalid for the active state.
+    pub fn report_progress(&mut self, progress_percent: u8) -> Result<(), ExportQueueError> {
+        self.queue.report_progress(
+            self.active_job.ok_or(ExportQueueError::UnknownJob)?,
+            progress_percent,
+        )
+    }
+
+    /// Marks the active export as atomically finalized.
+    ///
+    /// # Errors
+    ///
+    /// Returns the queue transition error when no job is selected or the
+    /// worker has not reported 100 percent progress.
+    pub fn complete(&mut self) -> Result<(), ExportQueueError> {
+        self.queue
+            .complete(self.active_job.ok_or(ExportQueueError::UnknownJob)?)
+    }
+
+    /// Records an encoder failure for the active export.
+    ///
+    /// # Errors
+    ///
+    /// Returns the queue transition error when no job is selected or the job
+    /// is already terminal.
+    pub fn fail(&mut self, message: impl Into<String>) -> Result<(), ExportQueueError> {
+        self.queue.fail(
+            self.active_job.ok_or(ExportQueueError::UnknownJob)?,
+            message,
+        )
+    }
+
     /// Removes the selected terminal job and clears selection.
     ///
     /// # Errors
@@ -723,7 +760,13 @@ mod tests {
         controller.queue(PathBuf::from("deliver.mp4"));
         assert_eq!(controller.state(), Some(&ExportJobState::Queued));
         controller.start()?;
-        controller.cancel()?;
+        controller.report_progress(100)?;
+        controller.complete()?;
+        assert_eq!(controller.state(), Some(&ExportJobState::Completed));
+        controller.remove()?;
+        controller.queue(PathBuf::from("retry.mp4"));
+        controller.start()?;
+        controller.fail("encoder unavailable")?;
         controller.retry()?;
         controller.cancel()?;
         controller.remove()?;
