@@ -997,6 +997,19 @@ mod tests {
                 .iter()
                 .any(|binding| binding.action == ShortcutAction::Redo)
         );
+        for action in [
+            ShortcutAction::Insert,
+            ShortcutAction::RippleDelete,
+            ShortcutAction::StepBackward,
+            ShortcutAction::StepForward,
+            ShortcutAction::ToggleSnap,
+            ShortcutAction::AddMarker,
+        ] {
+            assert!(
+                shortcuts.iter().any(|binding| binding.action == action),
+                "missing default shortcut for {action:?}"
+            );
+        }
     }
 
     #[test]
@@ -1010,6 +1023,21 @@ mod tests {
             Some(ShortcutAction::PlayPause)
         );
         assert_eq!(resolve_shortcut("z", &["Shift"]), None);
+        assert_eq!(resolve_shortcut(",", &[]), Some(ShortcutAction::Insert));
+        assert_eq!(
+            resolve_shortcut("backspace", &[]),
+            Some(ShortcutAction::RippleDelete)
+        );
+        assert_eq!(
+            resolve_shortcut("left", &[]),
+            Some(ShortcutAction::StepBackward)
+        );
+        assert_eq!(
+            resolve_shortcut("right", &[]),
+            Some(ShortcutAction::StepForward)
+        );
+        assert_eq!(resolve_shortcut("s", &[]), Some(ShortcutAction::ToggleSnap));
+        assert_eq!(resolve_shortcut("m", &[]), Some(ShortcutAction::AddMarker));
     }
 
     #[test]
