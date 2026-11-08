@@ -4,6 +4,21 @@ use prism_commands::CommandRegistry;
 
 slint::include_modules!();
 
+fn command_status(id: &str, label: &'static str) -> &'static str {
+    match id {
+        "playback.play_pause" => "PLAYBACK COMMAND",
+        "playback.step_backward" => "STEP BACK",
+        "playback.step_forward" => "STEP FORWARD",
+        "timeline.insert_clip" => "INSERT EDIT REQUESTED",
+        "timeline.ripple_delete" => "RIPPLE DELETE REQUESTED",
+        "timeline.add_transition" => "TRANSITION REQUESTED",
+        "timeline.toggle_track_lock" => "TRACK LOCK TOGGLED",
+        "timeline.toggle_track_mute" => "TRACK MUTE TOGGLED",
+        "timeline.toggle_track_visibility" => "TRACK VISIBILITY TOGGLED",
+        _ => label,
+    }
+}
+
 /// Opens the main editor window and runs the native event loop.
 ///
 /// # Errors
@@ -17,23 +32,25 @@ pub fn launch() -> Result<(), slint::PlatformError> {
         if let Some(command) = CommandRegistry::find(id.as_str()) {
             eprintln!("Prism command: {} ({})", command.id, command.label);
             if let Some(ui) = weak_ui.upgrade() {
-                let status = match command.id {
-                    "playback.play_pause" => "PLAYBACK COMMAND",
-                    "playback.step_backward" => "STEP BACK",
-                    "playback.step_forward" => "STEP FORWARD",
-                    "timeline.insert_clip" => "INSERT EDIT REQUESTED",
-                    "timeline.ripple_delete" => "RIPPLE DELETE REQUESTED",
-                    "timeline.add_transition" => "TRANSITION REQUESTED",
-                    "timeline.toggle_track_lock" => "TRACK LOCK TOGGLED",
-                    "timeline.toggle_track_mute" => "TRACK MUTE TOGGLED",
-                    "timeline.toggle_track_visibility" => "TRACK VISIBILITY TOGGLED",
-                    _ => command.label,
-                };
-                ui.set_export_status(status.into());
+                ui.set_export_status(command_status(command.id, command.label).into());
             }
         } else {
             eprintln!("Prism command is not registered: {id}");
         }
     });
     ui.run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_status;
+
+    #[test]
+    fn registered_commands_have_stable_feedback_labels() {
+        assert_eq!(
+            command_status("timeline.ripple_delete", "Ripple Delete"),
+            "RIPPLE DELETE REQUESTED"
+        );
+        assert_eq!(command_status("unknown.command", "Unknown"), "Unknown");
+    }
 }
