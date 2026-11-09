@@ -110,6 +110,12 @@ export component PrismStudio inherits Window {
     in-out property <string> active-workspace: "EDIT";
     in-out property <string> active-monitor: "PROGRAM";
     in-out property <string> export-status: "READY";
+    in-out property <string> export-output: "Untitled Export.mp4";
+    in-out property <string> export-error: "";
+    in-out property <int> export-progress: -1;
+    in-out property <bool> export-can-cancel: false;
+    in-out property <bool> export-can-retry: false;
+    in-out property <bool> export-can-remove: false;
     in-out property <string> script-status: "No errors";
     callback command-invoked(string);
 
@@ -173,7 +179,35 @@ export component PrismStudio inherits Window {
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                Text { text: root.export-status; color: root.export-status == "READY" ? #70d6a3 : #f5b442; font-size: 10px; }
+                Rectangle {
+                    width: root.export-progress >= 0 ? 116px : 0px;
+                    height: 18px;
+                    visible: root.export-progress >= 0;
+                    background: #151515;
+                    border-color: #444444;
+                    border-width: 1px;
+                    Rectangle {
+                        x: 1px; y: 1px;
+                        width: (parent.width - 2px) * root.export-progress / 100;
+                        height: parent.height - 2px;
+                        background: #4c9f70;
+                    }
+                    Text {
+                        text: root.export-progress + "%";
+                        color: #f1f3f7;
+                        font-size: 9px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                Text {
+                    text: root.export-error == "" ? root.export-status : root.export-status + " · " + root.export-error;
+                    color: root.export-status == "READY" || root.export-status == "COMPLETED" ? #70d6a3 : root.export-status == "FAILED" ? #f08080 : #f5b442;
+                    font-size: 10px;
+                }
+                Button { text: "Cancel"; width: 64px; visible: root.export-can-cancel; clicked => { root.command-invoked("export.cancel"); } }
+                Button { text: "Retry"; width: 58px; visible: root.export-can-retry; clicked => { root.command-invoked("export.retry"); } }
+                Button { text: "Clear"; width: 58px; visible: root.export-can-remove; clicked => { root.command-invoked("export.remove"); } }
                 Button { text: "Export"; width: 78px; clicked => { root.export-status = "EXPORT QUEUED"; root.command-invoked("export.queue"); } }
             }
         }

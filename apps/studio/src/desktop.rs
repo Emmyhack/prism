@@ -448,6 +448,26 @@ pub struct ExportController {
     active_job: Option<ExportJobId>,
 }
 
+/// Read-only export state projected for native UI adapters.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportStatus {
+    /// Destination of the selected job, formatted for display.
+    pub output: String,
+    /// Stable short lifecycle label.
+    pub label: &'static str,
+    /// Encoder-reported progress while the job is running.
+    pub progress_percent: Option<u8>,
+    /// Actionable failure detail when the worker failed.
+    pub error: Option<String>,
+    /// Whether cancellation is currently a valid queue transition.
+    pub can_cancel: bool,
+    /// Whether retry is currently a valid queue transition.
+    pub can_retry: bool,
+    /// Whether removal is currently a valid queue transition.
+    pub can_remove: bool,
+}
+
 impl ExportController {
     /// Creates a controller with no queued exports.
     #[must_use]
@@ -552,6 +572,37 @@ impl ExportController {
             .and_then(|id| self.queue.get(id))
             .map(|job| &job.state)
     }
+
+    /// Returns an immutable UI projection of the selected queue job.
+    #[must_use]
+    pub fn status(&self) -> Option<ExportStatus> {
+        let job = self.active_job.and_then(|id| self.queue.get(id))?;
+        let (label, progress_percent, error, can_cancel, can_retry, can_remove) = match &job.state {
+            ExportJobState::Queued => ("QUEUED", None, None, true, false, false),
+            ExportJobState::Running { progress_percent } => (
+                "EXPORTING",
+                Some(*progress_percent),
+                None,
+                true,
+                false,
+                false,
+            ),
+            ExportJobState::Completed => ("COMPLETED", Some(100), None, false, false, true),
+            ExportJobState::Cancelled => ("CANCELLED", None, None, false, true, true),
+            ExportJobState::Failed { message } => {
+                ("FAILED", None, Some(message.clone()), false, true, true)
+            }
+        };
+        Some(ExportStatus {
+            output: job.output.display().to_string(),
+            label,
+            progress_percent,
+            error,
+            can_cancel,
+            can_retry,
+            can_remove,
+        })
+    }
 }
 
 impl Default for DesktopState {
@@ -636,8 +687,8 @@ impl DesktopState {
 #[cfg(test)]
 mod tests {
     use super::{
-        DesktopState, EditTool, ExportController, MIN_VIEWPORT, PanelId, Size, TransportState,
-        WorkspaceKind, WorkspaceLayout, WorkspacePreset, WorkspaceStore,
+        DesktopState, EditTool, ExportController, ExportStatus, MIN_VIEWPORT, PanelId, Size,
+        TransportState, WorkspaceKind, WorkspaceLayout, WorkspacePreset, WorkspaceStore,
     };
     use prism_export::ExportJobState;
     use std::path::PathBuf;
@@ -771,6 +822,45 @@ mod tests {
         controller.cancel()?;
         controller.remove()?;
         assert!(controller.state().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn export_controller_projects_worker_state_for_native_ui()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut controller = ExportController::new();
+        controller.queue(PathBuf::from("deliver.mp4"));
+        assert_eq!(
+            controller.status(),
+            Some(ExportStatus {
+                output: "deliver.mp4".to_owned(),
+                label: "QUEUED",
+                progress_percent: None,
+                error: None,
+                can_cancel: true,
+                can_retry: false,
+                can_remove: false,
+            })
+        );
+
+        controller.start()?;
+        controller.report_progress(42)?;
+        let running = controller
+            .status()
+            .ok_or_else(|| std::io::Error::other("missing export status"))?;
+        assert_eq!(running.label, "EXPORTING");
+        assert_eq!(running.progress_percent, Some(42));
+        assert!(running.can_cancel);
+
+        controller.fail("encoder unavailable")?;
+        let failed = controller
+            .status()
+            .ok_or_else(|| std::io::Error::other("missing export status"))?;
+        assert_eq!(failed.label, "FAILED");
+        assert_eq!(failed.error.as_deref(), Some("encoder unavailable"));
+        assert!(failed.can_retry);
+        assert!(failed.can_remove);
+        assert!(!failed.can_cancel);
         Ok(())
     }
 

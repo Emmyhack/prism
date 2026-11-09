@@ -24,9 +24,11 @@ Remaining acceptance work:
   the Rust command engine; slip, rolling, and slide protocol builders are now
   complete, while UI parity remains);
 - connect background media/cache work to user-visible task state (the cache
-  worker exposes bounded pending-write state and the Studio summary exposes
-  locked/muted track and marker state; graphical task presentation remains
-  pending);
+  worker exposes bounded pending-write state; Studio now projects authoritative
+  export queue progress, failures, destinations, and valid lifecycle actions,
+  and its project summary exposes locked/muted track and marker state. The
+  native command bar renders export progress, failures, and state-valid
+  cancel/retry/clear controls; cache-task presentation remains pending);
 - expose crash-recovery candidates through the Studio workflow (implemented
   through `--list-autosaves` and the stable `AutosaveSummary` boundary);
 - provide a stable default keyboard map for selection, razor, trim, slip,
