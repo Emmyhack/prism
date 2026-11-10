@@ -3780,9 +3780,11 @@ name = "prism-studio"
 version = "0.1.0"
 dependencies = [
  "prism-commands",
+ "prism-core",
  "prism-export",
  "prism-media",
  "prism-persistence",
+ "prism-project",
  "prism-recipe",
  "prism-script",
  "serde",

@@ -8,9 +8,11 @@ build = "build.rs"
 
 [dependencies]
 prism-commands = { path = "../../crates/prism-commands" }
+prism-core = { path = "../../crates/prism-core" }
 prism-export = { path = "../../crates/prism-export" }
 prism-media = { path = "../../crates/prism-media" }
 prism-persistence = { path = "../../crates/prism-persistence" }
+prism-project = { path = "../../crates/prism-project" }
 prism-recipe = { path = "../../crates/prism-recipe" }
 prism-script = { path = "../../crates/prism-script" }
 serde.workspace = true

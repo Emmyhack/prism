@@ -4,11 +4,19 @@
 //! interaction state, and design tokens here makes the editing experience stable
 //! across macOS, Windows, and Linux without coupling it to a renderer.
 
-use prism_export::{ExportJobId, ExportJobState, ExportQueue, ExportQueueError};
+use prism_core::{SequenceId, TrackId};
+use prism_export::{
+    BasicMp4Exporter, ExportCancellation, ExportJobId, ExportJobState, ExportQueue,
+    ExportQueueError, SingleTrackMp4ExportRequest,
+};
+use prism_project::Project;
 use serde::{Deserialize, Serialize};
 use std::{
     fs, io,
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
+    thread,
+    time::Duration,
 };
 
 /// Minimum supported desktop viewport in logical pixels.
@@ -468,6 +476,130 @@ pub struct ExportStatus {
     pub can_remove: bool,
 }
 
+/// One update emitted by a background Studio export worker.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExportWorkerEvent {
+    /// Encoder progress suitable for the authoritative queue.
+    Progress(u8),
+    /// The output was validated and atomically finalized.
+    Completed,
+    /// Cooperative cancellation stopped the encoder.
+    Cancelled,
+    /// Validation, encoder, or finalization failure safe for UI display.
+    Failed(String),
+}
+
+/// Restricted progress channel supplied to a background export operation.
+#[derive(Clone, Debug)]
+pub struct ExportProgress {
+    sender: Sender<ExportWorkerEvent>,
+}
+
+impl ExportProgress {
+    /// Reports encoder progress to Studio's UI thread.
+    pub fn report(&self, progress_percent: u8) {
+        let _ = self
+            .sender
+            .send(ExportWorkerEvent::Progress(progress_percent));
+    }
+}
+
+/// Detached background export operation with cooperative cancellation.
+#[derive(Debug)]
+pub struct ExportWorker {
+    cancellation: ExportCancellation,
+    receiver: Receiver<ExportWorkerEvent>,
+}
+
+impl ExportWorker {
+    /// Starts an arbitrary export operation on a background thread.
+    ///
+    /// The operation is responsible for reporting meaningful intermediate
+    /// progress. Studio always emits the terminal event from its result.
+    #[must_use]
+    pub fn spawn<F>(operation: F) -> Self
+    where
+        F: FnOnce(ExportCancellation, ExportProgress) -> Result<(), String> + Send + 'static,
+    {
+        let cancellation = ExportCancellation::new();
+        let worker_cancellation = cancellation.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let progress = ExportProgress {
+                sender: sender.clone(),
+            };
+            let result = operation(worker_cancellation.clone(), progress);
+            let event = if worker_cancellation.is_cancelled() {
+                ExportWorkerEvent::Cancelled
+            } else {
+                match result {
+                    Ok(()) => ExportWorkerEvent::Completed,
+                    Err(message) => ExportWorkerEvent::Failed(message),
+                }
+            };
+            let _ = sender.send(event);
+        });
+        Self {
+            cancellation,
+            receiver,
+        }
+    }
+
+    /// Starts the real single-video-track exporter on a background thread.
+    #[must_use]
+    pub fn spawn_single_video_track(
+        ffmpeg: PathBuf,
+        ffprobe: PathBuf,
+        project: Project,
+        sequence_id: SequenceId,
+        track_id: TrackId,
+        request: SingleTrackMp4ExportRequest,
+    ) -> Self {
+        Self::spawn(move |cancellation, progress| {
+            progress.report(0);
+            BasicMp4Exporter::new(ffmpeg, ffprobe)
+                .export_single_video_track_with_cancellation(
+                    &project,
+                    sequence_id,
+                    track_id,
+                    &request,
+                    Some(&cancellation),
+                )
+                .map_err(|error| error.to_string())?;
+            progress.report(100);
+            Ok(())
+        })
+    }
+
+    /// Requests cooperative cancellation of the running encoder.
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
+    /// Returns the next pending worker event without blocking the UI thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TryRecvError::Disconnected`] after the worker exits and all
+    /// emitted events have been consumed.
+    pub fn try_next(&self) -> Result<Option<ExportWorkerEvent>, TryRecvError> {
+        match self.receiver.try_recv() {
+            Ok(event) => Ok(Some(event)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(error @ TryRecvError::Disconnected) => Err(error),
+        }
+    }
+
+    /// Waits for one worker event for bounded headless coordination.
+    ///
+    /// # Errors
+    ///
+    /// Returns a timeout or disconnection error when no event can be received.
+    pub fn next_timeout(&self, timeout: Duration) -> Result<ExportWorkerEvent, RecvTimeoutError> {
+        self.receiver.recv_timeout(timeout)
+    }
+}
+
 impl ExportController {
     /// Creates a controller with no queued exports.
     #[must_use]
@@ -603,6 +735,23 @@ impl ExportController {
             can_remove,
         })
     }
+
+    /// Applies one background worker update to the authoritative queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns a queue transition error for stale or out-of-order events.
+    pub fn apply_worker_event(&mut self, event: ExportWorkerEvent) -> Result<(), ExportQueueError> {
+        match event {
+            ExportWorkerEvent::Progress(progress_percent) => self.report_progress(progress_percent),
+            ExportWorkerEvent::Completed => {
+                self.report_progress(100)?;
+                self.complete()
+            }
+            ExportWorkerEvent::Cancelled => self.cancel(),
+            ExportWorkerEvent::Failed(message) => self.fail(message),
+        }
+    }
 }
 
 impl Default for DesktopState {
@@ -687,8 +836,9 @@ impl DesktopState {
 #[cfg(test)]
 mod tests {
     use super::{
-        DesktopState, EditTool, ExportController, ExportStatus, MIN_VIEWPORT, PanelId, Size,
-        TransportState, WorkspaceKind, WorkspaceLayout, WorkspacePreset, WorkspaceStore,
+        DesktopState, EditTool, ExportController, ExportStatus, ExportWorker, ExportWorkerEvent,
+        MIN_VIEWPORT, PanelId, Size, TransportState, WorkspaceKind, WorkspaceLayout,
+        WorkspacePreset, WorkspaceStore,
     };
     use prism_export::ExportJobState;
     use std::path::PathBuf;
@@ -861,6 +1011,45 @@ mod tests {
         assert!(failed.can_retry);
         assert!(failed.can_remove);
         assert!(!failed.can_cancel);
+        Ok(())
+    }
+
+    #[test]
+    fn background_export_events_drive_authoritative_queue_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut controller = ExportController::new();
+        controller.queue(PathBuf::from("deliver.mp4"));
+        controller.start()?;
+        let worker = ExportWorker::spawn(|_cancellation, progress| {
+            progress.report(35);
+            Ok(())
+        });
+
+        loop {
+            let event = worker.next_timeout(std::time::Duration::from_secs(2))?;
+            let completed = event == ExportWorkerEvent::Completed;
+            controller.apply_worker_event(event)?;
+            if completed {
+                break;
+            }
+        }
+        assert_eq!(controller.state(), Some(&ExportJobState::Completed));
+        Ok(())
+    }
+
+    #[test]
+    fn background_export_cancellation_is_reported() -> Result<(), Box<dyn std::error::Error>> {
+        let worker = ExportWorker::spawn(|cancellation, _progress| {
+            while !cancellation.is_cancelled() {
+                std::thread::yield_now();
+            }
+            Err("export cancelled".to_owned())
+        });
+        worker.cancel();
+        assert_eq!(
+            worker.next_timeout(std::time::Duration::from_secs(2))?,
+            ExportWorkerEvent::Cancelled
+        );
         Ok(())
     }
 
