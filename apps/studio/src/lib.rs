@@ -27,6 +27,11 @@ use thiserror::Error;
 pub enum StudioCommand {
     /// Start the shell without opening a project.
     Start,
+    /// Start the graphical shell with an authoritative project loaded.
+    Open {
+        /// Project database to load into the native workspace.
+        project: PathBuf,
+    },
     /// Open a project and print its authoritative summary.
     Inspect {
         /// Project database to open.
@@ -150,6 +155,46 @@ pub struct ProjectSummary {
     pub muted_track_count: usize,
     /// Number of sequence markers.
     pub marker_count: usize,
+}
+
+/// Builds the stable UI summary for an already validated project.
+#[must_use]
+pub fn project_summary(project: &prism_project::Project) -> ProjectSummary {
+    ProjectSummary {
+        id: project.id.as_uuid().to_string(),
+        name: project.name.clone(),
+        revision: project.revision(),
+        media_count: project.media.len(),
+        sequence_count: project.sequences.len(),
+        track_count: project
+            .sequences
+            .values()
+            .map(|sequence| sequence.tracks.len())
+            .sum(),
+        clip_count: project
+            .sequences
+            .values()
+            .flat_map(|sequence| sequence.tracks.iter())
+            .map(|track| track.clips.len())
+            .sum(),
+        locked_track_count: project
+            .sequences
+            .values()
+            .flat_map(|sequence| sequence.tracks.iter())
+            .filter(|track| track.locked)
+            .count(),
+        muted_track_count: project
+            .sequences
+            .values()
+            .flat_map(|sequence| sequence.tracks.iter())
+            .filter(|track| track.muted)
+            .count(),
+        marker_count: project
+            .sequences
+            .values()
+            .map(|sequence| sequence.markers.len())
+            .sum(),
+    }
 }
 
 /// Stable media catalog item exposed to the native browser adapter.
@@ -690,6 +735,9 @@ where
     let arguments = arguments.into_iter().collect::<Vec<_>>();
     match arguments.as_slice() {
         [] => Ok(StudioCommand::Start),
+        [open_flag, project] if open_flag == "--open-project" => Ok(StudioCommand::Open {
+            project: PathBuf::from(project),
+        }),
         [project_flag, project] if project_flag == "--project" => Ok(StudioCommand::Inspect {
             project: PathBuf::from(project),
         }),
@@ -780,43 +828,10 @@ where
 pub fn run(command: StudioCommand) -> Result<Option<String>, StudioError> {
     match command {
         StudioCommand::Start => Ok(None),
+        StudioCommand::Open { .. } => Err(StudioError::Usage),
         StudioCommand::Inspect { project } => {
             let project = load(&project)?;
-            let summary = ProjectSummary {
-                id: project.id.as_uuid().to_string(),
-                name: project.name.clone(),
-                revision: project.revision(),
-                media_count: project.media.len(),
-                sequence_count: project.sequences.len(),
-                track_count: project
-                    .sequences
-                    .values()
-                    .map(|sequence| sequence.tracks.len())
-                    .sum(),
-                clip_count: project
-                    .sequences
-                    .values()
-                    .flat_map(|sequence| sequence.tracks.iter())
-                    .map(|track| track.clips.len())
-                    .sum(),
-                locked_track_count: project
-                    .sequences
-                    .values()
-                    .flat_map(|sequence| sequence.tracks.iter())
-                    .filter(|track| track.locked)
-                    .count(),
-                muted_track_count: project
-                    .sequences
-                    .values()
-                    .flat_map(|sequence| sequence.tracks.iter())
-                    .filter(|track| track.muted)
-                    .count(),
-                marker_count: project
-                    .sequences
-                    .values()
-                    .map(|sequence| sequence.markers.len())
-                    .sum(),
-            };
+            let summary = project_summary(&project);
             Ok(Some(serde_json::to_string_pretty(&summary)?))
         }
         StudioCommand::ListMedia { project, ffprobe } => Ok(Some(serde_json::to_string_pretty(
@@ -892,6 +907,10 @@ mod tests {
         assert!(matches!(
             parse(Vec::<String>::new()),
             Ok(StudioCommand::Start)
+        ));
+        assert!(matches!(
+            parse(vec!["--open-project".to_owned(), "edit.prism".to_owned()]),
+            Ok(StudioCommand::Open { project }) if project == Path::new("edit.prism")
         ));
         assert!(matches!(
             parse(vec!["--project".to_owned(), "edit.prism".to_owned()]),
