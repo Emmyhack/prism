@@ -113,6 +113,9 @@ export component PrismStudio inherits Window {
     in-out property <string> project-name: "No Project";
     in-out property <string> project-path: "";
     in-out property <string> project-summary: "Open a project to begin editing";
+    in-out property <int> media-count: 0;
+    in-out property <int> clip-count: 0;
+    in property <[string]> media-items;
     in-out property <string> export-status: "READY";
     in-out property <string> export-output: "Untitled Export.mp4";
     in-out property <string> export-error: "";
@@ -183,36 +186,8 @@ export component PrismStudio inherits Window {
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                Rectangle {
-                    width: root.export-progress >= 0 ? 116px : 0px;
-                    height: 18px;
-                    visible: root.export-progress >= 0;
-                    background: #151515;
-                    border-color: #444444;
-                    border-width: 1px;
-                    Rectangle {
-                        x: 1px; y: 1px;
-                        width: (parent.width - 2px) * root.export-progress / 100;
-                        height: parent.height - 2px;
-                        background: #4c9f70;
-                    }
-                    Text {
-                        text: root.export-progress + "%";
-                        color: #f1f3f7;
-                        font-size: 9px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-                Text {
-                    text: root.export-error == "" ? root.export-status : root.export-status + " · " + root.export-error;
-                    color: root.export-status == "READY" || root.export-status == "COMPLETED" ? #70d6a3 : root.export-status == "FAILED" ? #f08080 : #f5b442;
-                    font-size: 10px;
-                }
-                Button { text: "Cancel"; width: 64px; visible: root.export-can-cancel; clicked => { root.command-invoked("export.cancel"); } }
-                Button { text: "Retry"; width: 58px; visible: root.export-can-retry; clicked => { root.command-invoked("export.retry"); } }
-                Button { text: "Clear"; width: 58px; visible: root.export-can-remove; clicked => { root.command-invoked("export.remove"); } }
-                Button { text: "Export"; width: 78px; enabled: root.has-project; clicked => { root.export-status = "EXPORT QUEUED"; root.command-invoked("export.queue"); } }
+                Text { text: root.has-project ? root.project-name : "No project open"; color: #9da3b0; font-size: 10px; }
+                Button { text: "Quick Export"; width: 104px; enabled: root.has-project && !root.export-can-cancel; clicked => { root.export-status = "EXPORT QUEUED"; root.command-invoked("export.queue"); } }
             }
         }
 
@@ -227,8 +202,9 @@ export component PrismStudio inherits Window {
                     spacing: 0px;
                     PanelHeader { title: root.active-workspace == "SCRIPTING" ? "SCRIPTS  /  RECIPES" : "Project: " + root.project-name + "  ·  Media Browser"; }
                     Rectangle {
-                        height: 48px; background: #202020;
-                        LineEdit { x: 10px; y: 9px; width: parent.width - 20px; placeholder-text: root.active-workspace == "SCRIPTING" ? "Search scripts" : "Search media"; }
+                        height: 78px; background: #202020;
+                        LineEdit { x: 10px; y: 8px; width: parent.width - 20px; placeholder-text: root.active-workspace == "SCRIPTING" ? "Search scripts" : "Search project"; }
+                        Button { x: 10px; y: 43px; width: parent.width - 20px; height: 26px; text: "+  Import Media"; enabled: root.has-project; clicked => { root.command-invoked("project.import_media"); } }
                     }
                     Rectangle {
                         height: 82px; background: #252525;
@@ -242,10 +218,14 @@ export component PrismStudio inherits Window {
                     ScrollView {
                         VerticalLayout {
                             padding: 5px; spacing: 1px;
-                            Rectangle {
+                            if root.media-count == 0 : Rectangle {
                                 height: 54px; border-radius: 2px; background: #262626;
-                                Text { y: 10px; width: parent.width; text: root.has-project ? root.project-summary : "No project open"; color: #b9bec8; font-size: 10px; horizontal-alignment: center; }
-                                Text { y: 29px; width: parent.width; text: root.has-project ? root.project-path : "Start with --open-project <path>"; color: #747b86; font-size: 9px; horizontal-alignment: center; }
+                                Text { y: 10px; width: parent.width; text: root.has-project ? root.media-count + " media · " + root.clip-count + " timeline clips" : "No project open"; color: #b9bec8; font-size: 10px; horizontal-alignment: center; }
+                                Text { y: 29px; width: parent.width; text: root.has-project ? root.project-path : "Open a project to import media"; color: #747b86; font-size: 9px; horizontal-alignment: center; }
+                            }
+                            for item in root.media-items : Rectangle {
+                                height: 42px; border-radius: 2px; background: #292929;
+                                Text { x: 10px; width: parent.width - 20px; text: "▣  " + item; color: #d0d4dc; font-size: 10px; vertical-alignment: center; overflow: elide; }
                             }
                         }
                     }
@@ -455,8 +435,13 @@ export component PrismStudio inherits Window {
                             x: tick * 96px; width: 1px; height: parent.height; background: #303030;
                         }
                         Rectangle { x: 0px; y: 0px; width: parent.width; height: 2px; background: #b6a250; }
-                        Text { width: parent.width; y: 88px; text: "No clips in active sequence"; color: #747b86; font-size: 11px; horizontal-alignment: center; }
-                        Text { width: parent.width; y: 110px; text: "Import media and create a sequence to begin editing"; color: #5f6670; font-size: 9px; horizontal-alignment: center; }
+                        Text { visible: root.clip-count == 0; width: parent.width; y: 88px; text: "No clips in active sequence"; color: #747b86; font-size: 11px; horizontal-alignment: center; }
+                        Text { visible: root.clip-count == 0; width: parent.width; y: 110px; text: "Import media and create a sequence to begin editing"; color: #5f6670; font-size: 9px; horizontal-alignment: center; }
+                        Rectangle {
+                            visible: root.clip-count > 0; x: 8px; y: 58px; width: parent.width * 0.38; height: 50px; border-radius: 3px;
+                            background: #315f78; border-color: #5ca6c9; border-width: 1px;
+                            Text { x: 9px; width: parent.width - 18px; text: root.clip-count + " imported timeline clip" + (root.clip-count == 1 ? "" : "s"); color: #e4f5ff; font-size: 10px; vertical-alignment: center; overflow: elide; }
+                        }
                         Rectangle { x: 336px; width: 1px; height: parent.height; background: #65b4ed; }
                         Rectangle { x: 331px; y: 0px; width: 11px; height: 7px; background: #65b4ed; }
                         Rectangle { x: 0px; y: parent.height - 12px; width: parent.width; height: 10px; background: #282828;
@@ -481,16 +466,22 @@ export component PrismStudio inherits Window {
         }
 
         Rectangle {
-            height: 26px; background: #202020;
+            height: 30px; background: #202020;
             HorizontalLayout {
-                padding-left: 12px; padding-right: 12px; spacing: 14px; alignment: center;
-                Text { text: "●  READY"; color: #70d6a3; font-size: 9px; }
-                Text { text: "24 fps"; color: #949494; font-size: 9px; }
-                Text { text: "3840 × 2160"; color: #949494; font-size: 9px; }
+                padding-left: 12px; padding-right: 12px; spacing: 10px; alignment: center;
+                Text { text: "●  " + root.export-status; color: root.export-status == "READY" || root.export-status == "COMPLETED" ? #70d6a3 : root.export-status == "FAILED" ? #f08080 : #f5b442; font-size: 9px; }
+                Text { text: root.export-error; visible: root.export-error != ""; color: #f08080; font-size: 9px; }
+                Rectangle {
+                    width: root.export-progress >= 0 ? 120px : 0px; height: 8px; visible: root.export-progress >= 0;
+                    background: #111111; border-radius: 4px;
+                    Rectangle { width: parent.width * root.export-progress / 100; height: parent.height; border-radius: 4px; background: #4c9f70; }
+                }
+                Text { text: root.export-progress + "%"; visible: root.export-progress >= 0; color: #b9bec8; font-size: 9px; }
+                Button { text: "Cancel"; visible: root.export-can-cancel; clicked => { root.command-invoked("export.cancel"); } }
+                Button { text: "Retry"; visible: root.export-can-retry; clicked => { root.command-invoked("export.retry"); } }
+                Button { text: "Clear"; visible: root.export-can-remove; clicked => { root.command-invoked("export.remove"); } }
                 Rectangle { horizontal-stretch: 1; }
-                Text { text: "Cache 100%"; color: #949494; font-size: 9px; }
-                Text { text: "Audio 48 kHz"; color: #949494; font-size: 9px; }
-                Text { text: "Scripts: Python · Node · TypeScript"; color: #65b4ed; font-size: 9px; }
+                Text { text: root.has-project ? root.project-summary : "Open a project to begin"; color: #949494; font-size: 9px; }
             }
         }
     }
