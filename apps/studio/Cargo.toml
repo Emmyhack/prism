@@ -15,8 +15,6 @@ prism-persistence = { path = "../../crates/prism-persistence" }
 prism-project = { path = "../../crates/prism-project" }
 prism-recipe = { path = "../../crates/prism-recipe" }
 prism-script = { path = "../../crates/prism-script" }
-prism-timeline = { path = "../../crates/prism-timeline" }
-rfd = "0.17.2"
 serde.workspace = true
 serde_json.workspace = true
 slint = "1.18.1"
