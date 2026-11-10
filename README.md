@@ -178,7 +178,6 @@ same binary for automation and diagnostics:
 
 ```sh
 cargo run -p prism-studio
-cargo run -p prism-studio -- --open-project ./edit.prism
 cargo run -p prism-studio -- --project ./edit.prism
 cargo run -p prism-studio -- --list-media ./edit.prism /usr/local/bin/ffprobe
 ```

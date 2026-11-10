@@ -109,10 +109,6 @@ export component PrismStudio inherits Window {
     in-out property <bool> snapping: true;
     in-out property <string> active-workspace: "EDIT";
     in-out property <string> active-monitor: "PROGRAM";
-    in-out property <bool> has-project: false;
-    in-out property <string> project-name: "No Project";
-    in-out property <string> project-path: "";
-    in-out property <string> project-summary: "Open a project to begin editing";
     in-out property <string> export-status: "READY";
     in-out property <string> export-output: "Untitled Export.mp4";
     in-out property <string> export-error: "";
@@ -142,8 +138,8 @@ export component PrismStudio inherits Window {
                 MenuItem { label: "Window"; invoked => { root.export-status = "WINDOW MENU"; root.command-invoked("application.window"); } }
                 MenuItem { label: "Help"; invoked => { root.export-status = "HELP MENU"; root.command-invoked("application.help"); } }
                 Rectangle { horizontal-stretch: 1; }
-                Text { text: root.project-name; color: root.has-project ? #d7dae0 : #9da3b0; font-size: 10px; }
-                Text { text: "●"; color: root.has-project ? #70d6a3 : #747b86; font-size: 10px; }
+                Text { text: "Untitled Project"; color: #9da3b0; font-size: 10px; }
+                Text { text: "●"; color: #70d6a3; font-size: 10px; }
             }
         }
 
@@ -212,7 +208,7 @@ export component PrismStudio inherits Window {
                 Button { text: "Cancel"; width: 64px; visible: root.export-can-cancel; clicked => { root.command-invoked("export.cancel"); } }
                 Button { text: "Retry"; width: 58px; visible: root.export-can-retry; clicked => { root.command-invoked("export.retry"); } }
                 Button { text: "Clear"; width: 58px; visible: root.export-can-remove; clicked => { root.command-invoked("export.remove"); } }
-                Button { text: "Export"; width: 78px; enabled: root.has-project; clicked => { root.export-status = "EXPORT QUEUED"; root.command-invoked("export.queue"); } }
+                Button { text: "Export"; width: 78px; clicked => { root.export-status = "EXPORT QUEUED"; root.command-invoked("export.queue"); } }
             }
         }
 
@@ -225,7 +221,7 @@ export component PrismStudio inherits Window {
                 background: #202020;
                 VerticalLayout {
                     spacing: 0px;
-                    PanelHeader { title: root.active-workspace == "SCRIPTING" ? "SCRIPTS  /  RECIPES" : "Project: " + root.project-name + "  ·  Media Browser"; }
+                    PanelHeader { title: root.active-workspace == "SCRIPTING" ? "SCRIPTS  /  RECIPES" : "Project: Untitled  ·  Media Browser"; }
                     Rectangle {
                         height: 48px; background: #202020;
                         LineEdit { x: 10px; y: 9px; width: parent.width - 20px; placeholder-text: root.active-workspace == "SCRIPTING" ? "Search scripts" : "Search media"; }
@@ -244,8 +240,8 @@ export component PrismStudio inherits Window {
                             padding: 5px; spacing: 1px;
                             Rectangle {
                                 height: 54px; border-radius: 2px; background: #262626;
-                                Text { y: 10px; width: parent.width; text: root.has-project ? root.project-summary : "No project open"; color: #b9bec8; font-size: 10px; horizontal-alignment: center; }
-                                Text { y: 29px; width: parent.width; text: root.has-project ? root.project-path : "Start with --open-project <path>"; color: #747b86; font-size: 9px; horizontal-alignment: center; }
+                                Text { y: 10px; width: parent.width; text: "No media imported"; color: #b9bec8; font-size: 11px; horizontal-alignment: center; }
+                                Text { y: 29px; width: parent.width; text: "Import media to populate this panel"; color: #747b86; font-size: 9px; horizontal-alignment: center; }
                             }
                         }
                     }
