@@ -1,8 +1,11 @@
 //! Native Slint adapter for the Prism desktop workspace.
 
 use prism_commands::CommandRegistry;
-use prism_studio::desktop::{ExportController, ExportStatus};
-use std::{cell::RefCell, path::PathBuf, rc::Rc};
+use prism_export::{ExportPreset, SingleTrackMp4ExportRequest};
+use prism_project::{Project, TrackKind};
+use prism_studio::desktop::{ExportController, ExportStatus, ExportWorker, ExportWorkerEvent};
+use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Duration};
+use thiserror::Error;
 
 slint::include_modules!();
 
@@ -70,39 +73,217 @@ fn apply_export_status(ui: &PrismStudio, status: Option<&ExportStatus>) {
     }
 }
 
+fn launch_default_export(
+    controller: &mut ExportController,
+    worker: &mut Option<ExportWorker>,
+    project: &Project,
+    output: PathBuf,
+) -> Result<(), String> {
+    controller.start().map_err(|error| error.to_string())?;
+    let target = project
+        .sequences
+        .iter()
+        .find_map(|(sequence_id, sequence)| {
+            sequence
+                .tracks
+                .iter()
+                .find(|track| {
+                    track.kind == TrackKind::Video && track.visible && !track.clips.is_empty()
+                })
+                .map(|track| (*sequence_id, track.id))
+        });
+    let Some((sequence_id, track_id)) = target else {
+        controller
+            .fail("project has no visible non-empty video track")
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    };
+    *worker = Some(ExportWorker::spawn_single_video_track(
+        PathBuf::from("ffmpeg"),
+        PathBuf::from("ffprobe"),
+        project.clone(),
+        sequence_id,
+        track_id,
+        SingleTrackMp4ExportRequest::from_preset(ExportPreset::Youtube1080p, output),
+    ));
+    Ok(())
+}
+
+/// Native shell startup failures.
+#[derive(Debug, Error)]
+pub enum NativeUiError {
+    /// Native window or event-loop initialization failed.
+    #[error("native platform error: {0}")]
+    Platform(#[from] slint::PlatformError),
+    /// The requested project could not be loaded safely.
+    #[error("could not open project: {0}")]
+    Persistence(#[from] prism_persistence::PersistenceError),
+}
+
+#[derive(Debug)]
+struct NativeExportRuntime {
+    project: Option<Project>,
+    controller: RefCell<ExportController>,
+    worker: RefCell<Option<ExportWorker>>,
+}
+
+impl NativeExportRuntime {
+    fn new(project: Option<Project>) -> Self {
+        Self {
+            project,
+            controller: RefCell::new(ExportController::new()),
+            worker: RefCell::new(None),
+        }
+    }
+
+    fn handle(&self, command: &str, ui: &PrismStudio) -> Result<(), String> {
+        match command {
+            "export.queue" => self.queue(ui),
+            "export.cancel" => {
+                if let Some(worker) = self.worker.borrow().as_ref() {
+                    worker.cancel();
+                }
+                self.controller
+                    .borrow_mut()
+                    .cancel()
+                    .map_err(|error| error.to_string())
+            }
+            "export.retry" => self.retry(),
+            "export.remove" => self
+                .controller
+                .borrow_mut()
+                .remove()
+                .map_err(|error| error.to_string()),
+            _ => Err("unsupported export command".to_owned()),
+        }
+    }
+
+    fn queue(&self, ui: &PrismStudio) -> Result<(), String> {
+        let project = self
+            .project
+            .as_ref()
+            .ok_or_else(|| "open a project before exporting".to_owned())?;
+        let output = PathBuf::from(ui.get_export_output().as_str());
+        let mut controller = self.controller.borrow_mut();
+        controller.queue(output.clone());
+        launch_default_export(
+            &mut controller,
+            &mut self.worker.borrow_mut(),
+            project,
+            output,
+        )
+    }
+
+    fn retry(&self) -> Result<(), String> {
+        let project = self
+            .project
+            .as_ref()
+            .ok_or_else(|| "open a project before exporting".to_owned())?;
+        let mut controller = self.controller.borrow_mut();
+        controller.retry().map_err(|error| error.to_string())?;
+        let output = controller
+            .status()
+            .map(|status| PathBuf::from(status.output))
+            .ok_or_else(|| "export job is unavailable".to_owned())?;
+        launch_default_export(
+            &mut controller,
+            &mut self.worker.borrow_mut(),
+            project,
+            output,
+        )
+    }
+
+    fn poll(&self, ui: &PrismStudio) {
+        let event = self
+            .worker
+            .borrow()
+            .as_ref()
+            .and_then(|worker| worker.try_next().ok().flatten());
+        let Some(event) = event else {
+            return;
+        };
+        let terminal = matches!(
+            event,
+            ExportWorkerEvent::Completed
+                | ExportWorkerEvent::Cancelled
+                | ExportWorkerEvent::Failed(_)
+        );
+        let mut controller = self.controller.borrow_mut();
+        let already_cancelled = matches!(
+            (controller.state(), &event),
+            (
+                Some(prism_export::ExportJobState::Cancelled),
+                ExportWorkerEvent::Cancelled
+            )
+        );
+        if !already_cancelled {
+            let _ = controller.apply_worker_event(event);
+        }
+        if terminal {
+            *self.worker.borrow_mut() = None;
+        }
+        apply_export_status(ui, controller.status().as_ref());
+    }
+}
+
+fn load_project_into_ui(
+    ui: &PrismStudio,
+    project_path: Option<PathBuf>,
+) -> Result<Option<Project>, prism_persistence::PersistenceError> {
+    let Some(project_path) = project_path else {
+        return Ok(None);
+    };
+    let project = prism_persistence::load(&project_path)?;
+    let summary = prism_studio::project_summary(&project);
+    ui.set_has_project(true);
+    ui.set_project_name(summary.name.into());
+    ui.set_project_path(project_path.display().to_string().into());
+    ui.set_project_summary(
+        format!(
+            "{} media · {} sequences · {} tracks · {} clips · revision {}",
+            summary.media_count,
+            summary.sequence_count,
+            summary.track_count,
+            summary.clip_count,
+            summary.revision
+        )
+        .into(),
+    );
+    ui.set_export_output(
+        project_path
+            .with_extension("export.mp4")
+            .display()
+            .to_string()
+            .into(),
+    );
+    Ok(Some(project))
+}
+
 /// Opens the main editor window and runs the native event loop.
 ///
 /// # Errors
 ///
 /// Returns a platform error if a window cannot be created or the native event
 /// loop cannot run.
-pub fn launch() -> Result<(), slint::PlatformError> {
+pub fn launch(project_path: Option<PathBuf>) -> Result<(), NativeUiError> {
     let ui = PrismStudio::new()?;
+    let loaded_project = load_project_into_ui(&ui, project_path)?;
     let weak_ui = ui.as_weak();
-    let export_controller = Rc::new(RefCell::new(ExportController::new()));
+    let export_runtime = Rc::new(NativeExportRuntime::new(loaded_project));
+    let command_runtime = Rc::clone(&export_runtime);
     ui.on_command_invoked(move |id| {
         if let Some(command) = CommandRegistry::find(id.as_str()) {
             eprintln!("Prism command: {} ({})", command.id, command.label);
             if let Some(ui) = weak_ui.upgrade() {
-                let export_result = match command.id {
-                    "export.queue" => {
-                        export_controller
-                            .borrow_mut()
-                            .queue(PathBuf::from(ui.get_export_output().as_str()));
-                        Ok(())
-                    }
-                    "export.cancel" => export_controller.borrow_mut().cancel(),
-                    "export.retry" => export_controller.borrow_mut().retry(),
-                    "export.remove" => export_controller.borrow_mut().remove(),
-                    _ => {
-                        ui.set_export_status(command_status(command.id, command.label).into());
-                        return;
-                    }
-                };
+                if !command.id.starts_with("export.") {
+                    ui.set_export_status(command_status(command.id, command.label).into());
+                    return;
+                }
+                let export_result = command_runtime.handle(command.id, &ui);
                 if let Err(error) = export_result {
-                    ui.set_export_error(error.to_string().into());
+                    ui.set_export_error(error.clone().into());
                 } else {
-                    let controller = export_controller.borrow();
+                    let controller = command_runtime.controller.borrow();
                     apply_export_status(&ui, controller.status().as_ref());
                 }
             }
@@ -110,7 +291,20 @@ pub fn launch() -> Result<(), slint::PlatformError> {
             eprintln!("Prism command is not registered: {id}");
         }
     });
-    ui.run()
+    let poll_ui = ui.as_weak();
+    let poll_runtime = Rc::clone(&export_runtime);
+    let export_timer = slint::Timer::default();
+    export_timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(50),
+        move || {
+            if let Some(ui) = poll_ui.upgrade() {
+                poll_runtime.poll(&ui);
+            }
+        },
+    );
+    ui.run()?;
+    Ok(())
 }
 
 #[cfg(test)]

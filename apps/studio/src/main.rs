@@ -14,8 +14,13 @@ fn main() {
             std::process::exit(2);
         }
     };
-    if command == prism_studio::StudioCommand::Start {
-        if let Err(error) = native_ui::launch() {
+    let graphical_project = match &command {
+        prism_studio::StudioCommand::Start => Some(None),
+        prism_studio::StudioCommand::Open { project } => Some(Some(project.clone())),
+        _ => None,
+    };
+    if let Some(project) = graphical_project {
+        if let Err(error) = native_ui::launch(project) {
             eprintln!("Prism Studio: could not start desktop interface: {error}");
             std::process::exit(1);
         }
