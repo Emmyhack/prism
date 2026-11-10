@@ -1,219 +1,224 @@
 import { Button, LineEdit, ScrollView } from "std-widgets.slint";
 
-component PanelTitle inherits Rectangle {
-    in property <string> title;
-    in property <string> accent: "";
-    height: 30px; background: #252525; border-color: #3a3a3a; border-width: 1px;
-    Text { x: 11px; text: root.title; color: #dedede; font-size: 11px; font-weight: 600; vertical-alignment: center; }
-    Text { x: parent.width - self.width - 10px; text: root.accent; color: #8e949d; font-size: 9px; vertical-alignment: center; }
+component PanelBar inherits Rectangle {
+    in property <string> title; in property <string> detail: "";
+    height: 27px; background: #242424; border-color: #343434; border-width: 1px;
+    Text { x: 10px; text: root.title; color: #d7d7d7; font-size: 10px; font-weight: 600; vertical-alignment: center; }
+    Text { x: parent.width - self.width - 9px; text: root.detail; color: #7f848b; font-size: 8px; vertical-alignment: center; }
 }
 
-component ToolbarButton inherits Rectangle {
-    in property <string> icon; in property <string> description; in property <bool> selected: false;
-    callback invoked(); width: 30px; height: 28px; border-radius: 2px;
-    background: selected ? #3176a8 : area.has-hover ? #3a3a3a : transparent;
-    Text { text: root.icon; color: selected ? white : #c5c7ca; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
-    area := TouchArea { clicked => { root.invoked(); } }
-    accessible-role: button; accessible-label: root.description;
+component IconButton inherits Rectangle {
+    in property <string> icon; in property <string> hint; in property <bool> active: false;
+    callback clicked(); width: 28px; height: 26px; border-radius: 2px;
+    background: active ? #2674a8 : hit.has-hover ? #3a3a3a : transparent;
+    Text { text: root.icon; color: active ? white : #bfc2c7; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+    hit := TouchArea { clicked => { root.clicked(); } }
+    accessible-role: button; accessible-label: root.hint;
 }
 
-component WorkspaceTab inherits Rectangle {
-    in property <string> label; in property <bool> selected: false; callback invoked();
-    width: 62px; height: 30px; background: transparent;
-    Text { text: root.label; color: selected ? #f0f0f0 : #96999f; font-size: 9px; font-weight: selected ? 700 : 500; horizontal-alignment: center; vertical-alignment: center; }
-    Rectangle { y: parent.height - 2px; width: parent.width; height: 2px; background: selected ? #4aa3df : transparent; }
-    TouchArea { clicked => { root.invoked(); } }
+component WorkspaceButton inherits Rectangle {
+    in property <string> text; in property <bool> active: false; callback clicked();
+    width: 61px; height: 31px; background: transparent;
+    Text { text: root.text; color: active ? #eeeeee : #8e9298; font-size: 9px; font-weight: active ? 700 : 500; horizontal-alignment: center; vertical-alignment: center; }
+    Rectangle { y: parent.height - 2px; width: parent.width; height: 2px; background: active ? #429bd3 : transparent; }
+    TouchArea { clicked => { root.clicked(); } }
 }
 
-component TrackControl inherits Rectangle {
-    in property <string> name; in property <bool> audio: false;
-    callback lock-toggled(); callback mute-toggled(); callback visibility-toggled();
-    height: 48px; background: #242424; border-color: #343434; border-width: 1px;
-    Text { x: 9px; y: 7px; text: root.name; color: #e0e0e0; font-size: 10px; font-weight: 700; }
-    Text { x: 9px; y: 25px; text: audio ? "STEREO" : "VIDEO"; color: #81858c; font-size: 8px; }
-    Rectangle { x: 65px; y: 7px; width: 20px; height: 16px; background: #303030; Text { text: audio ? "M" : "◉"; color: #aeb2b8; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; } TouchArea { clicked => { audio ? root.mute-toggled() : root.visibility-toggled(); } } }
-    Rectangle { x: 88px; y: 7px; width: 20px; height: 16px; background: #303030; Text { text: "L"; color: #aeb2b8; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; } TouchArea { clicked => { root.lock-toggled(); } } }
+component TrackHeader inherits Rectangle {
+    in property <string> label; in property <bool> audio: false;
+    callback locked(); callback muted(); callback hidden();
+    height: 51px; background: #252525; border-color: #373737; border-width: 1px;
+    Text { x: 8px; y: 7px; text: root.label; color: #e2e2e2; font-size: 10px; font-weight: 700; }
+    Rectangle { x: 44px; y: 6px; width: 20px; height: 16px; background: #303030; Text { text: audio ? "M" : "◉"; color: #a9adb3; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; } TouchArea { clicked => { audio ? root.muted() : root.hidden(); } } }
+    Rectangle { x: 67px; y: 6px; width: 20px; height: 16px; background: #303030; Text { text: "S"; color: #a9adb3; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; } }
+    Rectangle { x: 90px; y: 6px; width: 20px; height: 16px; background: #303030; Text { text: "L"; color: #a9adb3; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; } TouchArea { clicked => { root.locked(); } } }
+    Text { x: 8px; y: 29px; text: audio ? "STEREO" : "VIDEO"; color: #737880; font-size: 8px; }
+}
+
+component Meter inherits Rectangle {
+    in property <int> level: 13; width: 12px; background: #0e0e0e;
+    for segment[index] in [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17] : Rectangle {
+        x: 2px; y: parent.height - (index + 1) * parent.height / 18 + 1px; width: parent.width - 4px; height: parent.height / 18 - 2px;
+        background: index > 15 ? #d65f55 : index > 12 ? #d4b84f : #55ad6c; opacity: index < root.level ? 1 : 0.12;
+    }
 }
 
 export component PrismStudio inherits Window {
     title: "Prism Studio"; preferred-width: 1440px; preferred-height: 900px; min-width: 1100px; min-height: 700px; background: #171717;
-    in-out property <int> active-tool: 0;
-    in-out property <bool> playing: false;
-    in-out property <bool> snapping: true;
+    in-out property <int> active-tool: 0; in-out property <bool> playing: false; in-out property <bool> snapping: true;
     in-out property <string> active-workspace: "EDIT";
-    in-out property <string> export-status: "READY";
-    in-out property <string> export-output: "Untitled Export.mp4";
-    in-out property <string> export-error: "";
-    in-out property <int> export-progress: -1;
-    in-out property <bool> export-can-cancel: false;
-    in-out property <bool> export-can-retry: false;
-    in-out property <bool> export-can-remove: false;
-    in-out property <bool> has-project: false;
-    in-out property <string> project-name: "No Project";
-    in-out property <string> project-path: "";
-    in-out property <string> project-summary: "Open a project to begin";
-    in-out property <int> media-count: 0;
-    in-out property <int> clip-count: 0;
-    in property <[string]> media-items;
+    in-out property <string> export-status: "READY"; in-out property <string> export-output: "Untitled Export.mp4"; in-out property <string> export-error: "";
+    in-out property <int> export-progress: -1; in-out property <bool> export-can-cancel: false; in-out property <bool> export-can-retry: false; in-out property <bool> export-can-remove: false;
+    in-out property <bool> has-project: false; in-out property <string> project-name: "No Project"; in-out property <string> project-path: ""; in-out property <string> project-summary: "Open a project to begin";
+    in-out property <int> media-count: 0; in-out property <int> clip-count: 0; in property <[string]> media-items;
     callback command-invoked(string);
 
     VerticalLayout {
         spacing: 1px;
         Rectangle {
-            height: 30px; background: #1f1f1f;
+            height: 27px; background: #1e1e1e;
             HorizontalLayout {
-                padding-left: 12px; padding-right: 12px; spacing: 16px; alignment: center;
-                Text { text: "PRISM"; color: #f2f2f2; font-size: 11px; font-weight: 800; }
-                for menu in ["File", "Edit", "Clip", "Sequence", "Markers", "Window", "Help"] : Text { text: menu; color: #c8c8c8; font-size: 10px; vertical-alignment: center; }
+                padding-left: 10px; padding-right: 10px; spacing: 15px; alignment: center;
+                Text { text: "PRISM"; color: #f0f0f0; font-size: 10px; font-weight: 800; }
+                for menu in ["File","Edit","Clip","Sequence","Markers","Graphics","Window","Help"] : Text { text: menu; color: #c1c3c7; font-size: 9px; vertical-alignment: center; }
                 Rectangle { horizontal-stretch: 1; }
-                Text { text: root.has-project ? root.project-name : "No project open"; color: #a5a9b0; font-size: 10px; }
+                Text { text: root.has-project ? root.project-name : "No project open"; color: #959aa1; font-size: 9px; }
             }
         }
         Rectangle {
-            height: 38px; background: #232323;
+            height: 36px; background: #222222;
             HorizontalLayout {
-                padding-left: 12px; padding-right: 12px; spacing: 2px; alignment: center;
-                Image { source: @image-url("../../../assets/brand/prism-logo.png"); width: 26px; height: 26px; image-fit: contain; }
-                Rectangle { width: 14px; }
-                WorkspaceTab { label: "IMPORT"; selected: root.active-workspace == "IMPORT"; invoked => { root.active-workspace = "IMPORT"; } }
-                WorkspaceTab { label: "EDIT"; selected: root.active-workspace == "EDIT"; invoked => { root.active-workspace = "EDIT"; } }
-                WorkspaceTab { label: "COLOR"; selected: root.active-workspace == "COLOR"; invoked => { root.active-workspace = "COLOR"; } }
-                WorkspaceTab { label: "AUDIO"; selected: root.active-workspace == "AUDIO"; invoked => { root.active-workspace = "AUDIO"; } }
-                WorkspaceTab { label: "EXPORT"; selected: root.active-workspace == "EXPORT"; invoked => { root.active-workspace = "EXPORT"; } }
+                padding-left: 10px; padding-right: 10px; spacing: 2px; alignment: center;
+                Image { source: @image-url("../../../assets/brand/prism-logo.png"); width: 24px; height: 24px; image-fit: contain; }
+                Rectangle { width: 12px; }
+                WorkspaceButton { text: "IMPORT"; active: root.active-workspace == "IMPORT"; clicked => { root.active-workspace = "IMPORT"; } }
+                WorkspaceButton { text: "EDIT"; active: root.active-workspace == "EDIT"; clicked => { root.active-workspace = "EDIT"; } }
+                WorkspaceButton { text: "COLOR"; active: root.active-workspace == "COLOR"; clicked => { root.active-workspace = "COLOR"; } }
+                WorkspaceButton { text: "AUDIO"; active: root.active-workspace == "AUDIO"; clicked => { root.active-workspace = "AUDIO"; } }
+                WorkspaceButton { text: "CAPTIONS"; active: root.active-workspace == "CAPTIONS"; clicked => { root.active-workspace = "CAPTIONS"; } }
                 Rectangle { horizontal-stretch: 1; }
-                Button { text: "Quick Export"; width: 104px; enabled: root.has-project && !root.export-can-cancel; clicked => { root.command-invoked("export.queue"); } }
+                Button { text: "Quick Export"; width: 102px; enabled: root.has-project && !root.export-can-cancel; clicked => { root.command-invoked("export.queue"); } }
             }
         }
+
+        // Upper workspace follows the reference set: project, source, program, inspector.
         HorizontalLayout {
-            spacing: 1px; vertical-stretch: 1;
+            height: 345px; spacing: 1px;
             Rectangle {
-                width: 286px; background: #1d1d1d;
+                width: 258px; background: #1d1d1d;
                 VerticalLayout {
-                    spacing: 1px;
-                    PanelTitle { title: "Project: " + root.project-name; accent: root.media-count + " items"; }
+                    spacing: 1px; PanelBar { title: "Project: " + root.project-name; detail: root.media-count + " items"; }
                     Rectangle {
-                        height: 78px; background: #242424;
-                        LineEdit { x: 9px; y: 8px; width: parent.width - 18px; height: 28px; placeholder-text: "Search project"; }
-                        Button { x: 9px; y: 43px; width: parent.width - 18px; height: 27px; text: "Import Media…"; enabled: root.has-project; clicked => { root.command-invoked("project.import_media"); } }
+                        height: 68px; background: #242424;
+                        LineEdit { x: 8px; y: 7px; width: parent.width - 16px; height: 25px; placeholder-text: "Search"; }
+                        Button { x: 8px; y: 37px; width: parent.width - 16px; height: 24px; text: "Import Media…"; enabled: root.has-project; clicked => { root.command-invoked("project.import_media"); } }
                     }
-                    Rectangle { height: 28px; background: #222222; Text { x: 10px; text: "Name"; color: #8f949b; font-size: 9px; vertical-alignment: center; } Text { x: parent.width - 52px; text: "Type"; color: #8f949b; font-size: 9px; vertical-alignment: center; } }
+                    Rectangle { height: 23px; background: #202020; Text { x: 9px; text: "Name"; color: #777c83; font-size: 8px; vertical-alignment: center; } Text { x: parent.width - 39px; text: "Type"; color: #777c83; font-size: 8px; vertical-alignment: center; } }
                     ScrollView {
                         VerticalLayout {
-                            padding: 5px; spacing: 2px;
-                            if root.media-count == 0 : Rectangle { height: 90px; background: transparent; Text { width: parent.width; text: root.has-project ? "Import footage to begin" : "Open a project first"; color: #73777e; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; } }
+                            padding: 4px; spacing: 2px;
+                            if root.media-count == 0 : Text { height: 76px; text: root.has-project ? "Import footage to begin" : "Open a project first"; color: #6e737a; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; }
                             for item in root.media-items : Rectangle {
-                                height: 42px; background: item-area.has-hover ? #34383d : #282828; border-radius: 2px;
-                                Rectangle { x: 7px; y: 7px; width: 43px; height: 28px; background: #111111; Text { text: "▶"; color: #6d879a; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; } }
-                                Text { x: 58px; width: parent.width - 96px; text: item; color: #d4d6da; font-size: 10px; overflow: elide; vertical-alignment: center; }
-                                Text { x: parent.width - 34px; text: "AV"; color: #7f858d; font-size: 8px; vertical-alignment: center; }
-                                item-area := TouchArea { }
+                                height: 38px; background: media-hit.has-hover ? #34383d : #282828;
+                                Rectangle { x: 5px; y: 5px; width: 41px; height: 28px; background: #101010; Text { text: "▶"; color: #557d96; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; } }
+                                Text { x: 53px; width: parent.width - 84px; text: item; color: #d0d2d6; font-size: 9px; overflow: elide; vertical-alignment: center; }
+                                Text { x: parent.width - 25px; text: "AV"; color: #757a82; font-size: 7px; vertical-alignment: center; }
+                                media-hit := TouchArea { }
                             }
                         }
                     }
-                    Rectangle { height: 28px; background: #242424; Text { x: 10px; width: parent.width - 20px; text: root.project-summary; color: #7f858d; font-size: 8px; overflow: elide; vertical-alignment: center; } }
+                    Rectangle { height: 25px; background: #232323; Text { x: 8px; width: parent.width - 16px; text: root.project-path; color: #6f747b; font-size: 7px; overflow: elide; vertical-alignment: center; } }
                 }
             }
             Rectangle {
-                horizontal-stretch: 1; background: #171717;
+                horizontal-stretch: 1; background: #111111;
                 VerticalLayout {
-                    spacing: 1px;
-                    HorizontalLayout {
-                        spacing: 1px; vertical-stretch: 1;
-                        for monitor in ["Source Monitor", "Program Monitor"] : Rectangle {
-                            horizontal-stretch: 1; background: #111111;
-                            VerticalLayout {
-                                spacing: 0px;
-                                PanelTitle { title: monitor; accent: monitor == "Source Monitor" ? "No source" : "Fit"; }
-                                Rectangle {
-                                    vertical-stretch: 1; background: #080808;
-                                    Text { text: monitor == "Source Monitor" ? "Double-click media to load source" : root.clip-count > 0 ? "Sequence ready for playback" : "No active sequence"; color: #686d74; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
-                                    Text { x: 10px; y: parent.height - 25px; text: "00:00:00:00"; color: #55a9df; font-family: "monospace"; font-size: 10px; }
-                                }
-                                Rectangle {
-                                    height: 38px; background: #222222;
-                                    HorizontalLayout {
-                                        alignment: center; spacing: 10px; Rectangle { horizontal-stretch: 1; }
-                                        Text { text: "|◀"; color: #d7d7d7; font-size: 11px; }
-                                        Rectangle { width: 32px; height: 26px; border-radius: 2px; background: play-area.has-hover ? #3b3b3b : transparent; Text { text: root.playing ? "■" : "▶"; color: #d7d7d7; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; } play-area := TouchArea { clicked => { root.playing = !root.playing; root.command-invoked("playback.play_pause"); } } }
-                                        Text { text: "▶|"; color: #d7d7d7; font-size: 11px; }
-                                        Rectangle { horizontal-stretch: 1; }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    spacing: 0px; PanelBar { title: "Source Monitor"; detail: "No source"; }
+                    Rectangle { vertical-stretch: 1; background: #080808; Text { text: "Double-click a project item to load source"; color: #62676e; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; } Text { x: 8px; y: parent.height - 22px; text: "00:00:00:00"; color: #4fa2d8; font-family: "monospace"; font-size: 9px; } }
+                    Rectangle { height: 34px; background: #222222; HorizontalLayout { alignment: center; spacing: 9px; Rectangle { horizontal-stretch: 1; } Text { text: "{   |◀   ◀   ▶   ▶|   }"; color: #c8c8c8; font-size: 10px; } Rectangle { horizontal-stretch: 1; } } }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1.3; background: #111111;
+                VerticalLayout {
+                    spacing: 0px; PanelBar { title: "Program Monitor"; detail: "Fit   1/2"; }
+                    Rectangle { vertical-stretch: 1; background: #080808; Text { text: root.clip-count > 0 ? "Active sequence" : "No sequence loaded"; color: #62676e; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; } Text { x: 8px; y: parent.height - 22px; text: "00:00:00:00"; color: #4fa2d8; font-family: "monospace"; font-size: 9px; } }
                     Rectangle {
-                        height: 392px; background: #1c1c1c;
-                        VerticalLayout {
-                            spacing: 0px;
-                            Rectangle {
-                                height: 34px; background: #252525;
-                                HorizontalLayout {
-                                    padding-left: 8px; padding-right: 10px; spacing: 2px; alignment: center;
-                                    ToolbarButton { icon: "↖"; description: "Selection (V)"; selected: root.active-tool == 0; invoked => { root.active-tool = 0; } }
-                                    ToolbarButton { icon: "✂"; description: "Razor (C)"; selected: root.active-tool == 1; invoked => { root.active-tool = 1; } }
-                                    ToolbarButton { icon: "⇤"; description: "Trim (T)"; selected: root.active-tool == 2; invoked => { root.active-tool = 2; } }
-                                    Rectangle { width: 1px; height: 20px; background: #454545; }
-                                    ToolbarButton { icon: "⌁"; description: "Snapping (S)"; selected: root.snapping; invoked => { root.snapping = !root.snapping; } }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    Text { text: root.clip-count > 0 ? "MAIN SEQUENCE" : "TIMELINE"; color: #c8c8c8; font-size: 10px; font-weight: 600; }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    Text { text: "−   100%   +"; color: #8b9097; font-size: 9px; }
-                                }
-                            }
-                            Rectangle { height: 24px; background: #202020; Text { x: 128px; text: "00:00          00:10          00:20          00:30          00:40"; color: #858a91; font-family: "monospace"; font-size: 8px; vertical-alignment: center; } }
-                            HorizontalLayout {
-                                spacing: 0px; vertical-stretch: 1;
-                                Rectangle { width: 118px; background: #222222; VerticalLayout { spacing: 1px; TrackControl { name: "V1"; lock-toggled => { root.command-invoked("timeline.toggle_track_lock"); } visibility-toggled => { root.command-invoked("timeline.toggle_track_visibility"); } } TrackControl { name: "A1"; audio: true; lock-toggled => { root.command-invoked("timeline.toggle_track_lock"); } mute-toggled => { root.command-invoked("timeline.toggle_track_mute"); } } } }
-                                Rectangle {
-                                    horizontal-stretch: 1; background: #1b1b1b; clip: true;
-                                    for row in [0, 1] : Rectangle { y: row * 49px; width: parent.width; height: 48px; background: #202020; border-color: #333333; border-width: 1px; }
-                                    for tick in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10] : Rectangle { x: tick * parent.width / 10; width: 1px; height: parent.height; background: #303030; }
-                                    if root.clip-count == 0 : Text { width: parent.width; y: 32px; text: "Import media to create a sequence"; color: #6d7279; font-size: 10px; horizontal-alignment: center; }
-                                    Rectangle { visible: root.clip-count > 0; x: 5px; y: 4px; width: parent.width * 0.34; height: 40px; border-radius: 2px; background: #2f6684; border-color: #56a2c7; border-width: 1px; Text { x: 8px; text: root.clip-count + " timeline clip" + (root.clip-count == 1 ? "" : "s"); color: #e7f6ff; font-size: 9px; vertical-alignment: center; } }
-                                    Rectangle { x: 2px; width: 1px; height: parent.height; background: #4da9e3; }
-                                }
-                            }
-                        }
+                        height: 34px; background: #222222;
+                        HorizontalLayout { alignment: center; spacing: 9px; Rectangle { horizontal-stretch: 1; } Text { text: "|◀"; color: #c8c8c8; font-size: 10px; } IconButton { icon: root.playing ? "■" : "▶"; hint: "Play/Pause"; clicked => { root.playing = !root.playing; root.command-invoked("playback.play_pause"); } } Text { text: "▶|"; color: #c8c8c8; font-size: 10px; } Rectangle { horizontal-stretch: 1; } }
                     }
                 }
             }
             Rectangle {
-                width: 268px; background: #1e1e1e;
+                width: 245px; background: #202020;
                 VerticalLayout {
-                    spacing: 1px; PanelTitle { title: "Effect Controls"; accent: "Inspector"; }
+                    spacing: 1px; PanelBar { title: root.active-workspace == "AUDIO" ? "Essential Sound" : "Effect Controls"; detail: "Inspector"; }
                     Rectangle {
-                        vertical-stretch: 1; background: #232323;
+                        vertical-stretch: 1; background: #242424;
                         VerticalLayout {
-                            padding: 13px; spacing: 12px;
-                            Text { text: "NO CLIP SELECTED"; color: #777c83; font-size: 9px; font-weight: 600; }
+                            padding: 11px; spacing: 10px;
+                            Text { text: "NO CLIP SELECTED"; color: #747980; font-size: 8px; font-weight: 600; }
                             Rectangle { height: 1px; background: #3a3a3a; }
-                            Text { text: "Motion"; color: #d4d4d4; font-size: 10px; font-weight: 700; }
-                            Text { text: "Position                 960, 540"; color: #a8abb0; font-size: 9px; }
-                            Text { text: "Scale                         100%"; color: #a8abb0; font-size: 9px; }
-                            Text { text: "Rotation                       0°"; color: #a8abb0; font-size: 9px; }
+                            Text { text: "Motion"; color: #d3d3d3; font-size: 10px; font-weight: 700; }
+                            Text { text: "Position               960, 540"; color: #a3a6ab; font-size: 9px; }
+                            Text { text: "Scale                       100%"; color: #a3a6ab; font-size: 9px; }
+                            Text { text: "Rotation                     0.0°"; color: #a3a6ab; font-size: 9px; }
                             Rectangle { height: 1px; background: #3a3a3a; }
-                            Text { text: "Opacity"; color: #d4d4d4; font-size: 10px; font-weight: 700; }
-                            Text { text: "Blend Mode                  Normal"; color: #a8abb0; font-size: 9px; }
-                            Text { text: "Opacity                       100%"; color: #a8abb0; font-size: 9px; }
+                            Text { text: "Opacity"; color: #d3d3d3; font-size: 10px; font-weight: 700; }
+                            Text { text: "Blend Mode                Normal"; color: #a3a6ab; font-size: 9px; }
                             Rectangle { vertical-stretch: 1; }
                         }
                     }
                 }
             }
         }
+
+        // Full-width timeline dominates the lower workspace.
         Rectangle {
-            height: 28px; background: #202020;
+            vertical-stretch: 1; background: #1b1b1b;
+            VerticalLayout {
+                spacing: 0px;
+                Rectangle {
+                    height: 33px; background: #252525;
+                    HorizontalLayout {
+                        padding-left: 7px; padding-right: 8px; spacing: 2px; alignment: center;
+                        IconButton { icon: "↖"; hint: "Selection Tool (V)"; active: root.active-tool == 0; clicked => { root.active-tool = 0; } }
+                        IconButton { icon: "⇤"; hint: "Track Select"; active: root.active-tool == 1; clicked => { root.active-tool = 1; } }
+                        IconButton { icon: "✂"; hint: "Razor Tool (C)"; active: root.active-tool == 2; clicked => { root.active-tool = 2; } }
+                        IconButton { icon: "↔"; hint: "Rate Stretch"; active: root.active-tool == 3; clicked => { root.active-tool = 3; } }
+                        Rectangle { width: 1px; height: 19px; background: #464646; }
+                        IconButton { icon: "⌁"; hint: "Snapping (S)"; active: root.snapping; clicked => { root.snapping = !root.snapping; } }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: root.clip-count > 0 ? "MAIN SEQUENCE" : "TIMELINE"; color: #c8c8c8; font-size: 9px; font-weight: 700; }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: "−    100%    +"; color: #858a91; font-size: 8px; }
+                    }
+                }
+                Rectangle { height: 23px; background: #202020; Text { x: 132px; text: "00:00:00:00       00:00:10:00       00:00:20:00       00:00:30:00       00:00:40:00       00:00:50:00"; color: #858a91; font-family: "monospace"; font-size: 8px; vertical-alignment: center; } }
+                HorizontalLayout {
+                    spacing: 0px; vertical-stretch: 1;
+                    Rectangle {
+                        width: 122px; background: #232323;
+                        VerticalLayout {
+                            spacing: 1px;
+                            TrackHeader { label: "V2"; locked => { root.command-invoked("timeline.toggle_track_lock"); } hidden => { root.command-invoked("timeline.toggle_track_visibility"); } }
+                            TrackHeader { label: "V1"; locked => { root.command-invoked("timeline.toggle_track_lock"); } hidden => { root.command-invoked("timeline.toggle_track_visibility"); } }
+                            TrackHeader { label: "A1"; audio: true; locked => { root.command-invoked("timeline.toggle_track_lock"); } muted => { root.command-invoked("timeline.toggle_track_mute"); } }
+                            TrackHeader { label: "A2"; audio: true; locked => { root.command-invoked("timeline.toggle_track_lock"); } muted => { root.command-invoked("timeline.toggle_track_mute"); } }
+                        }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1; background: #1b1b1b; clip: true;
+                        for row[index] in [0,1,2,3] : Rectangle { y: index * 52px; width: parent.width; height: 51px; background: index < 2 ? #202020 : #1e1e1e; border-color: #343434; border-width: 1px; }
+                        for tick in [0,1,2,3,4,5,6,7,8,9,10,11,12] : Rectangle { x: tick * parent.width / 12; width: 1px; height: parent.height; background: #303030; }
+                        if root.clip-count == 0 : Text { y: 83px; width: parent.width; text: "Import media to create a sequence"; color: #686d74; font-size: 10px; horizontal-alignment: center; }
+                        Rectangle { visible: root.clip-count > 0; x: 6px; y: 56px; width: parent.width * 0.36; height: 43px; background: #315f7c; border-color: #57a0c3; border-width: 1px; border-radius: 2px; Text { x: 8px; text: root.clip-count + " video clip" + (root.clip-count == 1 ? "" : "s"); color: #e5f5ff; font-size: 9px; vertical-alignment: center; } }
+                        Rectangle { visible: root.clip-count > 0; x: 6px; y: 108px; width: parent.width * 0.36; height: 43px; background: #267354; border-color: #4cab7b; border-width: 1px; for peak[index] in [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23] : Rectangle { x: index * parent.width / 24; y: 8px + Math.mod(index * 7, 12) * 1px; width: 1px; height: 27px - Math.mod(index * 11, 17) * 1px; background: #8bd0ae; } }
+                        Rectangle { x: 3px; width: 1px; height: parent.height; background: #49a8df; }
+                        Rectangle { x: 0px; y: parent.height - 12px; width: parent.width; height: 11px; background: #252525; Rectangle { x: 3px; y: 3px; width: parent.width * 0.55; height: 5px; border-radius: 3px; background: #555a61; } }
+                    }
+                    Rectangle {
+                        width: 48px; background: #202020;
+                        Text { y: 5px; width: parent.width; text: "L   R"; color: #8c9198; font-size: 8px; horizontal-alignment: center; }
+                        Meter { x: 8px; y: 22px; height: parent.height - 42px; level: root.playing ? 14 : 7; }
+                        Meter { x: 27px; y: 22px; height: parent.height - 42px; level: root.playing ? 12 : 6; }
+                        Text { y: parent.height - 17px; width: parent.width; text: "-∞"; color: #777c83; font-size: 8px; horizontal-alignment: center; }
+                    }
+                }
+            }
+        }
+        Rectangle {
+            height: 27px; background: #202020;
             HorizontalLayout {
-                padding-left: 10px; padding-right: 10px; spacing: 10px; alignment: center;
-                Text { text: "●  " + root.export-status; color: root.export-status == "FAILED" ? #e97777 : root.export-status == "READY" || root.export-status == "COMPLETED" ? #6fcf97 : #e8b75d; font-size: 9px; }
-                Text { text: root.export-error; visible: root.export-error != ""; color: #e97777; font-size: 9px; }
-                Rectangle { visible: root.export-progress >= 0; width: 110px; height: 6px; border-radius: 3px; background: #101010; Rectangle { width: parent.width * root.export-progress / 100; height: parent.height; border-radius: 3px; background: #4c9f70; } }
+                padding-left: 9px; padding-right: 9px; spacing: 9px; alignment: center;
+                Text { text: "●  " + root.export-status; color: root.export-status == "FAILED" ? #e06f6f : root.export-status == "READY" || root.export-status == "COMPLETED" ? #69c990 : #e1b15a; font-size: 8px; }
+                Text { text: root.export-error; visible: root.export-error != ""; color: #e06f6f; font-size: 8px; }
+                Rectangle { visible: root.export-progress >= 0; width: 100px; height: 5px; border-radius: 3px; background: #101010; Rectangle { width: parent.width * root.export-progress / 100; height: parent.height; border-radius: 3px; background: #4d9d70; } }
                 Button { text: "Cancel"; visible: root.export-can-cancel; clicked => { root.command-invoked("export.cancel"); } }
                 Button { text: "Retry"; visible: root.export-can-retry; clicked => { root.command-invoked("export.retry"); } }
                 Button { text: "Clear"; visible: root.export-can-remove; clicked => { root.command-invoked("export.remove"); } }
                 Rectangle { horizontal-stretch: 1; }
-                Text { text: root.has-project ? root.project-summary : "No project loaded"; color: #858a91; font-size: 8px; }
+                Text { text: root.has-project ? root.project-summary : "No project loaded"; color: #7f848b; font-size: 8px; }
             }
         }
     }
