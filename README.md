@@ -3,7 +3,13 @@
 Prism is a professional, cross-platform, programmable nonlinear video editor
 implemented in Rust. The project is in **Phase 1: functional editing foundation**.
 It has tested core editing, persistence, reference decoding, and constrained
-single-video-track MP4 export paths, but it is not yet a usable desktop editor.
+single-video-track MP4 export paths, plus a native desktop editing workspace.
+The desktop workflow supports project creation/opening, AV import, frame
+preview and scrubbing, split/delete/move/trim edits, track state, and AV export.
+Playback uses bounded video decoding with FFplay-backed source audio, and AV imports
+can export synchronized video/audio. Low-latency native audio mixing and effects
+rendering remain incomplete.
+See [the native workspace guide](docs/development/NATIVE_WORKSPACE.md).
 
 ## Current foundation
 

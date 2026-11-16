@@ -7,7 +7,7 @@
 use prism_core::{SequenceId, TrackId};
 use prism_export::{
     BasicMp4Exporter, ExportCancellation, ExportJobId, ExportJobState, ExportQueue,
-    ExportQueueError, SingleTrackMp4ExportRequest,
+    ExportQueueError, SingleTrackMp4ExportRequest, VideoAudioMp4ExportRequest,
 };
 use prism_project::Project;
 use serde::{Deserialize, Serialize};
@@ -562,6 +562,34 @@ impl ExportWorker {
                     &project,
                     sequence_id,
                     track_id,
+                    &request,
+                    Some(&cancellation),
+                )
+                .map_err(|error| error.to_string())?;
+            progress.report(100);
+            Ok(())
+        })
+    }
+
+    /// Starts the real synchronized single-video/single-audio exporter.
+    #[must_use]
+    pub fn spawn_single_video_audio_track(
+        ffmpeg: PathBuf,
+        ffprobe: PathBuf,
+        project: Project,
+        sequence_id: SequenceId,
+        video_track_id: TrackId,
+        audio_track_id: TrackId,
+        request: VideoAudioMp4ExportRequest,
+    ) -> Self {
+        Self::spawn(move |cancellation, progress| {
+            progress.report(0);
+            BasicMp4Exporter::new(ffmpeg, ffprobe)
+                .export_single_video_audio_track_with_cancellation(
+                    &project,
+                    sequence_id,
+                    video_track_id,
+                    audio_track_id,
                     &request,
                     Some(&cancellation),
                 )

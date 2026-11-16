@@ -1,225 +1,534 @@
-import { Button, LineEdit, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct TimelineClipItem {
+    name: string, start-ratio: float, width-ratio: float, row: int, audio: bool,
+}
+export struct MediaCard { index: int, name: string, frame: image, has-frame: bool, status: string }
+export struct HistoryItem { label: string, applied: bool }
+export struct TrackItem { name: string, audio: bool, locked: bool, muted: bool, visible: bool }
+
+component Action inherits Rectangle {
+    in property <string> label;
+    in property <string> hint: "";
+    in property <bool> quiet: false;
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    in property <bool> active: false;
+    callback clicked();
+    height: 32px; min-width: 32px; border-radius: 4px;
+    background: !enabled ? #26262c : primary ? (hit.has-hover ? #a59bff : #9285f5) : active ? #383343 : hit.has-hover ? #35353d : root.quiet ? transparent : #29292f;
+    border-width: 1px; border-color: active ? #9285f5 : primary ? #a89cff : root.quiet ? transparent : #3b3b43;
+    Text { text: root.label; color: !root.enabled ? #656570 : root.primary ? #17141f : root.active ? #c6bdff : #d8d8e0; font-size: 12px; font-weight: root.primary ? 600 : 400; horizontal-alignment: center; vertical-alignment: center; }
+    hit := TouchArea { enabled: root.enabled; clicked => { button-focus.focus(); root.clicked(); } }
+    forward-focus: button-focus;
+    button-focus := FocusScope { x: 0px; y: 0px; width: 0px; height: 0px; enabled: root.enabled;
+        key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; }
+    }
+    Rectangle { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; border-radius: 3px; border-width: button-focus.has-focus ? 1px : 0px; border-color: #e1d9ff; background: transparent; }
+    accessible-role: button; accessible-label: root.hint == "" ? root.label : root.hint;
+}
+component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder-text;
+    in property <bool> enabled: true;
+    callback edited();
+    height: 32px; background: #19191f; border-radius: 4px; border-width: 1px;
+    border-color: input.has-focus ? #a397ff : #41414c;
+    Text { x: 10px; y: 0px; width: parent.width - 20px; height: parent.height; visible: root.text == ""; text: root.placeholder-text; color: #777785; font-size: 12px; vertical-alignment: center; }
+    input := TextInput { x: 10px; y: 0px; width: parent.width - 20px; height: parent.height; text <=> root.text; color: root.enabled ? #d8d8e2 : #72727e; font-size: 12px; single-line: true; enabled: root.enabled; vertical-alignment: center; selection-background-color: #66568f; selection-foreground-color: #ffffff; edited => { root.edited(); } }
+}
 
 component PanelBar inherits Rectangle {
     in property <string> title; in property <string> detail: "";
-    height: 27px; background: #242424; border-color: #343434; border-width: 1px;
-    Text { x: 10px; text: root.title; color: #d7d7d7; font-size: 10px; font-weight: 600; vertical-alignment: center; }
-    Text { x: parent.width - self.width - 9px; text: root.detail; color: #7f848b; font-size: 8px; vertical-alignment: center; }
+    height: 34px; background: #242429;
+    Rectangle { x: 0px; y: parent.height - 1px; width: parent.width; height: 1px; background: #37373e; }
+    Text { x: 14px; text: root.title; color: #d9d9e1; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+    Text { x: parent.width - self.width - 14px; text: root.detail; color: #8c8c99; font-size: 10px; vertical-alignment: center; }
 }
-
-component IconButton inherits Rectangle {
-    in property <string> icon; in property <string> hint; in property <bool> active: false;
-    callback clicked(); width: 28px; height: 26px; border-radius: 2px;
-    background: active ? #2674a8 : hit.has-hover ? #3a3a3a : transparent;
-    Text { text: root.icon; color: active ? white : #bfc2c7; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
-    hit := TouchArea { clicked => { root.clicked(); } }
-    accessible-role: button; accessible-label: root.hint;
-}
-
-component WorkspaceButton inherits Rectangle {
-    in property <string> text; in property <bool> active: false; callback clicked();
-    width: 61px; height: 31px; background: transparent;
-    Text { text: root.text; color: active ? #eeeeee : #8e9298; font-size: 9px; font-weight: active ? 700 : 500; horizontal-alignment: center; vertical-alignment: center; }
-    Rectangle { y: parent.height - 2px; width: parent.width; height: 2px; background: active ? #429bd3 : transparent; }
-    TouchArea { clicked => { root.clicked(); } }
-}
-
-component TrackHeader inherits Rectangle {
-    in property <string> label; in property <bool> audio: false;
-    callback locked(); callback muted(); callback hidden();
-    height: 51px; background: #252525; border-color: #373737; border-width: 1px;
-    Text { x: 8px; y: 7px; text: root.label; color: #e2e2e2; font-size: 10px; font-weight: 700; }
-    Rectangle { x: 44px; y: 6px; width: 20px; height: 16px; background: #303030; Text { text: audio ? "M" : "◉"; color: #a9adb3; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; } TouchArea { clicked => { audio ? root.muted() : root.hidden(); } } }
-    Rectangle { x: 67px; y: 6px; width: 20px; height: 16px; background: #303030; Text { text: "S"; color: #a9adb3; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; } }
-    Rectangle { x: 90px; y: 6px; width: 20px; height: 16px; background: #303030; Text { text: "L"; color: #a9adb3; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; } TouchArea { clicked => { root.locked(); } } }
-    Text { x: 8px; y: 29px; text: audio ? "STEREO" : "VIDEO"; color: #737880; font-size: 8px; }
-}
-
-component Meter inherits Rectangle {
-    in property <int> level: 13; width: 12px; background: #0e0e0e;
-    for segment[index] in [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17] : Rectangle {
-        x: 2px; y: parent.height - (index + 1) * parent.height / 18 + 1px; width: parent.width - 4px; height: parent.height / 18 - 2px;
-        background: index > 15 ? #d65f55 : index > 12 ? #d4b84f : #55ad6c; opacity: index < root.level ? 1 : 0.12;
+component EmptyState inherits Rectangle {
+    in property <string> heading; in property <string> detail;
+    background: #1c1c21;
+    VerticalLayout { alignment: center; spacing: 12px; padding: 24px;
+        Text { text: "◇"; color: #9285f5; font-size: 32px; horizontal-alignment: center; }
+        Text { text: root.heading; color: #d2d2dc; font-size: 14px; horizontal-alignment: center; }
+        Text { text: root.detail; color: #858592; font-size: 11px; wrap: word-wrap; horizontal-alignment: center; }
     }
 }
 
 export component PrismStudio inherits Window {
-    title: "Prism Studio"; preferred-width: 1440px; preferred-height: 900px; min-width: 1100px; min-height: 700px; background: #171717;
-    in-out property <int> active-tool: 0; in-out property <bool> playing: false; in-out property <bool> snapping: true;
-    in-out property <string> active-workspace: "EDIT";
-    in-out property <string> export-status: "READY"; in-out property <string> export-output: "Untitled Export.mp4"; in-out property <string> export-error: "";
-    in-out property <int> export-progress: -1; in-out property <bool> export-can-cancel: false; in-out property <bool> export-can-retry: false; in-out property <bool> export-can-remove: false;
-    in-out property <bool> has-project: false; in-out property <string> project-name: "No Project"; in-out property <string> project-path: ""; in-out property <string> project-summary: "Open a project to begin";
-    in-out property <int> media-count: 0; in-out property <int> clip-count: 0; in property <[string]> media-items;
+    title: "Prism Studio — Edit with perspective"; preferred-width: 1440px; preferred-height: 900px; min-width: 1100px; min-height: 720px; background: #17171b; default-font-family: "Helvetica Neue"; default-font-size: 12px;
+    in-out property <string> active-workspace: "HOME";
+    in-out property <string> selected-media: "";
+    in-out property <int> selected-media-index: -1;
+    in-out property <int> selected-clip-index: -1;
+    in-out property <string> search: "";
+    in property <image> program-frame;
+    in property <bool> has-program-frame: false;
+    in property <image> source-frame;
+    in property <bool> has-source-frame: false;
+    in property <string> source-detail: "Select footage in the media browser";
+    in property <string> preview-status: "No sequence loaded";
+    in-out property <float> playhead-ratio: 0;
+    in-out property <bool> playing: false;
+    in property <string> timecode: "00:00:00:00";
+    in property <string> duration-label: "00:00:00:00";
+    in property <[string]> ruler-labels;
+    in-out property <string> export-status: "READY";
+    in-out property <string> export-output: "Untitled Export.mp4";
+    in-out property <string> export-error: "";
+    in-out property <int> export-progress: -1;
+    in-out property <bool> export-can-cancel: false;
+    in-out property <bool> export-can-retry: false;
+    in-out property <bool> export-can-remove: false;
+    in-out property <bool> has-project: false;
+    in-out property <string> project-name: "Untitled";
+    in-out property <string> project-path: "";
+    in-out property <string> project-summary: "Ready when you are";
+    in-out property <string> feedback: "";
+    in-out property <int> media-count: 0;
+    in-out property <int> clip-count: 0;
+    in property <[string]> media-items;
+    in property <[MediaCard]> media-cards;
+    callback filter-changed();
+    in property <[TimelineClipItem]> timeline-clips;
+    in property <[TrackItem]> tracks;
+    in-out property <length> monitor-height: 330px;
+    in-out property <bool> compact-mode: false;
+    changed width => { root.compact-mode = self.width < 1250px; }
+    in-out property <string> layout-preset: "Editing";
+    in-out property <string> browser-tab: "Media";
+    in-out property <string> inspector-tab: "Properties";
+    in-out property <bool> inspector-open: true;
+    in-out property <bool> show-safe-guides: false;
+    in-out property <string> active-tool: "V";
+    in-out property <float> timeline-zoom: 1;
+    in-out property <float> timeline-offset: 0;
+    in property <bool> can-undo: false;
+    in property <bool> can-redo: false;
+    in property <[HistoryItem]> history-items;
+    in property <string> sequence-name: "Main sequence";
+    in property <string> inspector-name: "";
+    in property <string> inspector-track: "";
+    in property <string> inspector-path: "";
+    in property <bool> inspector-locked: false;
+    in-out property <string> clip-start: "0";
+    in-out property <string> clip-source-in: "0";
+    in-out property <string> clip-duration: "0";
+    in property <string> source-timecode: "00:00:00:00";
+    in property <string> source-duration-label: "00:00:00:00";
+    in property <string> source-in-label: "—";
+    in property <string> source-out-label: "—";
+    in property <float> source-ratio: 0;
+    in property <bool> source-ready: false;
+    callback source-seek(float);
+    callback view-changed();
     callback command-invoked(string);
+    pure callback media-matches(string, string) -> bool;
+    callback media-selected(int);
+    callback clip-selected(int);
+    callback seek(float);
+    callback track-action(int, string);
 
-    VerticalLayout {
-        spacing: 1px;
-        Rectangle {
-            height: 27px; background: #1e1e1e;
-            HorizontalLayout {
-                padding-left: 10px; padding-right: 10px; spacing: 15px; alignment: center;
-                Text { text: "PRISM"; color: #f0f0f0; font-size: 10px; font-weight: 800; }
-                for menu in ["File","Edit","Clip","Sequence","Markers","Graphics","Window","Help"] : Text { text: menu; color: #c1c3c7; font-size: 9px; vertical-alignment: center; }
-                Rectangle { horizontal-stretch: 1; }
-                Text { text: root.has-project ? root.project-name : "No project open"; color: #959aa1; font-size: 9px; }
+    forward-focus: keyboard;
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if event.modifiers.control || event.modifiers.meta {
+                if event.text.to-lowercase() == "z" { root.command-invoked(event.modifiers.shift ? "edit.redo" : "edit.undo"); return accept; }
+                if event.text.to-lowercase() == "s" { root.command-invoked("project.save"); return accept; }
+                if event.text.to-lowercase() == "o" { root.command-invoked("project.open"); return accept; }
+                if event.text.to-lowercase() == "i" { root.command-invoked("project.import_media"); return accept; }
+                if event.text.to-lowercase() == "k" && root.active-workspace == "EDIT" { root.command-invoked("timeline.split"); return accept; }
             }
-        }
-        Rectangle {
-            height: 36px; background: #222222;
-            HorizontalLayout {
-                padding-left: 10px; padding-right: 10px; spacing: 2px; alignment: center;
-                Image { source: @image-url("../../../assets/brand/prism-logo.png"); width: 24px; height: 24px; image-fit: contain; }
-                Rectangle { width: 12px; }
-                WorkspaceButton { text: "IMPORT"; active: root.active-workspace == "IMPORT"; clicked => { root.active-workspace = "IMPORT"; } }
-                WorkspaceButton { text: "EDIT"; active: root.active-workspace == "EDIT"; clicked => { root.active-workspace = "EDIT"; } }
-                WorkspaceButton { text: "COLOR"; active: root.active-workspace == "COLOR"; clicked => { root.active-workspace = "COLOR"; } }
-                WorkspaceButton { text: "AUDIO"; active: root.active-workspace == "AUDIO"; clicked => { root.active-workspace = "AUDIO"; } }
-                WorkspaceButton { text: "CAPTIONS"; active: root.active-workspace == "CAPTIONS"; clicked => { root.active-workspace = "CAPTIONS"; } }
-                Rectangle { horizontal-stretch: 1; }
-                Button { text: "Quick Export"; width: 102px; enabled: root.has-project && !root.export-can-cancel; clicked => { root.command-invoked("export.queue"); } }
+            if root.active-workspace == "EDIT" {
+                if event.text.to-lowercase() == "v" { root.active-tool = "V"; return accept; }
+                if event.text.to-lowercase() == "c" { root.active-tool = "C"; return accept; }
+                if event.text == Key.LeftArrow { root.command-invoked("playback.step_backward"); return accept; }
+                if event.text == Key.RightArrow { root.command-invoked("playback.step_forward"); return accept; }
+                if event.text == Key.Space { root.command-invoked("playback.play_pause"); return accept; }
+                if event.text == Key.Delete && root.selected-clip-index >= 0 { root.command-invoked("timeline.delete"); return accept; }
             }
+            return reject;
         }
-
-        // Upper workspace follows the reference set: project, source, program, inspector.
-        HorizontalLayout {
-            height: 345px; spacing: 1px;
-            Rectangle {
-                width: 258px; background: #1d1d1d;
-                VerticalLayout {
-                    spacing: 1px; PanelBar { title: "Project: " + root.project-name; detail: root.media-count + " items"; }
-                    Rectangle {
-                        height: 68px; background: #242424;
-                        LineEdit { x: 8px; y: 7px; width: parent.width - 16px; height: 25px; placeholder-text: "Search"; }
-                        Button { x: 8px; y: 37px; width: parent.width - 16px; height: 24px; text: "Import Media…"; enabled: root.has-project; clicked => { root.command-invoked("project.import_media"); } }
+    VerticalLayout { spacing: 0px;
+        Rectangle { height: 54px; background: #222227;
+            HorizontalLayout { padding-left: 22px; padding-right: 20px; spacing: 18px; padding-top: 11px; padding-bottom: 11px;
+                Rectangle { width: 40px; height: 30px; clip: true; background: #000000; Image { x: -55px; y: -35px; width: 150px; height: 100px; source: @image-url("../../../assets/brand/prism-logo.png"); image-fit: contain; } }
+                Text { text: "prism"; color: #f1f0f7; font-size: 20px; font-weight: 600; vertical-alignment: center; }
+                Rectangle { width: 1px; height: 22px; background: #42424b; }
+                for workspace in ["HOME", "IMPORT", "EDIT", "EXPORT"] : Rectangle {
+                    width: 66px; height: 32px;
+                    Text { text: workspace; color: root.active-workspace == workspace ? #ded8ff : #92929f; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                    Rectangle { x: 8px; y: parent.height - 3px; width: parent.width - 16px; height: 2px; background: root.active-workspace == workspace ? #a397ff : transparent; }
+                    forward-focus: tab-focus;
+                    tab-focus := FocusScope { x: 0px; y: 0px; width: 0px; height: 0px;
+                        key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.active-workspace = workspace; return accept; } return reject; }
                     }
-                    Rectangle { height: 23px; background: #202020; Text { x: 9px; text: "Name"; color: #777c83; font-size: 8px; vertical-alignment: center; } Text { x: parent.width - 39px; text: "Type"; color: #777c83; font-size: 8px; vertical-alignment: center; } }
-                    ScrollView {
-                        VerticalLayout {
-                            padding: 4px; spacing: 2px;
-                            if root.media-count == 0 : Text { height: 76px; text: root.has-project ? "Import footage to begin" : "Open a project first"; color: #6e737a; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; }
-                            for item in root.media-items : Rectangle {
-                                height: 38px; background: media-hit.has-hover ? #34383d : #282828;
-                                Rectangle { x: 5px; y: 5px; width: 41px; height: 28px; background: #101010; Text { text: "▶"; color: #557d96; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; } }
-                                Text { x: 53px; width: parent.width - 84px; text: item; color: #d0d2d6; font-size: 9px; overflow: elide; vertical-alignment: center; }
-                                Text { x: parent.width - 25px; text: "AV"; color: #757a82; font-size: 7px; vertical-alignment: center; }
-                                media-hit := TouchArea { }
+                    TouchArea { clicked => { tab-focus.focus(); root.active-workspace = workspace; } }
+                    accessible-role: tab; accessible-label: workspace;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: root.has-project ? root.project-name : "YOUR NEXT STORY STARTS HERE"; color: #9696a3; font-size: 11px; vertical-alignment: center; }
+                Action { width: 62px; label: "Open"; quiet: true; clicked => { root.command-invoked("project.open"); } }
+                Action { width: 68px; label: "Save"; enabled: root.has-project; clicked => { root.command-invoked("project.save"); } }
+            }
+        }
+        if root.active-workspace == "HOME" : Rectangle {
+            background: #1b1b20;
+            HorizontalLayout { spacing: 0px;
+                Rectangle { width: 232px; background: #202025;
+                    VerticalLayout { padding: 24px; spacing: 12px;
+                        Text { text: "YOUR WORKSPACE"; color: #777784; font-size: 10px; height: 30px; }
+                        Action { label: "+  New project"; primary: true; clicked => { root.command-invoked("project.new"); } }
+                        Action { label: "Open project…"; clicked => { root.command-invoked("project.open"); } }
+                        Rectangle { height: 26px; }
+                        Text { text: "◇   Home"; color: #c6bdff; font-size: 13px; height: 32px; }
+                        Rectangle { vertical-stretch: 1; }
+                        Text { text: "PRISM STUDIO\nA new perspective on your story."; color: #777784; font-size: 11px; wrap: word-wrap; }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1;
+                    VerticalLayout { padding: 40px; spacing: 16px;
+                        Text { text: "PRISM STUDIO / YOUR WORKSPACE"; color: #a397ff; font-size: 10px; font-weight: 600; height: 18px; }
+                        Text { text: "Your next perspective."; color: #eeeef4; font-size: 38px; font-weight: 500; height: 64px; }
+                        Text { text: "Bring your footage together in a focused editing workspace."; color: #9393a1; font-size: 14px; height: 24px; }
+                        HorizontalLayout { alignment: start; spacing: 12px; Action { width: 166px; height: 40px; label: "Import your footage"; primary: true; clicked => { root.active-workspace = "IMPORT"; } } Action { width: 136px; height: 40px; label: "Open a project"; clicked => { root.command-invoked("project.open"); } } }
+                        Rectangle { height: 24px; }
+                        PanelBar { title: "Current project"; detail: root.has-project ? "SAVED LOCALLY" : "GET STARTED"; }
+                        Rectangle { height: 94px; background: #25252c; border-radius: 5px;
+                            Text { x: 22px; y: 20px; text: root.has-project ? root.project-name : "Your canvas is ready"; color: #e1e1eb; font-size: 16px; }
+                            Text { x: 22px; y: 52px; width: parent.width - 180px; text: root.has-project ? root.project-path : "Create a project or open an existing .prism file."; color: #8e8e9b; font-size: 11px; overflow: elide; }
+                            Action { visible: root.has-project; x: parent.width - 128px; y: 30px; width: 106px; label: "Continue  →"; clicked => { root.active-workspace = "EDIT"; } }
+                        }
+                        Rectangle { vertical-stretch: 1; }
+                        Text { text: "01  IMPORT       /       02  SHAPE YOUR STORY       /       03  EXPORT"; color: #6e6e7d; font-size: 10px; height: 20px; }
+                    }
+                }
+            }
+        }
+        if root.active-workspace == "IMPORT" : Rectangle {
+            HorizontalLayout { spacing: 1px;
+                Rectangle { width: 215px; background: #202025;
+                    VerticalLayout { padding: 22px; spacing: 18px;
+                        Text { text: "MEDIA LIBRARY"; color: #81818f; font-size: 10px; height: 24px; }
+                        Action { label: "+  Browse files…"; primary: true; clicked => { root.command-invoked("project.import_media"); } }
+                        Text { text: "▦   Project media"; color: #c6bdff; font-size: 12px; height: 28px; }
+                        Text { text: root.media-count + " imported files"; color: #858592; font-size: 11px; height: 22px; }
+                        Rectangle { vertical-stretch: 1; }
+                        Text { text: "Your original files stay in place. Prism saves references to your footage."; color: #858592; font-size: 11px; wrap: word-wrap; }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; background: #1c1c21;
+                    VerticalLayout { padding: 24px; spacing: 18px;
+                        HorizontalLayout { height: 34px; spacing: 12px; Text { text: "Project / Footage"; color: #e2e2eb; font-size: 16px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Field { width: 220px; placeholder-text: "Filter imported media"; text <=> root.search; edited => { root.filter-changed(); } } }
+                        if root.media-count == 0 : EmptyState { heading: "Every story starts with a frame"; detail: "Browse your computer to import video. Your footage will appear here and be added to the sequence."; }
+                        if root.media-count > 0 : ScrollView {
+                            Rectangle { property <int> columns: Math.max(2, Math.floor(self.width / 230px));
+                                min-height: Math.max(200px, Math.ceil(root.media-cards.length / self.columns) * 190px);
+                                for item[index] in root.media-cards : Rectangle {
+                                    x: Math.mod(index, parent.columns) * parent.width / parent.columns;
+                                    y: Math.floor(index / parent.columns) * 190px;
+                                    width: parent.width / parent.columns - 14px; height: 176px; border-radius: 4px;
+                                    background: root.selected-media-index == item.index ? #342d43 : #27262f;
+                                    border-width: 1px; border-color: root.selected-media-index == item.index ? #aa91ce : #37333e;
+                                    Rectangle { x: 6px; y: 6px; width: parent.width - 12px; height: 122px; background: #101014;
+                                        Image { visible: item.has-frame; source: item.frame; width: parent.width; height: parent.height; image-fit: contain; }
+                                        Text { visible: !item.has-frame; text: item.status; color: #6d657c; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                    Text { x: 12px; y: 138px; width: parent.width - 24px; text: item.name; color: #d9cfdf; font-size: 11px; overflow: elide; }
+                                    Text { x: 12px; y: 158px; text: "VIDEO / SOURCE MEDIA"; color: #87798f; font-size: 8px; }
+                                    TouchArea { clicked => { root.selected-media-index = item.index; root.selected-media = item.name; root.media-selected(item.index); } }
+                                }
+                                if root.media-cards.length == 0 : Text { y: 40px; width: parent.width; text: "No matching footage"; color: #8a8096; horizontal-alignment: center; }
+                            }
+                        }
+                        HorizontalLayout { height: 36px; Action { width: 144px; label: "Browse more files…"; clicked => { root.command-invoked("project.import_media"); } } Rectangle { horizontal-stretch: 1; } Action { width: 140px; label: "Continue to edit  →"; primary: true; enabled: root.has-project; clicked => { root.active-workspace = "EDIT"; } } }
+                    }
+                }
+                Rectangle { width: 260px; background: #222227;
+                    VerticalLayout { spacing: 16px; padding: 20px;
+                        Text { text: "Import workflow"; color: #dedee8; font-size: 14px; height: 28px; }
+                        Text { text: "01   Choose your footage"; color: #c6bdff; height: 24px; }
+                        Text { text: "Select one or more video files using the native file browser."; color: #92929f; font-size: 12px; wrap: word-wrap; }
+                        Text { text: "02   Build your sequence"; color: #c6bdff; height: 24px; }
+                        Text { text: "Clips are appended in selection order to an unlocked video track."; color: #92929f; font-size: 12px; wrap: word-wrap; }
+                        Text { text: "03   Save your project"; color: #c6bdff; height: 24px; }
+                        Text { text: "New projects prompt for a .prism destination. Existing projects save after import."; color: #92929f; font-size: 12px; wrap: word-wrap; }
+                        if root.selected-media != "" : Rectangle { height: 150px; background: #111115; Image { visible: root.has-source-frame; source: root.source-frame; width: parent.width; height: parent.height; image-fit: contain; } }
+                        if root.selected-media != "" : Text { text: root.selected-media; color: #b7acff; font-size: 11px; wrap: word-wrap; }
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                }
+            }
+        }
+        if root.active-workspace == "EDIT" : Rectangle { min-width: 0px; min-height: 0px;
+            VerticalLayout { spacing: 1px;
+                Rectangle { height: 36px; background: #1d1d23;
+                    HorizontalLayout { padding-left: 14px; padding-right: 12px; padding-top: 4px; padding-bottom: 4px; spacing: 6px;
+                        Text { text: "WORKSPACE"; color: #6f6f81; font-size: 9px; vertical-alignment: center; }
+                        for preset in ["Editing", "Assembly"] : Action { width: 76px; height: 27px; label: preset; quiet: true; active: root.layout-preset == preset; clicked => { root.layout-preset = preset; } }
+                        Rectangle { horizontal-stretch: 1; }
+                        Action { width: 64px; height: 27px; label: "Undo"; hint: "Undo · Ctrl / Cmd Z"; enabled: root.can-undo; quiet: true; clicked => { root.command-invoked("edit.undo"); } }
+                        Action { width: 64px; height: 27px; label: "Redo"; hint: "Redo · Ctrl / Cmd Shift Z"; enabled: root.can-redo; quiet: true; clicked => { root.command-invoked("edit.redo"); } }
+                        Action { width: 88px; height: 27px; label: "Reset layout"; quiet: true; clicked => { root.layout-preset = "Editing"; root.inspector-open = true; root.monitor-height = 330px; root.timeline-zoom = 1; root.timeline-offset = 0; root.view-changed(); } }
+                        Action { width: 72px; height: 27px; label: "Inspector"; active: root.inspector-open; quiet: true; clicked => { root.inspector-open = !root.inspector-open; } }
+                    }
+                }
+                HorizontalLayout { spacing: 3px;
+                    Rectangle { horizontal-stretch: 1;
+                        VerticalLayout { spacing: 3px;
+                            HorizontalLayout { height: root.monitor-height; spacing: 3px;
+                                if root.layout-preset == "Editing" && !root.compact-mode : Rectangle { horizontal-stretch: 1; background: #121216;
+                                    VerticalLayout { spacing: 0px;
+                                        PanelBar { title: "Source"; detail: root.selected-media == "" ? "NO SOURCE" : "SOURCE CLIP"; }
+                                        Rectangle { height: 28px; background: #1d1d23; Text { x: 12px; width: parent.width - 24px; text: root.selected-media == "" ? "Select footage in your project" : root.selected-media; color: #aaaab9; font-size: 11px; overflow: elide; vertical-alignment: center; } }
+                                        Rectangle { vertical-stretch: 1; background: #0e0e12;
+                                            Image { visible: root.has-source-frame; source: root.source-frame; width: parent.width; height: parent.height; image-fit: contain; }
+                                            if !root.has-source-frame : EmptyState { heading: "The beginning of a story"; detail: root.source-detail; }
+                                        }
+                                        Rectangle { height: 5px; background: #33333d; Rectangle { x: 0px; y: 0px; width: parent.width * root.source-ratio; height: parent.height; background: #a89bff; } TouchArea { enabled: root.source-ready; clicked => { root.source-seek(self.mouse-x / self.width); } moved => { if self.pressed { root.source-seek(Math.max(0, Math.min(1, self.mouse-x / self.width))); } } } }
+                                        HorizontalLayout { height: 34px; padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
+                                            Text { text: root.source-timecode; color: #aca0eb; font-family: "monospace"; font-size: 10px; vertical-alignment: center; }
+                                            Rectangle { horizontal-stretch: 1; }
+                                            Action { width: 28px; height: 25px; label: "I"; hint: "Mark source In"; quiet: true; enabled: root.source-ready; clicked => { root.command-invoked("source.mark_in"); } }
+                                            Action { width: 28px; height: 25px; label: "O"; hint: "Mark source Out"; quiet: true; enabled: root.source-ready; clicked => { root.command-invoked("source.mark_out"); } }
+                                            Action { width: 70px; height: 25px; label: "Append"; hint: "Append marked source range to the sequence"; enabled: root.source-ready; clicked => { root.command-invoked("source.append"); } }
+                                        }
+                                    }
+                                }
+                                Rectangle { horizontal-stretch: 1.35; background: #111115;
+                                    VerticalLayout { spacing: 0px;
+                                        PanelBar { title: "Program"; detail: root.clip-count > 0 ? root.sequence-name : "NO SEQUENCE"; }
+                                        Rectangle { height: 28px; background: #1d1d23; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.sequence-name; color: #aaaab9; font-size: 11px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: "FRAME PREVIEW"; color: #767689; font-size: 8px; vertical-alignment: center; } } }
+                                        Rectangle { vertical-stretch: 1; background: #0b0b0f;
+                                            Image { visible: root.has-program-frame; source: root.program-frame; width: parent.width; height: parent.height; image-fit: contain; }
+                                            Text { visible: !root.has-program-frame; text: root.preview-status; color: #818192; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                                            if root.show-safe-guides : Rectangle { x: parent.width * 0.1; y: parent.height * 0.1; width: parent.width * 0.8; height: parent.height * 0.8; border-width: 1px; border-color: #bcb6d480; background: transparent; }
+                                        }
+                                        HorizontalLayout { height: 39px; padding-left: 12px; padding-right: 10px; padding-top: 6px; padding-bottom: 6px; spacing: 6px;
+                                            Text { text: root.timecode; color: #b9acff; font-family: "monospace"; font-size: 11px; vertical-alignment: center; }
+                                            Rectangle { horizontal-stretch: 1; }
+                                            Action { width: 28px; height: 26px; label: "|‹"; hint: "Sequence start"; quiet: true; enabled: root.clip-count > 0; clicked => { root.seek(0); } }
+                                            Action { width: 28px; height: 26px; label: "‹"; hint: "Previous frame"; quiet: true; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.step_backward"); } }
+                                            Action { width: 34px; height: 26px; label: root.playing ? "■" : "▶"; hint: "Play / Pause · Space"; active: root.playing; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.play_pause"); } }
+                                            Action { width: 28px; height: 26px; label: "›"; hint: "Next frame"; quiet: true; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.step_forward"); } }
+                                            Rectangle { horizontal-stretch: 1; }
+                                            Action { width: 42px; height: 26px; label: "Safe"; hint: "Toggle inset framing guides"; active: root.show-safe-guides; quiet: true; clicked => { root.show-safe-guides = !root.show-safe-guides; } }
+                                            Text { text: root.duration-label; color: #7f7f91; font-family: "monospace"; font-size: 10px; vertical-alignment: center; }
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle { height: 5px; background: resize.has-hover ? #8979cb : #303039;
+                                resize := TouchArea { moved => { if self.pressed { root.monitor-height = Math.max(220px, Math.min(root.height - 360px, root.monitor-height + self.mouse-y - self.pressed-y)); } } }
+                            }
+                            HorizontalLayout { spacing: 3px; vertical-stretch: 1;
+                                Rectangle { width: root.layout-preset == "Assembly" ? 300px : 240px; background: #202026;
+                                    VerticalLayout { spacing: 0px;
+                                        HorizontalLayout { height: 34px; padding-left: 8px; padding-right: 8px; spacing: 4px; padding-top: 3px; padding-bottom: 3px;
+                                            for tab in ["Media", "Info"] : Action { height: 27px; width: 64px; label: tab; quiet: true; active: root.browser-tab == tab; clicked => { root.browser-tab = tab; } }
+                                            Rectangle { horizontal-stretch: 1; }
+                                            Text { text: root.media-count + " FILES"; color: #717184; font-size: 8px; vertical-alignment: center; }
+                                        }
+                                        if root.browser-tab == "Media" : Rectangle {
+                                            VerticalLayout { padding: 8px; spacing: 7px;
+                                                Field { placeholder-text: "Search project media"; text <=> root.search; edited => { root.filter-changed(); } }
+                                                Rectangle { height: 20px; Text { x: 5px; text: "NAME"; color: #69697e; font-size: 8px; vertical-alignment: center; } Text { x: parent.width - 38px; text: "TYPE"; color: #69697e; font-size: 8px; vertical-alignment: center; } }
+                                                ScrollView { VerticalLayout { spacing: 2px;
+                                                    if root.media-count == 0 : EmptyState { height: 130px; heading: "A place for your footage"; detail: "Import video to start your sequence."; }
+                                                    for item in root.media-cards : Rectangle { height: 42px; background: root.selected-media-index == item.index ? #363047 : media-hit.has-hover ? #2d2d37 : #25252d; border-radius: 3px;
+                                                        Rectangle { x: 0px; y: 0px; width: 2px; height: parent.height; background: root.selected-media-index == item.index ? #a598ed : transparent; }
+                                                        Rectangle { x: 7px; y: 7px; width: 42px; height: 28px; background: #141218; Image { visible: item.has-frame; source: item.frame; width: parent.width; height: parent.height; image-fit: contain; } Text { visible: !item.has-frame; text: "V"; color: #8c799f; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; } }
+                                                        Text { x: 56px; width: parent.width - 87px; text: item.name; color: #d0cddd; overflow: elide; font-size: 10px; vertical-alignment: center; }
+                                                        Text { x: parent.width - 27px; text: "VID"; color: #717185; font-size: 7px; vertical-alignment: center; }
+                                                        media-hit := TouchArea { clicked => { root.selected-media-index = item.index; root.selected-media = item.name; root.media-selected(item.index); } }
+                                                    }
+                                                    if root.media-count > 0 && root.media-cards.length == 0 : Text { height: 40px; text: "No matches"; color: #81758f; horizontal-alignment: center; }
+                                                } }
+                                                Action { label: "+  Import footage"; height: 29px; clicked => { root.command-invoked("project.import_media"); } }
+                                            }
+                                        }
+                                        if root.browser-tab == "Info" : Rectangle { VerticalLayout { padding: 14px; spacing: 14px;
+                                            Text { text: "PROJECT"; color: #8e82bb; font-size: 9px; height: 16px; }
+                                            Text { text: root.project-name; color: #dedbe8; font-size: 15px; wrap: word-wrap; }
+                                            Text { text: root.project-summary; color: #9090a1; font-size: 11px; wrap: word-wrap; }
+                                            Text { text: "LOCATION"; color: #737386; font-size: 9px; height: 16px; }
+                                            Text { text: root.project-path; color: #9090a1; font-size: 10px; wrap: word-wrap; }
+                                            Rectangle { vertical-stretch: 1; }
+                                        } }
+                                    }
+                                }
+                                Rectangle { width: 38px; background: #24242c;
+                                    VerticalLayout { padding: 4px; spacing: 6px;
+                                        Action { label: "V"; hint: "Selection and scrub tool"; active: root.active-tool == "V"; height: 28px; clicked => { root.active-tool = "V"; } }
+                                        Action { label: "C"; hint: "Razor: split a clip at the clicked frame"; active: root.active-tool == "C"; height: 28px; clicked => { root.active-tool = "C"; } }
+                                        Rectangle { vertical-stretch: 1; }
+                                    }
+                                }
+                                Rectangle { horizontal-stretch: 1; background: #1c1c23;
+                                    VerticalLayout { spacing: 0px;
+                                        PanelBar { title: root.sequence-name; detail: root.clip-count + " CLIPS"; }
+                                        HorizontalLayout { height: 36px; padding-left: 10px; padding-right: 8px; spacing: 5px; padding-top: 4px; padding-bottom: 4px;
+                                            Text { text: root.timecode; color: #b5a9f4; font-size: 11px; font-family: "monospace"; vertical-alignment: center; }
+                                            Rectangle { horizontal-stretch: 1; }
+                                            Action { width: 42px; height: 26px; label: "Split"; quiet: true; enabled: root.selected-clip-index >= 0 && !root.inspector-locked; clicked => { root.command-invoked("timeline.split"); } }
+                                            Action { width: 48px; height: 26px; label: "Delete"; quiet: true; enabled: root.selected-clip-index >= 0 && !root.inspector-locked; clicked => { root.command-invoked("timeline.delete"); } }
+                                            Action { width: 28px; height: 26px; label: "−"; hint: "Zoom timeline out"; quiet: true; enabled: root.timeline-zoom > 1; clicked => { root.timeline-zoom = Math.max(1, root.timeline-zoom / 2); root.timeline-offset = Math.min(root.timeline-offset, 1 - 1 / root.timeline-zoom); root.view-changed(); } }
+                                            Text { text: root.timeline-zoom + "×"; color: #858599; font-size: 9px; vertical-alignment: center; }
+                                            Action { width: 28px; height: 26px; label: "+"; hint: "Zoom timeline in"; quiet: true; enabled: root.timeline-zoom < 8; clicked => { root.timeline-zoom = Math.min(8, root.timeline-zoom * 2); root.view-changed(); } }
+                                        }
+                                        ScrollView { vertical-stretch: 1;
+                                            HorizontalLayout { spacing: 0px; min-height: Math.max(180px, root.tracks.length * 60px + 28px);
+                                                Rectangle { width: 86px; background: #25252d;
+                                                    VerticalLayout { spacing: 1px;
+                                                        Rectangle { height: 28px; background: #292931; Text { text: "TRACKS"; color: #69697e; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; } }
+                                                        for track[index] in root.tracks : Rectangle { height: 59px; background: #27272f;
+                                                            Text { x: 8px; y: 7px; text: track.name; color: track.audio ? #81bdac : #b6a9e5; font-size: 11px; }
+                                                            Action { x: 7px; y: 29px; width: 32px; height: 23px; label: track.locked ? "L" : "U"; hint: track.locked ? "Unlock track" : "Lock track"; active: track.locked; quiet: true; clicked => { root.track-action(index, "lock"); } }
+                                                            Action { x: 43px; y: 29px; width: 32px; height: 23px; label: track.audio ? "M" : "V"; hint: track.audio ? "Mute track" : "Toggle video output"; active: track.audio ? track.muted : !track.visible; quiet: true; clicked => { root.track-action(index, track.audio ? "mute" : "visible"); } }
+                                                        }
+                                                        Rectangle { vertical-stretch: 1; }
+                                                    }
+                                                }
+                                                Rectangle { horizontal-stretch: 1; background: #1c1c23; clip: true;
+                                                    Rectangle { x: 0px; y: 0px; width: parent.width; height: 28px; background: #292931;
+                                                        for label[index] in root.ruler-labels : Text { visible: parent.width >= 600px || index == 0 || index == 2 || index == 5; x: Math.min(index * parent.width / 5 + 4px, parent.width - 56px); text: label; color: #8a879b; font-size: 8px; font-family: "monospace"; vertical-alignment: center; }
+                                                    }
+                                                    for track[index] in root.tracks : Rectangle { y: 28px + index * 60px; width: parent.width; height: 59px; background: track.audio ? #202827 : #22222b; border-width: 1px; border-color: #30303a; }
+                                                    for tick in [0,1,2,3,4,5] : Rectangle { x: tick * (parent.width - 1px) / 5; y: 28px; width: 1px; height: parent.height - 28px; background: #30303a; }
+                                                    TouchArea { clicked => { keyboard.focus(); root.seek(root.timeline-offset + self.mouse-x / self.width / root.timeline-zoom); } moved => { if self.pressed { root.seek(root.timeline-offset + Math.max(0, Math.min(1, self.mouse-x / self.width)) / root.timeline-zoom); } } }
+                                                    for clip[index] in root.timeline-clips : Rectangle {
+                                                        x: parent.width * (clip.start-ratio - root.timeline-offset) * root.timeline-zoom; y: 32px + clip.row * 60px;
+                                                        width: Math.max(3px, parent.width * clip.width-ratio * root.timeline-zoom - 2px); height: 51px; clip: true; border-radius: 3px;
+                                                        background: clip.audio ? #315e53 : root.selected-clip-index == index ? #756099 : #4f436a;
+                                                        border-width: 1px; border-color: root.selected-clip-index == index ? #decef6 : clip.audio ? #539a85 : #8d73ad;
+                                                        Rectangle { x: 0px; y: 0px; width: parent.width; height: 17px; background: #ffffff0a; }
+                                                        Text { x: 6px; y: 5px; width: parent.width - 12px; text: clip.name; color: #e8dff3; font-size: 9px; overflow: elide; }
+                                                        Text { x: 6px; y: 32px; text: clip.audio ? "AUDIO" : "VIDEO"; color: #c1afd6; font-size: 7px; }
+                                                        TouchArea { clicked => { keyboard.focus(); root.selected-clip-index = index; root.clip-selected(index); root.seek(clip.start-ratio + Math.max(0, Math.min(1, self.mouse-x / self.width)) * clip.width-ratio); if root.active-tool == "C" { root.command-invoked("timeline.split"); } } moved => { if self.pressed && root.active-tool == "V" { root.seek(clip.start-ratio + Math.max(0, Math.min(1, self.mouse-x / self.width)) * clip.width-ratio); } } }
+                                                    }
+                                                    Rectangle { x: (root.playhead-ratio - root.timeline-offset) * root.timeline-zoom * (parent.width - 1px); y: 0px; width: 1px; height: parent.height; background: #c4b3f8; }
+                                                    Rectangle { x: (root.playhead-ratio - root.timeline-offset) * root.timeline-zoom * (parent.width - 1px) - 3px; y: 0px; width: 7px; height: 9px; background: #c4b3f8; }
+                                                    if root.clip-count == 0 : Text { y: 77px; width: parent.width; text: "Your story takes shape here"; color: #717184; font-size: 11px; horizontal-alignment: center; }
+                                                }
+                                            }
+                                        }
+                                        Rectangle { height: 13px; background: #24242c;
+                                            Rectangle { x: parent.width * root.timeline-offset; y: 3px; width: parent.width / root.timeline-zoom; height: 7px; border-radius: 4px; background: #595368; }
+                                            TouchArea { clicked => { root.timeline-offset = Math.max(0, Math.min(1 - 1 / root.timeline-zoom, self.mouse-x / self.width - 0.5 / root.timeline-zoom)); root.view-changed(); } moved => { if self.pressed { root.timeline-offset = Math.max(0, Math.min(1 - 1 / root.timeline-zoom, self.mouse-x / self.width - 0.5 / root.timeline-zoom)); root.view-changed(); } } }
+                                        }
+                                        Rectangle { height: 24px; background: #24242c; Text { x: 10px; text: "V  SELECT / SCRUB    C  RAZOR    ← →  FRAME"; color: #727186; font-size: 8px; vertical-alignment: center; } }
+                                    }
+                                }
                             }
                         }
                     }
-                    Rectangle { height: 25px; background: #232323; Text { x: 8px; width: parent.width - 16px; text: root.project-path; color: #6f747b; font-size: 7px; overflow: elide; vertical-alignment: center; } }
-                }
-            }
-            Rectangle {
-                horizontal-stretch: 1; background: #111111;
-                VerticalLayout {
-                    spacing: 0px; PanelBar { title: "Source Monitor"; detail: "No source"; }
-                    Rectangle { vertical-stretch: 1; background: #080808; Text { text: "Double-click a project item to load source"; color: #62676e; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; } Text { x: 8px; y: parent.height - 22px; text: "00:00:00:00"; color: #4fa2d8; font-family: "monospace"; font-size: 9px; } }
-                    Rectangle { height: 34px; background: #222222; HorizontalLayout { alignment: center; spacing: 9px; Rectangle { horizontal-stretch: 1; } Text { text: "{   |◀   ◀   ▶   ▶|   }"; color: #c8c8c8; font-size: 10px; } Rectangle { horizontal-stretch: 1; } } }
-                }
-            }
-            Rectangle {
-                horizontal-stretch: 1.3; background: #111111;
-                VerticalLayout {
-                    spacing: 0px; PanelBar { title: "Program Monitor"; detail: "Fit   1/2"; }
-                    Rectangle { vertical-stretch: 1; background: #080808; Text { text: root.clip-count > 0 ? "Active sequence" : "No sequence loaded"; color: #62676e; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; } Text { x: 8px; y: parent.height - 22px; text: "00:00:00:00"; color: #4fa2d8; font-family: "monospace"; font-size: 9px; } }
-                    Rectangle {
-                        height: 34px; background: #222222;
-                        HorizontalLayout { alignment: center; spacing: 9px; Rectangle { horizontal-stretch: 1; } Text { text: "|◀"; color: #c8c8c8; font-size: 10px; } IconButton { icon: root.playing ? "■" : "▶"; hint: "Play/Pause"; clicked => { root.playing = !root.playing; root.command-invoked("playback.play_pause"); } } Text { text: "▶|"; color: #c8c8c8; font-size: 10px; } Rectangle { horizontal-stretch: 1; } }
+                    if root.inspector-open : Rectangle { width: 258px; background: #202026;
+                        VerticalLayout { spacing: 0px;
+                            PanelBar { title: root.inspector-tab; detail: "PRISM / INSPECT"; }
+                            if root.inspector-tab == "Properties" : ScrollView { VerticalLayout { padding: 16px; spacing: 12px;
+                                Text { text: root.inspector-name == "" ? "A closer look." : root.inspector-name; color: #e5deed; font-size: 16px; wrap: word-wrap; }
+                                Text { text: root.selected-clip-index >= 0 ? root.inspector-track + (root.inspector-locked ? "  /  LOCKED" : "  /  VIDEO CLIP") : "Select a timeline clip to inspect its timing and source."; color: #89869c; font-size: 10px; wrap: word-wrap; }
+                                if root.selected-clip-index >= 0 : Rectangle { height: 1px; background: #393540; }
+                                if root.selected-clip-index >= 0 : Text { text: "CLIP TIMING"; color: #a69ac1; font-size: 9px; height: 18px; }
+                                if root.selected-clip-index >= 0 : Text { text: "Sequence start · seconds"; color: #9994a8; font-size: 10px; height: 16px; }
+                                if root.selected-clip-index >= 0 : Field { text <=> root.clip-start; enabled: !root.inspector-locked; }
+                                if root.selected-clip-index >= 0 : HorizontalLayout { height: 28px; spacing: 6px; Action { label: "Move −1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.move_left"); } } Action { label: "Move +1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.move_right"); } } }
+                                if root.selected-clip-index >= 0 : Text { text: "Source in · seconds"; color: #9994a8; font-size: 10px; height: 16px; }
+                                if root.selected-clip-index >= 0 : Field { text <=> root.clip-source-in; enabled: !root.inspector-locked; }
+                                if root.selected-clip-index >= 0 : HorizontalLayout { height: 28px; spacing: 6px; Action { label: "In −1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.trim_in_left"); } } Action { label: "In +1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.trim_in_right"); } } }
+                                if root.selected-clip-index >= 0 : Text { text: "Duration · seconds"; color: #9994a8; font-size: 10px; height: 16px; }
+                                if root.selected-clip-index >= 0 : Field { text <=> root.clip-duration; enabled: !root.inspector-locked; }
+                                if root.selected-clip-index >= 0 : HorizontalLayout { height: 28px; spacing: 6px; Action { label: "Out −1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.trim_out_left"); } } Action { label: "Out +1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.trim_out_right"); } } }
+                                if root.selected-clip-index >= 0 : Text { text: "Use seconds or an exact fraction, e.g. 1.5 or 3/2."; color: #6e6b7e; font-size: 10px; wrap: word-wrap; }
+                                if root.selected-clip-index >= 0 : Action { label: "Apply timing"; primary: true; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.apply_timing"); } }
+                                if root.selected-clip-index >= 0 : Text { text: "SOURCE FILE"; color: #a69ac1; font-size: 9px; height: 18px; }
+                                if root.selected-clip-index >= 0 : Text { text: root.inspector-path; color: #8c879c; font-size: 10px; wrap: word-wrap; }
+                                Rectangle { height: 1px; background: #393540; }
+                                Text { text: "SOURCE RANGE"; color: #a69ac1; font-size: 9px; height: 18px; }
+                                if root.compact-mode && root.selected-media != "" : Rectangle { height: 82px; background: #101014; Image { visible: root.has-source-frame; source: root.source-frame; width: parent.width; height: parent.height; image-fit: contain; } }
+                                if root.compact-mode : Rectangle { height: 10px; background: #35303e; Rectangle { x: 0px; y: 2px; width: parent.width * root.source-ratio; height: 6px; background: #9f8bc6; } TouchArea { enabled: root.source-ready; clicked => { root.source-seek(self.mouse-x / self.width); } moved => { if self.pressed { root.source-seek(Math.max(0, Math.min(1, self.mouse-x / self.width))); } } } }
+                                if root.compact-mode : HorizontalLayout { height: 27px; spacing: 6px;
+                                    Text { text: root.source-timecode; color: #a79cb9; font-family: "monospace"; font-size: 10px; vertical-alignment: center; }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    Action { label: "In"; width: 36px; height: 26px; enabled: root.source-ready; clicked => { root.command-invoked("source.mark_in"); } }
+                                    Action { label: "Out"; width: 36px; height: 26px; enabled: root.source-ready; clicked => { root.command-invoked("source.mark_out"); } }
+                                }
+                                Text { text: "In    " + root.source-in-label + "\nOut  " + root.source-out-label; color: #9891ac; font-size: 10px; font-family: "monospace"; height: 32px; }
+                                Action { label: "Append marked source"; enabled: root.source-ready; clicked => { root.command-invoked("source.append"); } }
+                                Text { text: "Edits are validated and saved locally. Original media stays untouched."; color: #6e6b7e; font-size: 10px; wrap: word-wrap; }
+                            } }
+                            if root.inspector-tab == "History" : Rectangle { VerticalLayout { padding: 14px; spacing: 12px;
+                                Text { text: "Every decision. Reversible."; color: #c9bfdd; font-size: 12px; height: 28px; }
+                                HorizontalLayout { height: 29px; spacing: 8px; Action { label: "Undo"; enabled: root.can-undo; clicked => { root.command-invoked("edit.undo"); } } Action { label: "Redo"; enabled: root.can-redo; clicked => { root.command-invoked("edit.redo"); } } }
+                                ScrollView { VerticalLayout { spacing: 4px; for item in root.history-items : Rectangle { height: 35px; background: item.applied ? #2c2836 : #23232b; border-radius: 3px; Text { x: 10px; width: parent.width - 20px; text: (item.applied ? "•  " : "↶  ") + item.label; color: item.applied ? #bdb1d0 : #646174; font-size: 10px; overflow: elide; vertical-alignment: center; } } } }
+                                Text { text: "Session history · up to 50 edits"; color: #6e6b7e; font-size: 9px; height: 18px; }
+                            } }
+                            if root.inspector-tab == "Jobs" : Rectangle { VerticalLayout { padding: 16px; spacing: 14px;
+                                Text { text: "EXPORT"; color: #a69ac1; font-size: 9px; height: 16px; }
+                                Text { text: root.export-status; color: #ded2f2; font-size: 18px; height: 28px; }
+                                Text { text: root.export-output; color: #8c879c; font-size: 10px; wrap: word-wrap; }
+                                Rectangle { height: 4px; background: #34303f; Rectangle { x: 0px; y: 0px; height: parent.height; width: parent.width * Math.max(0, root.export-progress) / 100; background: #a28bd0; } }
+                                Text { text: root.export-error; color: #db9b9f; font-size: 10px; wrap: word-wrap; }
+                                Action { visible: root.export-can-cancel; label: "Cancel export"; clicked => { root.command-invoked("export.cancel"); } }
+                                Action { visible: root.export-can-retry; label: "Retry export"; clicked => { root.command-invoked("export.retry"); } }
+                                Action { label: "Export settings  ↗"; clicked => { root.active-workspace = "EXPORT"; } }
+                                Rectangle { vertical-stretch: 1; }
+                            } }
+                        }
                     }
-                }
-            }
-            Rectangle {
-                width: 245px; background: #202020;
-                VerticalLayout {
-                    spacing: 1px; PanelBar { title: root.active-workspace == "AUDIO" ? "Essential Sound" : "Effect Controls"; detail: "Inspector"; }
-                    Rectangle {
-                        vertical-stretch: 1; background: #242424;
-                        VerticalLayout {
-                            padding: 11px; spacing: 10px;
-                            Text { text: "NO CLIP SELECTED"; color: #747980; font-size: 8px; font-weight: 600; }
-                            Rectangle { height: 1px; background: #3a3a3a; }
-                            Text { text: "Motion"; color: #d3d3d3; font-size: 10px; font-weight: 700; }
-                            Text { text: "Position               960, 540"; color: #a3a6ab; font-size: 9px; }
-                            Text { text: "Scale                       100%"; color: #a3a6ab; font-size: 9px; }
-                            Text { text: "Rotation                     0.0°"; color: #a3a6ab; font-size: 9px; }
-                            Rectangle { height: 1px; background: #3a3a3a; }
-                            Text { text: "Opacity"; color: #d3d3d3; font-size: 10px; font-weight: 700; }
-                            Text { text: "Blend Mode                Normal"; color: #a3a6ab; font-size: 9px; }
+                    Rectangle { width: 40px; background: #24242c;
+                        VerticalLayout { padding: 4px; spacing: 7px;
+                            Action { label: "Pr"; hint: "Clip properties"; active: root.inspector-open && root.inspector-tab == "Properties"; quiet: true; clicked => { root.inspector-tab = "Properties"; root.inspector-open = true; } }
+                            Action { label: "H"; hint: "Edit history"; active: root.inspector-open && root.inspector-tab == "History"; quiet: true; clicked => { root.inspector-tab = "History"; root.inspector-open = true; } }
+                            Action { label: "J"; hint: "Background export jobs"; active: root.inspector-open && root.inspector-tab == "Jobs"; quiet: true; clicked => { root.inspector-tab = "Jobs"; root.inspector-open = true; } }
                             Rectangle { vertical-stretch: 1; }
+                            Action { label: root.inspector-open ? "›" : "‹"; hint: "Toggle inspector panel"; quiet: true; clicked => { root.inspector-open = !root.inspector-open; } }
                         }
                     }
                 }
             }
         }
-
-        // Full-width timeline dominates the lower workspace.
-        Rectangle {
-            vertical-stretch: 1; background: #1b1b1b;
-            VerticalLayout {
-                spacing: 0px;
-                Rectangle {
-                    height: 33px; background: #252525;
-                    HorizontalLayout {
-                        padding-left: 7px; padding-right: 8px; spacing: 2px; alignment: center;
-                        IconButton { icon: "↖"; hint: "Selection Tool (V)"; active: root.active-tool == 0; clicked => { root.active-tool = 0; } }
-                        IconButton { icon: "⇤"; hint: "Track Select"; active: root.active-tool == 1; clicked => { root.active-tool = 1; } }
-                        IconButton { icon: "✂"; hint: "Razor Tool (C)"; active: root.active-tool == 2; clicked => { root.active-tool = 2; } }
-                        IconButton { icon: "↔"; hint: "Rate Stretch"; active: root.active-tool == 3; clicked => { root.active-tool = 3; } }
-                        Rectangle { width: 1px; height: 19px; background: #464646; }
-                        IconButton { icon: "⌁"; hint: "Snapping (S)"; active: root.snapping; clicked => { root.snapping = !root.snapping; } }
-                        Rectangle { horizontal-stretch: 1; }
-                        Text { text: root.clip-count > 0 ? "MAIN SEQUENCE" : "TIMELINE"; color: #c8c8c8; font-size: 9px; font-weight: 700; }
-                        Rectangle { horizontal-stretch: 1; }
-                        Text { text: "−    100%    +"; color: #858a91; font-size: 8px; }
+        if root.active-workspace == "EXPORT" : Rectangle {
+            HorizontalLayout { spacing: 1px;
+                Rectangle { width: 380px; background: #222227;
+                    VerticalLayout { padding: 26px; spacing: 12px;
+                        Text { text: "The finishing touch."; color: #eeeef4; font-size: 25px; height: 40px; }
+                        Text { text: "EXPORT SETTINGS"; color: #92929f; font-size: 10px; height: 20px; }
+                        Text { text: "Output file"; color: #c7c7d2; height: 20px; }
+                        Field { text <=> root.export-output; enabled: !root.export-can-cancel; placeholder-text: "Choose an MP4 destination"; }
+                        Action { label: "Choose destination…"; enabled: !root.export-can-cancel; clicked => { root.command-invoked("export.destination"); } }
+                        Text { text: "FORMAT"; color: #80808e; font-size: 10px; height: 22px; }
+                        Text { text: "H.264 / MP4"; color: #dedee8; font-size: 14px; height: 22px; }
+                        Text { text: "1920 × 1080 · YouTube 1080p preset"; color: #92929f; font-size: 12px; height: 22px; }
+                        Rectangle { height: 1px; background: #3a3a44; }
+                        Text { text: "Exports the first visible video track. Audio mixing and effects rendering are not available in this export path."; color: #9696a4; font-size: 12px; wrap: word-wrap; }
+                        Rectangle { vertical-stretch: 1; }
+                        Action { label: root.export-can-cancel ? "Exporting…" : "Export video  ↗"; primary: true; height: 40px; enabled: root.clip-count > 0 && !root.export-can-cancel; clicked => { root.command-invoked("export.queue"); } }
                     }
                 }
-                Rectangle { height: 23px; background: #202020; Text { x: 132px; text: "00:00:00:00       00:00:10:00       00:00:20:00       00:00:30:00       00:00:40:00       00:00:50:00"; color: #858a91; font-family: "monospace"; font-size: 8px; vertical-alignment: center; } }
-                HorizontalLayout {
-                    spacing: 0px; vertical-stretch: 1;
-                    Rectangle {
-                        width: 122px; background: #232323;
-                        VerticalLayout {
-                            spacing: 1px;
-                            TrackHeader { label: "V2"; locked => { root.command-invoked("timeline.toggle_track_lock"); } hidden => { root.command-invoked("timeline.toggle_track_visibility"); } }
-                            TrackHeader { label: "V1"; locked => { root.command-invoked("timeline.toggle_track_lock"); } hidden => { root.command-invoked("timeline.toggle_track_visibility"); } }
-                            TrackHeader { label: "A1"; audio: true; locked => { root.command-invoked("timeline.toggle_track_lock"); } muted => { root.command-invoked("timeline.toggle_track_mute"); } }
-                            TrackHeader { label: "A2"; audio: true; locked => { root.command-invoked("timeline.toggle_track_lock"); } muted => { root.command-invoked("timeline.toggle_track_mute"); } }
+                Rectangle { horizontal-stretch: 1; background: #19191e;
+                    VerticalLayout { padding: 26px; spacing: 14px;
+                        PanelBar { title: "Output preview"; detail: root.project-name; }
+                        Rectangle { vertical-stretch: 1; background: #0e0e11;
+                            Image { visible: root.has-program-frame; source: root.program-frame; width: parent.width; height: parent.height; image-fit: contain; }
+                            Text { visible: !root.has-program-frame; text: root.has-project ? "Scrub your sequence in Edit to preview a frame" : "Open a project with video to export"; color: #858592; horizontal-alignment: center; vertical-alignment: center; }
                         }
-                    }
-                    Rectangle {
-                        horizontal-stretch: 1; background: #1b1b1b; clip: true;
-                        for row[index] in [0,1,2,3] : Rectangle { y: index * 52px; width: parent.width; height: 51px; background: index < 2 ? #202020 : #1e1e1e; border-color: #343434; border-width: 1px; }
-                        for tick in [0,1,2,3,4,5,6,7,8,9,10,11,12] : Rectangle { x: tick * parent.width / 12; width: 1px; height: parent.height; background: #303030; }
-                        if root.clip-count == 0 : Text { y: 83px; width: parent.width; text: "Import media to create a sequence"; color: #686d74; font-size: 10px; horizontal-alignment: center; }
-                        Rectangle { visible: root.clip-count > 0; x: 6px; y: 56px; width: parent.width * 0.36; height: 43px; background: #315f7c; border-color: #57a0c3; border-width: 1px; border-radius: 2px; Text { x: 8px; text: root.clip-count + " video clip" + (root.clip-count == 1 ? "" : "s"); color: #e5f5ff; font-size: 9px; vertical-alignment: center; } }
-                        Rectangle { visible: root.clip-count > 0; x: 6px; y: 108px; width: parent.width * 0.36; height: 43px; background: #267354; border-color: #4cab7b; border-width: 1px; for peak[index] in [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23] : Rectangle { x: index * parent.width / 24; y: 8px + Math.mod(index * 7, 12) * 1px; width: 1px; height: 27px - Math.mod(index * 11, 17) * 1px; background: #8bd0ae; } }
-                        Rectangle { x: 3px; width: 1px; height: parent.height; background: #49a8df; }
-                        Rectangle { x: 0px; y: parent.height - 12px; width: parent.width; height: 11px; background: #252525; Rectangle { x: 3px; y: 3px; width: parent.width * 0.55; height: 5px; border-radius: 3px; background: #555a61; } }
-                    }
-                    Rectangle {
-                        width: 48px; background: #202020;
-                        Text { y: 5px; width: parent.width; text: "L   R"; color: #8c9198; font-size: 8px; horizontal-alignment: center; }
-                        Meter { x: 8px; y: 22px; height: parent.height - 42px; level: root.playing ? 14 : 7; }
-                        Meter { x: 27px; y: 22px; height: parent.height - 42px; level: root.playing ? 12 : 6; }
-                        Text { y: parent.height - 17px; width: parent.width; text: "-∞"; color: #777c83; font-size: 8px; horizontal-alignment: center; }
+                        Text { text: "EXPORT JOB  /  " + root.export-status; color: #b7acff; font-size: 12px; height: 24px; }
+                        Rectangle { height: 5px; background: #303037; Rectangle { width: parent.width * Math.max(0, root.export-progress) / 100; height: parent.height; background: #a397ff; } }
+                        Text { text: root.export-error; color: #ec9c9c; font-size: 12px; wrap: word-wrap; height: 50px; }
+                        HorizontalLayout { height: 32px; spacing: 10px; Action { visible: root.export-can-cancel; label: "Cancel export"; width: 120px; clicked => { root.command-invoked("export.cancel"); } } Action { visible: root.export-can-retry; label: "Retry"; width: 80px; clicked => { root.command-invoked("export.retry"); } } Action { visible: root.export-can-remove; label: "Clear job"; width: 100px; clicked => { root.command-invoked("export.remove"); } } Rectangle { horizontal-stretch: 1; } }
                     }
                 }
             }
         }
-        Rectangle {
-            height: 27px; background: #202020;
-            HorizontalLayout {
-                padding-left: 9px; padding-right: 9px; spacing: 9px; alignment: center;
-                Text { text: "●  " + root.export-status; color: root.export-status == "FAILED" ? #e06f6f : root.export-status == "READY" || root.export-status == "COMPLETED" ? #69c990 : #e1b15a; font-size: 8px; }
-                Text { text: root.export-error; visible: root.export-error != ""; color: #e06f6f; font-size: 8px; }
-                Rectangle { visible: root.export-progress >= 0; width: 100px; height: 5px; border-radius: 3px; background: #101010; Rectangle { width: parent.width * root.export-progress / 100; height: parent.height; border-radius: 3px; background: #4d9d70; } }
-                Button { text: "Cancel"; visible: root.export-can-cancel; clicked => { root.command-invoked("export.cancel"); } }
-                Button { text: "Retry"; visible: root.export-can-retry; clicked => { root.command-invoked("export.retry"); } }
-                Button { text: "Clear"; visible: root.export-can-remove; clicked => { root.command-invoked("export.remove"); } }
-                Rectangle { horizontal-stretch: 1; }
-                Text { text: root.has-project ? root.project-summary : "No project loaded"; color: #7f848b; font-size: 8px; }
+        Rectangle { height: root.feedback == "" ? 30px : 48px; background: #242429;
+            HorizontalLayout { padding-left: 16px; padding-right: 16px; spacing: 16px; padding-top: 8px; padding-bottom: 8px;
+                Text { vertical-alignment: center; text: "●"; color: root.export-can-cancel ? #d9b876 : #8dc9ad; font-size: 9px; }
+                Text { text: root.feedback == "" ? root.project-summary : root.feedback; color: root.feedback == "" ? #92929f : #d0c6ef; font-size: 11px; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+                Action { visible: root.feedback != ""; label: "Dismiss"; width: 68px; height: 25px; clicked => { root.feedback = ""; } }
+                Text { text: "PRISM STUDIO"; color: #686878; font-size: 9px; font-weight: 600; vertical-alignment: center; }
             }
         }
+    }
     }
 }

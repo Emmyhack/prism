@@ -1,0 +1,82 @@
+# Native editing workspace
+
+Launch with `cargo run -p prism-studio`, or pass `-- --open-project ./edit.prism`.
+FFmpeg and FFprobe must be on PATH for video import, previews, and export.
+
+The interface interprets the supplied Premiere Pro references through four workspaces:
+Home for project entry, Import for footage selection, Edit for paired monitors and
+an editable timeline, and Export for destination settings and job feedback. Prism
+retains its supplied ribbon logo, with graphite surfaces and violet selection cues.
+The desktop minimum is 1100 × 720; drag the divider below the monitors to resize.
+Editing and Assembly presets change the source-monitor/media-bin allocation.
+Below 1250px, Source moves into the inspector and Program takes the available
+monitor width. The right rail opens Properties, History or Jobs; Inspector collapses
+that region, and Reset layout restores the session defaults.
+
+## Supported interactions
+
+- Create/open a local project; save with the header button or Ctrl/Cmd+S.
+- Import one or more videos with native file dialogs (Ctrl/Cmd+I). Imports append
+  clips to the first unlocked video track, creating a sequence/track if required.
+  New projects prompt for a save destination. Cancellation leaves the project intact.
+- Browse real background-generated thumbnails in Import and the project media bin.
+  Filter filenames without changing source identities. Failed previews retain an
+  explicit unavailable state. The Media/Info tabs separate assets from project details.
+- Select footage to inspect it independently of the sequence playhead. Scrub the
+  Source bar, mark In/Out, and append the marked range to an unlocked video track.
+  Mark Out includes the current 30 fps frame, clamped to the source duration.
+  Compact windows expose these same controls inside Properties.
+- Click/drag the timeline or a clip to scrub. Left/right arrows and monitor buttons
+  step at a fixed 30 fps preview/edit grid. Time labels use non-drop 30 fps display;
+  source timestamps and stored edits remain rational. The export preset retains its
+  independent 30000/1001 fps setting.
+- Play/Pause (or Spacebar) advances the sequence clock and requests current video
+  frames through the bounded preview worker. Newer requests supersede queued stale
+  frames. When an unmuted audio clip is active, Prism starts `ffplay` at the matching
+  source offset and terminates it on pause or seek.
+- Select a clip and split at the playhead (Ctrl/Cmd+K), or delete (Delete key).
+  The validated command engine rejects splits at clip edges and edits to locked tracks.
+- Use Properties to change sequence start, source In, and duration in exact seconds.
+  Values accept decimals (up to six decimal places) or rational fractions. Invalid,
+  overlapping, locked-track, and out-of-source edits are rejected before persistence.
+- Move and trim a selected clip one frame at a time from Properties. These operations
+  use the same validated command engine, atomic save, and undo/redo history as typed
+  timing edits.
+- Undo with Ctrl/Cmd+Z, redo with Ctrl/Cmd+Shift+Z. History shows up to 50 session
+  transactions. New edits clear redo; project changes/import reset the history boundary.
+- Zoom the timeline from 1× through 8× and pan using its bottom navigation bar.
+  V selects/scrubs; C activates a Razor that splits at the clicked frame.
+- Toggle inset framing guides in Program with Safe. These are panel-relative guides,
+  rather than a calibrated title-safe overlay on the media aspect rectangle.
+- Lock/unlock, show/hide, or mute/unmute the actual selected track row. Track headers
+  and clips scroll together. Video preview follows the first visible video track.
+- Choose an output MP4 destination, export, cancel, retry failures, and clear a
+  terminal job. Export uses the existing YouTube 1080p single-video-track worker.
+
+Timeline/track edits save a candidate project atomically before publishing the
+new state to the interface. Original media stays untouched. Undo/redo also persists before
+publishing the restored state, and a failed save restores the history entry. Frame requests run in background workers with bounded queues;
+new scrubs replace pending work and stale replies cannot overwrite newer frames.
+Decoder failures appear in the feedback bar instead of leaving a fake preview.
+
+## Current limits
+
+This is a functional desktop foundation, not a completed production editor.
+Low-latency library-backed audiovisual playback, audio mixing, effects controls/rendering,
+arbitrary docking layouts, saved custom workspace layouts, and export preset selection are not provided
+by this interface. The UI deliberately omits simulated waveforms, meters, and
+unsupported workspace controls. Export uses synchronized video/audio when an
+unmuted audio track is present, falls back to video-only otherwise, and refuses
+existing output files through the existing export implementation.
+
+## Verification
+
+`cargo test -p prism-studio --all-targets` covers the shell and native adapter,
+including locked-track rejection, saved split/delete/timing edits, undo/redo, failed
+history-save recovery, marked-source append, independent source/sequence playheads,
+exact timing parsing, filtered media identities, and software rendering at 1440 × 900
+and 1100 × 720. Rendering covers all four workflow screens plus History, Jobs,
+Assembly, collapsed-inspector, and zoomed variants.
+Set `PRISM_TEST_FFMPEG=1` to additionally assert real source/program fixture decoding and thumbnail generation.
+Set `PRISM_UI_SNAPSHOTS=/tmp/prism-ui-snapshots` to export PPM render artifacts for
+visual inspection. This does not require a live desktop or screen capture permission.
