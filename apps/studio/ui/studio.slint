@@ -126,6 +126,7 @@ export component PrismStudio inherits Window {
     pure callback media-matches(string, string) -> bool;
     callback media-selected(int);
     callback clip-selected(int);
+    callback clip-adjusted(int, float, string);
     callback seek(float);
     callback track-action(int, string);
 
@@ -404,7 +405,9 @@ export component PrismStudio inherits Window {
                                                         Rectangle { x: 0px; y: 0px; width: parent.width; height: 17px; background: #ffffff0a; }
                                                         Text { x: 6px; y: 5px; width: parent.width - 12px; text: clip.name; color: #e8dff3; font-size: 9px; overflow: elide; }
                                                         Text { x: 6px; y: 32px; text: clip.audio ? "AUDIO" : "VIDEO"; color: #c1afd6; font-size: 7px; }
-                                                        TouchArea { clicked => { keyboard.focus(); root.selected-clip-index = index; root.clip-selected(index); root.seek(clip.start-ratio + Math.max(0, Math.min(1, self.mouse-x / self.width)) * clip.width-ratio); if root.active-tool == "C" { root.command-invoked("timeline.split"); } } moved => { if self.pressed && root.active-tool == "V" { root.seek(clip.start-ratio + Math.max(0, Math.min(1, self.mouse-x / self.width)) * clip.width-ratio); } } }
+                                                        clip-drag := TouchArea { x: 7px; width: parent.width - 14px; clicked => { keyboard.focus(); root.selected-clip-index = index; root.clip-selected(index); root.seek(clip.start-ratio + Math.max(0, Math.min(1, self.mouse-x / self.width)) * clip.width-ratio); if root.active-tool == "C" { root.command-invoked("timeline.split"); } } pointer-event(event) => { if event.kind == PointerEventKind.up && root.active-tool == "V" && Math.abs(self.mouse-x - self.pressed-x) > 3px { root.clip-adjusted(index, (self.mouse-x - self.pressed-x) / self.width * clip.width-ratio, "move"); } } }
+                                                        TouchArea { width: 7px; mouse-cursor: ew-resize; pointer-event(event) => { if event.kind == PointerEventKind.up && Math.abs(self.mouse-x - self.pressed-x) > 2px { root.clip-adjusted(index, (self.mouse-x - self.pressed-x) / parent.width * clip.width-ratio, "in"); } } }
+                                                        TouchArea { x: parent.width - 7px; width: 7px; mouse-cursor: ew-resize; pointer-event(event) => { if event.kind == PointerEventKind.up && Math.abs(self.mouse-x - self.pressed-x) > 2px { root.clip-adjusted(index, (self.mouse-x - self.pressed-x) / parent.width * clip.width-ratio, "out"); } } }
                                                     }
                                                     Rectangle { x: (root.playhead-ratio - root.timeline-offset) * root.timeline-zoom * (parent.width - 1px); y: 0px; width: 1px; height: parent.height; background: #c4b3f8; }
                                                     Rectangle { x: (root.playhead-ratio - root.timeline-offset) * root.timeline-zoom * (parent.width - 1px) - 3px; y: 0px; width: 7px; height: 9px; background: #c4b3f8; }

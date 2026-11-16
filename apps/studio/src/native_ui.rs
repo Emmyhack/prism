@@ -1280,6 +1280,101 @@ impl NativeExportRuntime {
         Ok(())
     }
 
+    fn drag_clip(
+        &self,
+        ui: &PrismStudio,
+        index: i32,
+        delta_ratio: f32,
+        edge: &str,
+    ) -> Result<(), String> {
+        if !delta_ratio.is_finite() {
+            return Err("Invalid timeline drag".to_owned());
+        }
+        ui.set_selected_clip_index(index);
+        self.update_inspector(ui);
+        let sequence_duration = self
+            .project
+            .borrow()
+            .as_ref()
+            .and_then(|project| project.sequences.values().next()?.duration().ok())
+            .ok_or_else(|| "No sequence available".to_owned())?;
+        #[allow(clippy::cast_possible_truncation)]
+        let frames =
+            (sequence_duration.as_seconds_f64() * f64::from(delta_ratio) * 30.0).round() as i64;
+        if frames == 0 {
+            return Ok(());
+        }
+        let delta = RationalTime::new(frames, 30).map_err(|error| error.to_string())?;
+        if edge == "move" {
+            let current = parse_timing(ui.get_clip_start().as_str())?;
+            let target = current
+                .checked_add(delta)
+                .map_err(|error| error.to_string())?;
+            if target.is_negative() {
+                return Err("A clip cannot move before sequence start".to_owned());
+            }
+            let command = {
+                let project = self.project.borrow();
+                let sequence = project
+                    .as_ref()
+                    .and_then(|project| project.sequences.values().next())
+                    .ok_or_else(|| "No sequence available".to_owned())?;
+                let (track, clip) = sequence
+                    .tracks
+                    .iter()
+                    .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
+                    .nth(usize::try_from(index).map_err(|_| "Select a clip first".to_owned())?)
+                    .ok_or_else(|| "Selected clip unavailable".to_owned())?;
+                Command::MoveClip {
+                    sequence_id: sequence.id,
+                    track_id: track.id,
+                    clip_id: clip.id,
+                    timeline_start: target,
+                }
+            };
+            return self.commit(ui, command, "Drag clip");
+        }
+
+        let original_start = ui.get_clip_start();
+        let original_source = ui.get_clip_source_in();
+        let original_duration = ui.get_clip_duration();
+        let mut start = parse_timing(original_start.as_str())?;
+        let mut source = parse_timing(original_source.as_str())?;
+        let mut duration = parse_timing(original_duration.as_str())?;
+        match edge {
+            "in" => {
+                start = start
+                    .checked_add(delta)
+                    .map_err(|error| error.to_string())?;
+                source = source
+                    .checked_add(delta)
+                    .map_err(|error| error.to_string())?;
+                duration = duration
+                    .checked_sub(delta)
+                    .map_err(|error| error.to_string())?;
+            }
+            "out" => {
+                duration = duration
+                    .checked_add(delta)
+                    .map_err(|error| error.to_string())?;
+            }
+            _ => return Err("Unknown timeline drag edge".to_owned()),
+        }
+        if start.is_negative() || source.is_negative() || !duration.is_positive() {
+            return Err("The drag would create an invalid clip range".to_owned());
+        }
+        ui.set_clip_start(timing_text(start));
+        ui.set_clip_source_in(timing_text(source));
+        ui.set_clip_duration(timing_text(duration));
+        if let Err(error) = self.apply_timing(ui) {
+            ui.set_clip_start(original_start);
+            ui.set_clip_source_in(original_source);
+            ui.set_clip_duration(original_duration);
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn update_ruler(&self, ui: &PrismStudio) {
         let duration = self
             .project
@@ -1838,6 +1933,15 @@ fn bind_editor_callbacks(ui: &PrismStudio, runtime: &Rc<NativeExportRuntime>) {
     });
     let weak = ui.as_weak();
     let handler = Rc::clone(runtime);
+    ui.on_clip_adjusted(move |index, delta, edge| {
+        if let Some(ui) = weak.upgrade() {
+            if let Err(error) = handler.drag_clip(&ui, index, delta, edge.as_str()) {
+                ui.set_feedback(error.into());
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    let handler = Rc::clone(runtime);
     ui.on_seek(move |ratio| {
         if let Some(ui) = weak.upgrade() {
             handler.seek_ratio(&ui, ratio);
@@ -2201,6 +2305,13 @@ mod tests {
         ui.set_selected_clip_index(0);
         runtime.update_inspector(&ui);
         runtime.adjust_clip_frame(&ui, "timeline.trim_out_left")?;
+        assert_eq!(ui.get_clip_duration(), "29/30");
+        runtime.apply_history(&ui, false)?;
+
+        runtime.drag_clip(&ui, 0, 1.0 / 30.0, "move")?;
+        assert_eq!(ui.get_clip_start(), "1/30");
+        runtime.apply_history(&ui, false)?;
+        runtime.drag_clip(&ui, 0, -1.0 / 30.0, "out")?;
         assert_eq!(ui.get_clip_duration(), "29/30");
         runtime.apply_history(&ui, false)?;
 

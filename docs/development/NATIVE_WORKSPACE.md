@@ -42,6 +42,9 @@ that region, and Reset layout restores the session defaults.
 - Move and trim a selected clip one frame at a time from Properties. These operations
   use the same validated command engine, atomic save, and undo/redo history as typed
   timing edits.
+- Drag a clip body to move it, or drag its left/right edge handles to trim. Pointer
+  distances are quantized to the 30 fps edit grid before the validated command is
+  committed; rejected overlaps or source ranges leave the project unchanged.
 - Undo with Ctrl/Cmd+Z, redo with Ctrl/Cmd+Shift+Z. History shows up to 50 session
   transactions. New edits clear redo; project changes/import reset the history boundary.
 - Zoom the timeline from 1× through 8× and pan using its bottom navigation bar.
