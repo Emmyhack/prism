@@ -347,6 +347,7 @@ struct NativeExportRuntime {
     thumbnail_queue: RefCell<VecDeque<(usize, PathBuf)>>,
     thumbnail_current: Cell<Option<usize>>,
     cards: RefCell<Vec<MediaCard>>,
+    use_proxy: Cell<bool>,
 }
 
 impl NativeExportRuntime {
@@ -373,6 +374,7 @@ impl NativeExportRuntime {
             thumbnail_queue: RefCell::new(VecDeque::new()),
             thumbnail_current: Cell::new(None),
             cards: RefCell::new(Vec::new()),
+            use_proxy: Cell::new(false),
         }
     }
 
@@ -389,6 +391,15 @@ impl NativeExportRuntime {
             | "timeline.trim_out_left"
             | "timeline.trim_out_right" => self.adjust_clip_frame(ui, command),
             "source.append" => self.append_source(ui),
+            "media.assign_proxy" => self.assign_proxy(ui),
+            "media.clear_proxy" => self.clear_proxy(ui),
+            "media.toggle_proxy" => {
+                self.use_proxy.set(!self.use_proxy.get());
+                ui.set_proxy_active(self.use_proxy.get());
+                self.select_media(ui, ui.get_selected_media_index());
+                self.seek_time(ui, self.playhead.get());
+                Ok(())
+            }
             "source.mark_in" | "source.mark_out" => {
                 if !ui.get_source_ready() {
                     return Err("Select an available source first".to_owned());
@@ -647,6 +658,9 @@ impl NativeExportRuntime {
         self.reset_thumbnails(ui);
         ui.set_inspector_name("".into());
         ui.set_inspector_path("".into());
+        ui.set_selected_proxy("".into());
+        self.use_proxy.set(false);
+        ui.set_proxy_active(false);
         ui.set_inspector_locked(false);
         ui.set_selected_clip_index(-1);
         ui.set_selected_media_index(-1);
@@ -682,8 +696,18 @@ impl NativeExportRuntime {
         self.update_source_labels(ui);
         ui.set_has_source_frame(false);
         ui.set_source_detail(asset.source_path.clone().into());
+        ui.set_selected_proxy(asset.proxy_path.clone().unwrap_or_default().into());
+        if asset.proxy_path.is_none() {
+            self.use_proxy.set(false);
+            ui.set_proxy_active(false);
+        }
+        let preview_path = if self.use_proxy.get() {
+            asset.proxy_path.as_deref().unwrap_or(&asset.source_path)
+        } else {
+            &asset.source_path
+        };
         self.source_preview
-            .request(PathBuf::from(&asset.source_path), RationalTime::ZERO);
+            .request(PathBuf::from(preview_path), RationalTime::ZERO);
     }
 
     fn select_clip(&self, ui: &PrismStudio, index: i32) {
@@ -765,7 +789,12 @@ impl NativeExportRuntime {
                         .ok()?
                         .checked_add(clip.source_start)
                         .ok()?;
-                    Some((PathBuf::from(&asset.source_path), source_time))
+                    let path = if self.use_proxy.get() {
+                        asset.proxy_path.as_deref().unwrap_or(&asset.source_path)
+                    } else {
+                        &asset.source_path
+                    };
+                    Some((PathBuf::from(path), source_time))
                 })
         });
         if let Some((path, time)) = target {
@@ -841,6 +870,61 @@ impl NativeExportRuntime {
 
     fn commit(&self, ui: &PrismStudio, command: Command, label: &str) -> Result<(), String> {
         self.commit_commands(ui, vec![command], label)
+    }
+
+    fn selected_media_id(&self, ui: &PrismStudio) -> Result<MediaAssetId, String> {
+        self.project
+            .borrow()
+            .as_ref()
+            .and_then(|project| {
+                project
+                    .media
+                    .keys()
+                    .nth(usize::try_from(ui.get_selected_media_index()).ok()?)
+                    .copied()
+            })
+            .ok_or_else(|| "Select media first".to_owned())
+    }
+
+    fn assign_proxy(&self, ui: &PrismStudio) -> Result<(), String> {
+        let media_id = self.selected_media_id(ui)?;
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Assign Proxy Media")
+            .add_filter("Video", &["mp4", "mov", "m4v", "mkv", "webm"])
+            .pick_file()
+        else {
+            return Ok(());
+        };
+        let index = ui.get_selected_media_index();
+        self.commit(
+            ui,
+            Command::SetMediaProxy {
+                media_id,
+                proxy_path: Some(path.display().to_string()),
+            },
+            "Assign media proxy",
+        )?;
+        self.use_proxy.set(true);
+        ui.set_proxy_active(true);
+        self.select_media(ui, index);
+        Ok(())
+    }
+
+    fn clear_proxy(&self, ui: &PrismStudio) -> Result<(), String> {
+        let media_id = self.selected_media_id(ui)?;
+        let index = ui.get_selected_media_index();
+        self.commit(
+            ui,
+            Command::SetMediaProxy {
+                media_id,
+                proxy_path: None,
+            },
+            "Clear media proxy",
+        )?;
+        self.use_proxy.set(false);
+        ui.set_proxy_active(false);
+        self.select_media(ui, index);
+        Ok(())
     }
 
     fn commit_commands(
@@ -1995,6 +2079,7 @@ pub fn launch(project_path: Option<PathBuf>) -> Result<(), NativeUiError> {
 #[cfg(test)]
 mod tests {
     use super::{NativeExportStatus, insert_media_into_project, insert_video_into_project};
+    use prism_commands::Command;
     use prism_project::Project;
     use prism_studio::desktop::ExportController;
     use prism_timeline::RationalTime;
@@ -2348,6 +2433,28 @@ mod tests {
         );
         runtime.apply_history(&ui, false)?;
         assert_eq!(ui.get_timeline_clips().row_count(), 1);
+
+        let media_id = runtime
+            .project
+            .borrow()
+            .as_ref()
+            .and_then(|project| project.media.keys().next().copied())
+            .ok_or("missing media")?;
+        runtime.commit(
+            &ui,
+            Command::SetMediaProxy {
+                media_id,
+                proxy_path: Some("proxy-preview.mp4".to_owned()),
+            },
+            "Assign test proxy",
+        )?;
+        runtime.select_media(&ui, 0);
+        assert_eq!(ui.get_selected_proxy(), "proxy-preview.mp4");
+        runtime.handle("media.toggle_proxy", &ui)?;
+        assert!(ui.get_proxy_active());
+        runtime.clear_proxy(&ui)?;
+        assert_eq!(ui.get_selected_proxy(), "");
+        assert!(!ui.get_proxy_active());
         std::fs::remove_file(path)?;
         ui.hide()?;
         Ok(())

@@ -22,6 +22,8 @@ that region, and Reset layout restores the session defaults.
 - Browse real background-generated thumbnails in Import and the project media bin.
   Filter filenames without changing source identities. Failed previews retain an
   explicit unavailable state. The Media/Info tabs separate assets from project details.
+- Assign or clear a proxy for selected media from Properties, and switch monitor
+  decoding between the original and persisted proxy without changing media identity.
 - Select footage to inspect it independently of the sequence playhead. Scrub the
   Source bar, mark In/Out, and append the marked range to an unlocked video track.
   Mark Out includes the current 30 fps frame, clamped to the source duration.
@@ -65,7 +67,7 @@ Decoder failures appear in the feedback bar instead of leaving a fake preview.
 ## Current limits
 
 This is a functional desktop foundation, not a completed production editor.
-Low-latency library-backed audiovisual playback, audio mixing, effects controls/rendering,
+Automatic proxy generation, low-latency library-backed audiovisual playback, audio mixing, effects controls/rendering,
 arbitrary docking layouts, saved custom workspace layouts, and export preset selection are not provided
 by this interface. The UI deliberately omits simulated waveforms, meters, and
 unsupported workspace controls. Export uses synchronized video/audio when an
