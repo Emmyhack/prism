@@ -57,6 +57,9 @@ that region, and Reset layout restores the session defaults.
   Space plays, arrows step frames, comma inserts the marked source range, Backspace
   ripple-deletes, S toggles snapping, M adds a marker, and the platform primary
   modifier drives undo/redo. The timeline header shows the active tool and snap state.
+- Sequence markers render as amber flags in the ruler. Clicking a flag selects it and
+  seeks the playhead; ×M deletes the selected marker through the same persisted,
+  undoable command path.
 - Play/Pause (or Spacebar) advances the sequence clock and requests current video
   frames through the bounded preview worker. Newer requests supersede queued stale
   frames. When an unmuted audio clip is active, Prism starts `ffplay` at the matching

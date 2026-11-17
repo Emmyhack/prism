@@ -3,6 +3,7 @@ import { ScrollView } from "std-widgets.slint";
 export struct TimelineClipItem {
     name: string, start-ratio: float, width-ratio: float, row: int, audio: bool,
 }
+export struct TimelineMarkerItem { label: string, ratio: float }
 export struct MediaCard { index: int, name: string, frame: image, has-frame: bool, status: string }
 export struct HistoryItem { label: string, applied: bool }
 export struct TrackItem { name: string, audio: bool, locked: bool, muted: bool, visible: bool }
@@ -73,6 +74,8 @@ export component PrismStudio inherits Window {
     in property <string> timecode: "00:00:00:00";
     in property <string> duration-label: "00:00:00:00";
     in property <[string]> ruler-labels;
+    in property <[TimelineMarkerItem]> timeline-markers;
+    in-out property <int> selected-marker-index: -1;
     in-out property <string> export-status: "READY";
     in-out property <string> export-output: "Untitled Export.mp4";
     in-out property <string> export-error: "";
@@ -402,6 +405,7 @@ export component PrismStudio inherits Window {
                                             Text { text: root.active-tool + "  /  SNAP " + (root.snap-enabled ? "ON" : "OFF"); color: root.snap-enabled ? #7fb99b : #777384; font-size: 9px; vertical-alignment: center; }
                                             Rectangle { horizontal-stretch: 1; }
                                             Action { width: 28px; height: 26px; label: "M"; hint: "Add marker · M"; quiet: true; clicked => { root.command-invoked("timeline.add_marker"); } }
+                                            Action { width: 28px; height: 26px; label: "×M"; hint: "Delete selected marker"; enabled: root.selected-marker-index >= 0; quiet: true; clicked => { root.command-invoked("timeline.delete_marker"); } }
                                             Action { width: 38px; height: 26px; label: "Snap"; hint: "Toggle snapping · S"; active: root.snap-enabled; quiet: true; clicked => { root.command-invoked("timeline.toggle_snap"); } }
                                             Action { width: 42px; height: 26px; label: "Split"; quiet: true; enabled: root.selected-clip-index >= 0 && !root.inspector-locked; clicked => { root.command-invoked("timeline.split"); } }
                                             Action { width: 48px; height: 26px; label: "Delete"; quiet: true; enabled: root.selected-clip-index >= 0 && !root.inspector-locked; clicked => { root.command-invoked("timeline.delete"); } }
@@ -425,6 +429,11 @@ export component PrismStudio inherits Window {
                                                 Rectangle { horizontal-stretch: 1; background: #1c1c23; clip: true;
                                                     Rectangle { x: 0px; y: 0px; width: parent.width; height: 28px; background: #292931;
                                                         for label[index] in root.ruler-labels : Text { visible: parent.width >= 600px || index == 0 || index == 2 || index == 5; x: Math.min(index * parent.width / 5 + 4px, parent.width - 56px); text: label; color: #8a879b; font-size: 8px; font-family: "monospace"; vertical-alignment: center; }
+                                                        for marker[index] in root.timeline-markers : Rectangle { visible: marker.ratio >= root.timeline-offset && marker.ratio <= root.timeline-offset + 1 / root.timeline-zoom; x: (marker.ratio - root.timeline-offset) * root.timeline-zoom * (parent.width - 8px); y: 1px; width: 8px; height: 26px; background: transparent;
+                                                            Rectangle { x: 1px; y: 1px; width: 7px; height: 7px; border-radius: 1px; background: root.selected-marker-index == index ? #f0cf78 : #d39b58; }
+                                                            Rectangle { x: 3px; y: 7px; width: 1px; height: 18px; background: root.selected-marker-index == index ? #f0cf78 : #a97946; }
+                                                            TouchArea { clicked => { keyboard.focus(); root.selected-marker-index = index; root.seek(marker.ratio); } }
+                                                        }
                                                     }
                                                     for track[index] in root.tracks : Rectangle { y: 28px + index * 60px; width: parent.width; height: 59px; background: track.audio ? #202827 : #22222b; border-width: 1px; border-color: #30303a; }
                                                     for tick in [0,1,2,3,4,5] : Rectangle { x: tick * (parent.width - 1px) / 5; y: 28px; width: 1px; height: parent.height - 28px; background: #30303a; }

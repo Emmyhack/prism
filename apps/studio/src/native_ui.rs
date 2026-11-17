@@ -523,6 +523,7 @@ impl NativeExportRuntime {
             "timeline.split" | "timeline.delete" => self.edit_clip(command, ui),
             "timeline.ripple_delete" => self.edit_clip(command, ui),
             "timeline.add_marker" => self.add_marker(ui),
+            "timeline.delete_marker" => self.delete_marker(ui),
             "timeline.toggle_snap" => {
                 ui.set_snap_enabled(!ui.get_snap_enabled());
                 ui.set_feedback(
@@ -1397,6 +1398,33 @@ impl NativeExportRuntime {
             },
             "Add timeline marker",
         )
+    }
+
+    fn delete_marker(&self, ui: &PrismStudio) -> Result<(), String> {
+        let index = usize::try_from(ui.get_selected_marker_index())
+            .map_err(|_| "Select a marker first".to_owned())?;
+        let (sequence_id, marker_id) = self
+            .project
+            .borrow()
+            .as_ref()
+            .and_then(|project| project.sequences.values().next())
+            .and_then(|sequence| {
+                sequence
+                    .markers
+                    .get(index)
+                    .map(|marker| (sequence.id, marker.id))
+            })
+            .ok_or_else(|| "Selected marker is unavailable".to_owned())?;
+        self.commit(
+            ui,
+            Command::DeleteMarker {
+                sequence_id,
+                marker_id,
+            },
+            "Delete timeline marker",
+        )?;
+        ui.set_selected_marker_index(-1);
+        Ok(())
     }
 
     fn change_track(&self, ui: &PrismStudio, index: i32, action: &str) -> Result<(), String> {
@@ -2527,6 +2555,24 @@ fn apply_project_summary(ui: &PrismStudio, project: &Project, project_path: &Pat
     let duration = sequence
         .and_then(|s| s.duration().ok())
         .unwrap_or(RationalTime::ZERO);
+    let marker_items = sequence
+        .map(|sequence| {
+            sequence
+                .markers
+                .iter()
+                .map(|marker| TimelineMarkerItem {
+                    label: marker.label.clone().into(),
+                    ratio: if duration.is_positive() {
+                        (marker.time.as_seconds_f64() / duration.as_seconds_f64()) as f32
+                    } else {
+                        0.0
+                    },
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    ui.set_timeline_markers(slint::ModelRc::new(slint::VecModel::from(marker_items)));
+    ui.set_selected_marker_index(-1);
     ui.set_duration_label(display_timecode(duration).into());
     let labels = (0..6)
         .map(|index| {
@@ -2860,7 +2906,14 @@ mod tests {
                 .map(|sequence| sequence.markers.len()),
             Some(1)
         );
+        assert_eq!(ui.get_timeline_markers().row_count(), 1);
+        ui.set_selected_marker_index(0);
+        runtime.delete_marker(&ui)?;
+        assert_eq!(ui.get_timeline_markers().row_count(), 0);
         runtime.apply_history(&ui, false)?;
+        assert_eq!(ui.get_timeline_markers().row_count(), 1);
+        runtime.apply_history(&ui, false)?;
+        assert_eq!(ui.get_timeline_markers().row_count(), 0);
         assert_eq!(ui.get_tracks().row_count(), 1);
         assert_eq!(ui.get_timeline_clips().row_count(), 1);
         assert_eq!(ui.get_duration_label(), "00:00:02:00");
