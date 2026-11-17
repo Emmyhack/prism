@@ -111,6 +111,7 @@ export component PrismStudio inherits Window {
     in property <string> inspector-track: "";
     in property <string> inspector-path: "";
     in property <string> selected-proxy: "";
+    in property <string> proxy-status: "MISSING";
     in-out property <bool> proxy-active: false;
     in-out property <bool> proxy-generating: false;
     in property <bool> inspector-locked: false;
@@ -451,9 +452,10 @@ export component PrismStudio inherits Window {
                                 if root.selected-clip-index >= 0 : Text { text: root.inspector-path; color: #8c879c; font-size: 10px; wrap: word-wrap; }
                                 if root.selected-media-index >= 0 : Text { text: "PROXY"; color: #a69ac1; font-size: 9px; height: 18px; }
                                 if root.selected-media-index >= 0 : Text { text: root.selected-proxy == "" ? "No proxy assigned" : root.selected-proxy; color: #8c879c; font-size: 10px; wrap: word-wrap; }
+                                if root.selected-media-index >= 0 : Text { text: "STATUS  " + root.proxy-status; color: root.proxy-status == "AVAILABLE" ? #79b89d : root.proxy-status == "STALE" ? #d0a85c : #9a8490; font-size: 9px; height: 16px; }
                                 if root.selected-media-index >= 0 : HorizontalLayout { height: 30px; spacing: 6px; Action { label: "Assign"; height: 28px; clicked => { root.command-invoked("media.assign_proxy"); } } Action { label: "Clear"; height: 28px; enabled: root.selected-proxy != ""; clicked => { root.command-invoked("media.clear_proxy"); } } }
-                                if root.selected-media-index >= 0 : Action { label: root.proxy-generating ? "Cancel proxy generation" : "Generate 540p proxy"; enabled: root.selected-proxy == "" || root.proxy-generating; clicked => { root.command-invoked(root.proxy-generating ? "media.cancel_proxy" : "media.generate_proxy"); } }
-                                if root.selected-media-index >= 0 : Action { label: root.proxy-active ? "Using proxy" : "Use original"; active: root.proxy-active; enabled: root.selected-proxy != ""; clicked => { root.command-invoked("media.toggle_proxy"); } }
+                                if root.selected-media-index >= 0 : Action { label: root.proxy-generating ? "Cancel proxy generation" : root.selected-proxy == "" ? "Generate 540p proxy" : root.proxy-status == "AVAILABLE" ? "Proxy is current" : "Regenerate proxy"; enabled: root.proxy-generating || root.proxy-status != "AVAILABLE"; clicked => { root.command-invoked(root.proxy-generating ? "media.cancel_proxy" : root.selected-proxy == "" ? "media.generate_proxy" : "media.regenerate_proxy"); } }
+                                if root.selected-media-index >= 0 : Action { label: root.proxy-active ? "Using proxy" : "Use original"; active: root.proxy-active; enabled: root.proxy-status == "AVAILABLE"; clicked => { root.command-invoked("media.toggle_proxy"); } }
                                 Rectangle { height: 1px; background: #393540; }
                                 Text { text: "SOURCE RANGE"; color: #a69ac1; font-size: 9px; height: 18px; }
                                 if root.compact-mode && root.selected-media != "" : Rectangle { height: 82px; background: #101014; Image { visible: root.has-source-frame; source: root.source-frame; width: parent.width; height: parent.height; image-fit: contain; } }

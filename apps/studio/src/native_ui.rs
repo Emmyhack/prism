@@ -27,6 +27,59 @@ use thiserror::Error;
 
 slint::include_modules!();
 
+const PROXY_AVAILABLE: &str = "AVAILABLE";
+const PROXY_MISSING: &str = "MISSING";
+const PROXY_STALE: &str = "STALE";
+
+fn proxy_status(source: &Path, proxy: Option<&Path>) -> &'static str {
+    let Some(proxy) = proxy else {
+        return PROXY_MISSING;
+    };
+    if !proxy.is_file() {
+        return PROXY_MISSING;
+    }
+    let Ok(source_modified) = std::fs::metadata(source).and_then(|metadata| metadata.modified())
+    else {
+        return PROXY_STALE;
+    };
+    let Ok(proxy_modified) = std::fs::metadata(proxy).and_then(|metadata| metadata.modified())
+    else {
+        return PROXY_STALE;
+    };
+    if proxy_modified < source_modified {
+        PROXY_STALE
+    } else {
+        PROXY_AVAILABLE
+    }
+}
+
+fn next_proxy_version(base: &Path) -> Result<PathBuf, String> {
+    let parent = base
+        .parent()
+        .ok_or_else(|| "Proxy destination has no parent directory".to_owned())?;
+    let stem = base
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Prism.proxy");
+    let (stem, first_version) = stem
+        .rsplit_once(".v")
+        .and_then(|(root, version)| {
+            version
+                .parse::<u32>()
+                .ok()
+                .map(|version| (root, version + 1))
+        })
+        .unwrap_or((stem, 2));
+    for version in first_version..=9_999 {
+        let candidate = parent.join(format!("{stem}.v{version}.mp4"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("No available versioned proxy filename was found".to_owned())
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct NativeExportStatus {
     label: &'static str,
@@ -410,6 +463,7 @@ impl NativeExportRuntime {
             "media.assign_proxy" => self.assign_proxy(ui),
             "media.clear_proxy" => self.clear_proxy(ui),
             "media.generate_proxy" => self.generate_proxy(ui),
+            "media.regenerate_proxy" => self.regenerate_proxy(ui),
             "media.cancel_proxy" => {
                 if let Some(generation) = self.proxy_generation.borrow().as_ref() {
                     generation.cancelled.store(true, Ordering::Release);
@@ -688,6 +742,7 @@ impl NativeExportRuntime {
         ui.set_inspector_name("".into());
         ui.set_inspector_path("".into());
         ui.set_selected_proxy("".into());
+        ui.set_proxy_status(PROXY_MISSING.into());
         self.use_proxy.set(false);
         ui.set_proxy_active(false);
         ui.set_inspector_locked(false);
@@ -726,11 +781,16 @@ impl NativeExportRuntime {
         ui.set_has_source_frame(false);
         ui.set_source_detail(asset.source_path.clone().into());
         ui.set_selected_proxy(asset.proxy_path.clone().unwrap_or_default().into());
-        if asset.proxy_path.is_none() {
+        let status = proxy_status(
+            Path::new(&asset.source_path),
+            asset.proxy_path.as_deref().map(Path::new),
+        );
+        ui.set_proxy_status(status.into());
+        if status != PROXY_AVAILABLE {
             self.use_proxy.set(false);
             ui.set_proxy_active(false);
         }
-        let preview_path = if self.use_proxy.get() {
+        let preview_path = if self.use_proxy.get() && status == PROXY_AVAILABLE {
             asset.proxy_path.as_deref().unwrap_or(&asset.source_path)
         } else {
             &asset.source_path
@@ -818,7 +878,11 @@ impl NativeExportRuntime {
                         .ok()?
                         .checked_add(clip.source_start)
                         .ok()?;
-                    let path = if self.use_proxy.get() {
+                    let proxy_is_available = proxy_status(
+                        Path::new(&asset.source_path),
+                        asset.proxy_path.as_deref().map(Path::new),
+                    ) == PROXY_AVAILABLE;
+                    let path = if self.use_proxy.get() && proxy_is_available {
                         asset.proxy_path.as_deref().unwrap_or(&asset.source_path)
                     } else {
                         &asset.source_path
@@ -957,9 +1021,6 @@ impl NativeExportRuntime {
     }
 
     fn generate_proxy(&self, ui: &PrismStudio) -> Result<(), String> {
-        if self.proxy_generation.borrow().is_some() {
-            return Err("A proxy is already being generated".to_owned());
-        }
         let media_id = self.selected_media_id(ui)?;
         let source = self
             .project
@@ -981,6 +1042,45 @@ impl NativeExportRuntime {
         else {
             return Ok(());
         };
+        self.start_proxy_generation(ui, media_id, source, output)
+    }
+
+    fn regenerate_proxy(&self, ui: &PrismStudio) -> Result<(), String> {
+        let media_id = self.selected_media_id(ui)?;
+        let (source, base) = self
+            .project
+            .borrow()
+            .as_ref()
+            .and_then(|project| project.media.get(&media_id))
+            .map(|asset| {
+                let source = PathBuf::from(&asset.source_path);
+                let base = asset.proxy_path.as_ref().map_or_else(
+                    || {
+                        let stem = source
+                            .file_stem()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("Prism");
+                        source.with_file_name(format!("{stem}.proxy.mp4"))
+                    },
+                    PathBuf::from,
+                );
+                (source, base)
+            })
+            .ok_or_else(|| "Selected media is unavailable".to_owned())?;
+        let output = next_proxy_version(&base)?;
+        self.start_proxy_generation(ui, media_id, source, output)
+    }
+
+    fn start_proxy_generation(
+        &self,
+        ui: &PrismStudio,
+        media_id: MediaAssetId,
+        source: PathBuf,
+        output: PathBuf,
+    ) -> Result<(), String> {
+        if self.proxy_generation.borrow().is_some() {
+            return Err("A proxy is already being generated".to_owned());
+        }
         let profile = ProxyProfile::new(960, 540, "libx264", Some("aac".to_owned()), "mp4")
             .map_err(|error| error.to_string())?;
         let request = ProxyRequest {
@@ -2197,7 +2297,8 @@ pub fn launch(project_path: Option<PathBuf>) -> Result<(), NativeUiError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        NativeExportStatus, ProxyGeneration, insert_media_into_project, insert_video_into_project,
+        NativeExportStatus, PROXY_AVAILABLE, ProxyGeneration, insert_media_into_project,
+        insert_video_into_project, next_proxy_version,
     };
     use prism_project::Project;
     use prism_studio::desktop::ExportController;
@@ -2559,8 +2660,11 @@ mod tests {
             .as_ref()
             .and_then(|project| project.media.keys().next().copied())
             .ok_or("missing media")?;
+        let proxy_path =
+            std::env::temp_dir().join(format!("prism-ui-proxy-test-{}.mp4", std::process::id()));
+        std::fs::write(&proxy_path, b"proxy")?;
         let (proxy_sender, proxy_receiver) = std::sync::mpsc::sync_channel(1);
-        proxy_sender.send(Ok(PathBuf::from("proxy-preview.mp4")))?;
+        proxy_sender.send(Ok(proxy_path.clone()))?;
         *runtime.proxy_generation.borrow_mut() = Some(ProxyGeneration {
             receiver: proxy_receiver,
             cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2568,16 +2672,40 @@ mod tests {
         });
         ui.set_proxy_generating(true);
         runtime.poll(&ui);
-        assert_eq!(ui.get_selected_proxy(), "proxy-preview.mp4");
+        assert_eq!(ui.get_selected_proxy(), proxy_path.display().to_string());
+        assert_eq!(ui.get_proxy_status(), PROXY_AVAILABLE);
         assert!(ui.get_proxy_active());
         assert!(!ui.get_proxy_generating());
         runtime.clear_proxy(&ui)?;
         assert_eq!(ui.get_selected_proxy(), "");
         assert!(!ui.get_proxy_active());
+        std::fs::remove_file(proxy_path)?;
         std::fs::remove_file(path)?;
         ui.hide()?;
         Ok(())
     }
+
+    #[test]
+    fn proxy_versions_never_overwrite_existing_media() -> Result<(), Box<dyn std::error::Error>> {
+        let directory =
+            std::env::temp_dir().join(format!("prism-proxy-version-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory)?;
+        let base = directory.join("interview.proxy.mp4");
+        let version_two = directory.join("interview.proxy.v2.mp4");
+        std::fs::write(&base, b"original proxy")?;
+        std::fs::write(&version_two, b"second proxy")?;
+        assert_eq!(
+            next_proxy_version(&base)?,
+            directory.join("interview.proxy.v3.mp4")
+        );
+        assert_eq!(
+            next_proxy_version(&version_two)?,
+            directory.join("interview.proxy.v3.mp4")
+        );
+        std::fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
     #[test]
     fn inspector_timing_parser_is_exact_and_rejects_invalid_values()
     -> Result<(), Box<dyn std::error::Error>> {

@@ -26,7 +26,9 @@ that region, and Reset layout restores the session defaults.
   decoding between the original and persisted proxy without changing media identity.
 - Generate a cancellable 960×540 H.264/AAC proxy in the background. Successful
   no-clobber completion persists and activates the proxy; failure leaves the original
-  media assignment unchanged.
+  media assignment unchanged. Assigned proxies are classified as available, missing,
+  or stale from source/proxy modification times. Missing and stale proxies can be
+  regenerated to a new versioned sibling without deleting the prior assignment.
 - Select footage to inspect it independently of the sequence playhead. Scrub the
   Source bar, mark In/Out, and append the marked range to an unlocked video track.
   Mark Out includes the current 30 fps frame, clamped to the source duration.
