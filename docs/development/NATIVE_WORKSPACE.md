@@ -74,6 +74,9 @@ that region, and Reset layout restores the session defaults.
 - Track ↑/↓ in Properties reorders the selected clip's track while preserving clip
   selection by stable identity. Boundary actions disable automatically; successful
   reorders persist, autosave, and support undo/redo.
+- Jobs reports the saved project's derived-cache artifact count and size. Clean
+  derived cache runs a traversal-safe eviction pass in the background and reports
+  completion or failure without blocking editing.
 - Play/Pause (or Spacebar) advances the sequence clock and requests current video
   frames through the bounded preview worker. Newer requests supersede queued stale
   frames. When an unmuted audio clip is active, Prism starts `ffplay` at the matching

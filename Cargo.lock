@@ -3788,6 +3788,7 @@ dependencies = [
 name = "prism-studio"
 version = "0.1.0"
 dependencies = [
+ "prism-cache",
  "prism-commands",
  "prism-core",
  "prism-export",

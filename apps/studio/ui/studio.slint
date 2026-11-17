@@ -126,6 +126,9 @@ export component PrismStudio inherits Window {
     in property <string> media-task-status: "IDLE";
     in property <string> media-task-detail: "0/0 previews";
     in property <int> media-task-pending: 0;
+    in property <string> cache-status: "UNAVAILABLE";
+    in property <string> cache-detail: "Save the project to enable its derived cache";
+    in property <bool> cache-cleaning: false;
     in-out property <bool> proxy-active: false;
     in-out property <bool> proxy-generating: false;
     in property <bool> inspector-locked: false;
@@ -536,6 +539,9 @@ export component PrismStudio inherits Window {
                                 Text { text: "THUMBNAILS  /  " + root.media-task-status; color: root.media-task-status == "COMPLETE WITH ERRORS" ? #d0a85c : #ded2f2; font-size: 11px; height: 20px; }
                                 Text { text: root.media-task-detail + (root.media-task-pending > 0 ? " · " + root.media-task-pending + " pending" : ""); color: #8c879c; font-size: 10px; height: 18px; }
                                 Text { text: "PROXY  /  " + (root.proxy-generating ? "GENERATING" : root.proxy-status); color: root.proxy-generating ? #d0a85c : #8fb9a5; font-size: 11px; height: 20px; }
+                                Text { text: "CACHE  /  " + root.cache-status; color: root.cache-status == "FAILED" ? #db9b9f : root.cache-cleaning ? #d0a85c : #8fb9a5; font-size: 11px; height: 20px; }
+                                Text { text: root.cache-detail; color: #8c879c; font-size: 10px; height: 18px; overflow: elide; }
+                                Action { label: root.cache-cleaning ? "Cleaning derived cache…" : "Clean derived cache"; enabled: !root.cache-cleaning && root.cache-status != "UNAVAILABLE"; clicked => { root.command-invoked("cache.clean"); } }
                                 Rectangle { height: 1px; background: #393540; }
                                 Text { text: "EXPORT"; color: #a69ac1; font-size: 9px; height: 16px; }
                                 Text { text: root.export-status; color: #ded2f2; font-size: 18px; height: 28px; }

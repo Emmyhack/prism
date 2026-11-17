@@ -7,6 +7,7 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
+prism-cache = { path = "../../crates/prism-cache" }
 prism-commands = { path = "../../crates/prism-commands" }
 prism-core = { path = "../../crates/prism-core" }
 prism-export = { path = "../../crates/prism-export" }

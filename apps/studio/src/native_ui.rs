@@ -1,5 +1,6 @@
 //! Native Slint adapter for the Prism desktop workspace.
 
+use prism_cache::{CacheEvictionPolicy, CacheEvictionWorker, CacheLayout};
 use prism_commands::{Command, CommandEngine, UndoRecord};
 use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
 use prism_export::{ExportPreset, SingleTrackMp4ExportRequest, VideoAudioMp4ExportRequest};
@@ -30,6 +31,21 @@ slint::include_modules!();
 const PROXY_AVAILABLE: &str = "AVAILABLE";
 const PROXY_MISSING: &str = "MISSING";
 const PROXY_STALE: &str = "STALE";
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1_024;
+    const MIB: u64 = KIB * 1_024;
+    const GIB: u64 = MIB * 1_024;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
+    }
+}
 
 fn proxy_status(source: &Path, proxy: Option<&Path>) -> &'static str {
     let Some(proxy) = proxy else {
@@ -421,6 +437,7 @@ struct NativeExportRuntime {
     recovery_candidates: RefCell<Vec<prism_persistence::AutosaveCandidate>>,
     autosave_scheduler: RefCell<Option<prism_persistence::AutosaveScheduler>>,
     pending_autosave: RefCell<Option<Project>>,
+    cache_eviction: RefCell<Option<CacheEvictionWorker>>,
 }
 
 impl NativeExportRuntime {
@@ -455,6 +472,7 @@ impl NativeExportRuntime {
             recovery_candidates: RefCell::new(Vec::new()),
             autosave_scheduler: RefCell::new(None),
             pending_autosave: RefCell::new(None),
+            cache_eviction: RefCell::new(None),
         }
     }
 
@@ -491,6 +509,7 @@ impl NativeExportRuntime {
                 }
                 Ok(())
             }
+            "cache.clean" => self.clean_cache(ui),
             "media.toggle_proxy" => {
                 self.use_proxy.set(!self.use_proxy.get());
                 ui.set_proxy_active(self.use_proxy.get());
@@ -919,6 +938,8 @@ impl NativeExportRuntime {
         ui.set_snap_enabled(true);
         self.refresh_recovery(ui);
         self.reset_autosave_scheduler(ui);
+        self.cache_eviction.borrow_mut().take();
+        self.update_cache_state(ui);
         self.source_duration.set(RationalTime::ZERO);
         self.source_position.set(RationalTime::ZERO);
         self.source_in.set(RationalTime::ZERO);
@@ -941,6 +962,70 @@ impl NativeExportRuntime {
         self.source_preview.invalidate();
         ui.set_active_workspace("EDIT".into());
         self.seek_time(ui, RationalTime::ZERO);
+    }
+
+    fn cache_root(&self) -> Option<PathBuf> {
+        self.project_path
+            .borrow()
+            .as_ref()
+            .map(|path| path.with_extension("prism-cache"))
+    }
+
+    fn update_cache_state(&self, ui: &PrismStudio) {
+        let pending = self
+            .cache_eviction
+            .borrow()
+            .as_ref()
+            .is_some_and(|worker| worker.pending_evictions() > 0);
+        ui.set_cache_cleaning(pending);
+        let Some(root) = self.cache_root() else {
+            ui.set_cache_status("UNAVAILABLE".into());
+            ui.set_cache_detail("Save the project to enable its derived cache".into());
+            return;
+        };
+        match CacheLayout::new(root).inventory() {
+            Ok(inventory) => {
+                ui.set_cache_status(if pending { "CLEANING" } else { "READY" }.into());
+                ui.set_cache_detail(
+                    format!(
+                        "{} artifacts · {}",
+                        inventory.artifact_count,
+                        format_bytes(inventory.total_bytes)
+                    )
+                    .into(),
+                );
+            }
+            Err(error) => {
+                ui.set_cache_status("FAILED".into());
+                ui.set_cache_detail(error.to_string().into());
+            }
+        }
+    }
+
+    fn clean_cache(&self, ui: &PrismStudio) -> Result<(), String> {
+        if self
+            .cache_eviction
+            .borrow()
+            .as_ref()
+            .is_some_and(|worker| worker.pending_evictions() > 0)
+        {
+            return Err("Cache cleanup is already running".to_owned());
+        }
+        let root = self
+            .cache_root()
+            .ok_or_else(|| "Save the project before cleaning its cache".to_owned())?;
+        let worker = CacheEvictionWorker::spawn(CacheLayout::new(root), 1);
+        worker
+            .try_submit(CacheEvictionPolicy {
+                max_bytes: Some(0),
+                max_age: None,
+            })
+            .map_err(|error| error.to_string())?;
+        *self.cache_eviction.borrow_mut() = Some(worker);
+        ui.set_cache_cleaning(true);
+        ui.set_cache_status("CLEANING".into());
+        ui.set_feedback("Cleaning project derived cache in the background…".into());
+        Ok(())
     }
 
     fn select_media(&self, ui: &PrismStudio, index: i32) {
@@ -2379,6 +2464,26 @@ impl NativeExportRuntime {
     }
 
     fn poll(&self, ui: &PrismStudio) {
+        let cache_result = self
+            .cache_eviction
+            .borrow()
+            .as_ref()
+            .and_then(|worker| worker.try_result().ok());
+        if let Some(result) = cache_result {
+            self.cache_eviction.borrow_mut().take();
+            match result.result {
+                Ok(report) => ui.set_feedback(
+                    format!(
+                        "Cache cleanup removed {} artifacts ({})",
+                        report.removed_files,
+                        format_bytes(report.removed_bytes)
+                    )
+                    .into(),
+                ),
+                Err(error) => ui.set_feedback(format!("Cache cleanup failed: {error}").into()),
+            }
+            self.update_cache_state(ui);
+        }
         loop {
             let result = self
                 .autosave_scheduler
@@ -2987,6 +3092,7 @@ mod tests {
         Command, NativeExportStatus, PROXY_AVAILABLE, ProxyGeneration, TrackId, TrackKind,
         insert_media_into_project, insert_video_into_project, next_proxy_version,
     };
+    use prism_cache::{CacheKey, CacheLayout};
     use prism_project::Project;
     use prism_studio::desktop::ExportController;
     use prism_timeline::RationalTime;
@@ -3545,6 +3651,24 @@ mod tests {
         runtime.apply_history(&ui, false)?;
         runtime.apply_history(&ui, false)?;
         assert_eq!(ui.get_tracks().row_count(), 1);
+        let cache_root = path.with_extension("prism-cache");
+        let cache_layout = CacheLayout::new(&cache_root);
+        let cache_key = CacheKey::from_parts("thumbnail", b"fixture", "rgba", b"160x90");
+        cache_layout.write_atomic(cache_key, "rgba", b"cached thumbnail")?;
+        runtime.update_cache_state(&ui);
+        assert_eq!(ui.get_cache_status(), "READY");
+        assert!(ui.get_cache_detail().contains("1 artifacts"));
+        runtime.clean_cache(&ui)?;
+        assert!(ui.get_cache_cleaning());
+        let cleanup_started = std::time::Instant::now();
+        while ui.get_cache_cleaning()
+            && cleanup_started.elapsed() < std::time::Duration::from_secs(2)
+        {
+            runtime.poll(&ui);
+            std::thread::yield_now();
+        }
+        assert!(!ui.get_cache_cleaning());
+        assert_eq!(ui.get_cache_detail(), "0 artifacts · 0 B");
         runtime.autosave_scheduler.borrow_mut().take();
         for candidate in prism_persistence::list_autosaves(&path)? {
             std::fs::remove_file(candidate.path)?;
@@ -3552,6 +3676,7 @@ mod tests {
         std::fs::remove_file(proxy_path)?;
         std::fs::remove_file(replacement)?;
         std::fs::remove_file(path)?;
+        std::fs::remove_dir_all(cache_root)?;
         ui.hide()?;
         Ok(())
     }
