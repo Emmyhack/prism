@@ -391,7 +391,6 @@ fn parse_timing(text: &str) -> Result<RationalTime, String> {
     Ok(time)
 }
 
-#[derive(Debug)]
 struct NativeExportRuntime {
     project: RefCell<Option<Project>>,
     project_path: RefCell<Option<PathBuf>>,
@@ -417,6 +416,8 @@ struct NativeExportRuntime {
     use_proxy: Cell<bool>,
     proxy_generation: RefCell<Option<ProxyGeneration>>,
     recovery_candidates: RefCell<Vec<prism_persistence::AutosaveCandidate>>,
+    autosave_scheduler: RefCell<Option<prism_persistence::AutosaveScheduler>>,
+    pending_autosave: RefCell<Option<Project>>,
 }
 
 impl NativeExportRuntime {
@@ -446,6 +447,8 @@ impl NativeExportRuntime {
             use_proxy: Cell::new(false),
             proxy_generation: RefCell::new(None),
             recovery_candidates: RefCell::new(Vec::new()),
+            autosave_scheduler: RefCell::new(None),
+            pending_autosave: RefCell::new(None),
         }
     }
 
@@ -780,6 +783,72 @@ impl NativeExportRuntime {
         }
     }
 
+    fn reset_autosave_scheduler(&self, ui: &PrismStudio) {
+        self.autosave_scheduler.borrow_mut().take();
+        self.pending_autosave.borrow_mut().take();
+        let Some(path) = self.project_path.borrow().clone() else {
+            ui.set_autosave_status("UNAVAILABLE".into());
+            return;
+        };
+        match prism_persistence::AutosaveScheduler::spawn(path, 2) {
+            Ok(scheduler) => {
+                *self.autosave_scheduler.borrow_mut() = Some(scheduler);
+                ui.set_autosave_status("READY".into());
+            }
+            Err(error) => {
+                ui.set_autosave_status("FAILED".into());
+                ui.set_feedback(format!("Could not start autosave: {error}").into());
+            }
+        }
+    }
+
+    fn queue_autosave(&self, ui: &PrismStudio, project: &Project) {
+        if self.pending_autosave.borrow().is_some() {
+            *self.pending_autosave.borrow_mut() = Some(project.clone());
+            ui.set_autosave_status("BUSY".into());
+            return;
+        }
+        let scheduler_ref = self.autosave_scheduler.borrow();
+        let Some(scheduler) = scheduler_ref.as_ref() else {
+            ui.set_autosave_status("UNAVAILABLE".into());
+            return;
+        };
+        match scheduler.try_submit(project) {
+            prism_persistence::AutosaveSubmit::Queued => {
+                ui.set_autosave_status("QUEUED".into());
+            }
+            prism_persistence::AutosaveSubmit::QueueFull => {
+                *self.pending_autosave.borrow_mut() = Some(project.clone());
+                ui.set_autosave_status("BUSY".into());
+            }
+            prism_persistence::AutosaveSubmit::WorkerStopped => {
+                ui.set_autosave_status("FAILED".into());
+            }
+        }
+    }
+
+    fn retry_pending_autosave(&self, ui: &PrismStudio) {
+        let Some(project) = self.pending_autosave.borrow().clone() else {
+            return;
+        };
+        let scheduler_ref = self.autosave_scheduler.borrow();
+        let Some(scheduler) = scheduler_ref.as_ref() else {
+            return;
+        };
+        match scheduler.try_submit(&project) {
+            prism_persistence::AutosaveSubmit::Queued => {
+                self.pending_autosave.borrow_mut().take();
+                ui.set_autosave_status("QUEUED".into());
+            }
+            prism_persistence::AutosaveSubmit::QueueFull => {
+                ui.set_autosave_status("BUSY".into());
+            }
+            prism_persistence::AutosaveSubmit::WorkerStopped => {
+                ui.set_autosave_status("FAILED".into());
+            }
+        }
+    }
+
     fn recover_latest(&self, ui: &PrismStudio) -> Result<(), String> {
         let source = self
             .recovery_candidates
@@ -837,6 +906,7 @@ impl NativeExportRuntime {
         ui.set_timeline_offset(0.0);
         ui.set_snap_enabled(true);
         self.refresh_recovery(ui);
+        self.reset_autosave_scheduler(ui);
         self.source_duration.set(RationalTime::ZERO);
         self.source_position.set(RationalTime::ZERO);
         self.source_in.set(RationalTime::ZERO);
@@ -1234,6 +1304,9 @@ impl NativeExportRuntime {
         prism_persistence::save_atomic(&updated, &path).map_err(|e| e.to_string())?;
         apply_project_summary(ui, &updated, &path);
         *self.project.borrow_mut() = Some(updated);
+        if let Some(project) = self.project.borrow().as_ref() {
+            self.queue_autosave(ui, project);
+        }
         let mut undo = self.undo.borrow_mut();
         undo.push(outcome.undo);
         if undo.len() > 50 {
@@ -1454,6 +1527,9 @@ impl NativeExportRuntime {
         to.borrow_mut().push(inverse);
         apply_project_summary(ui, &updated, &path);
         *self.project.borrow_mut() = Some(updated);
+        if let Some(project) = self.project.borrow().as_ref() {
+            self.queue_autosave(ui, project);
+        }
         ui.set_selected_clip_index(-1);
         self.update_history(ui);
         self.update_inspector(ui);
@@ -1993,6 +2069,32 @@ impl NativeExportRuntime {
     }
 
     fn poll(&self, ui: &PrismStudio) {
+        loop {
+            let result = self
+                .autosave_scheduler
+                .borrow()
+                .as_ref()
+                .and_then(prism_persistence::AutosaveScheduler::try_result);
+            let Some(result) = result else {
+                break;
+            };
+            match result.result {
+                Ok(()) => {
+                    ui.set_autosave_status(format!("SAVED R{}", result.revision).into());
+                    if let Some(path) = self.project_path.borrow().as_deref() {
+                        if let Err(error) = prism_persistence::retain_autosaves(path, 5) {
+                            ui.set_feedback(format!("Autosave retention failed: {error}").into());
+                        }
+                    }
+                    self.refresh_recovery(ui);
+                }
+                Err(error) => {
+                    ui.set_autosave_status("FAILED".into());
+                    ui.set_feedback(format!("Autosave failed: {error}").into());
+                }
+            }
+        }
+        self.retry_pending_autosave(ui);
         let proxy_result = self
             .proxy_generation
             .borrow()
@@ -2664,6 +2766,23 @@ mod tests {
         assert!(!ui.get_snap_enabled());
         runtime.handle("timeline.toggle_snap", &ui)?;
         runtime.add_marker(&ui)?;
+        let marker_revision = runtime
+            .project
+            .borrow()
+            .as_ref()
+            .map(Project::revision)
+            .ok_or("missing project")?;
+        let autosave_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while ui.get_autosave_status() != format!("SAVED R{marker_revision}")
+            && std::time::Instant::now() < autosave_deadline
+        {
+            runtime.poll(&ui);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            ui.get_autosave_status(),
+            format!("SAVED R{marker_revision}")
+        );
         assert_eq!(
             runtime
                 .project
@@ -2950,8 +3069,11 @@ mod tests {
         runtime.clear_proxy(&ui)?;
         assert_eq!(ui.get_selected_proxy(), "");
         assert!(!ui.get_proxy_active());
+        runtime.autosave_scheduler.borrow_mut().take();
+        for candidate in prism_persistence::list_autosaves(&path)? {
+            std::fs::remove_file(candidate.path)?;
+        }
         std::fs::remove_file(proxy_path)?;
-        std::fs::remove_file(autosave_path)?;
         std::fs::remove_file(path)?;
         ui.hide()?;
         Ok(())

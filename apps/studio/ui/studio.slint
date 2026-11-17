@@ -116,6 +116,7 @@ export component PrismStudio inherits Window {
     in property <int> recovery-count: 0;
     in property <string> recovery-revision: "";
     in property <string> recovery-path: "";
+    in property <string> autosave-status: "UNAVAILABLE";
     in-out property <bool> proxy-active: false;
     in-out property <bool> proxy-generating: false;
     in property <bool> inspector-locked: false;
@@ -502,6 +503,9 @@ export component PrismStudio inherits Window {
                                 Text { text: "Session history · up to 50 edits"; color: #6e6b7e; font-size: 9px; height: 18px; }
                             } }
                             if root.inspector-tab == "Jobs" : Rectangle { VerticalLayout { padding: 16px; spacing: 14px;
+                                Text { text: "PROJECT SAFETY"; color: #a69ac1; font-size: 9px; height: 16px; }
+                                Text { text: "AUTOSAVE  /  " + root.autosave-status; color: root.autosave-status == "FAILED" ? #db9b9f : #8fb9a5; font-size: 11px; height: 20px; }
+                                Rectangle { height: 1px; background: #393540; }
                                 Text { text: "EXPORT"; color: #a69ac1; font-size: 9px; height: 16px; }
                                 Text { text: root.export-status; color: #ded2f2; font-size: 18px; height: 28px; }
                                 Text { text: root.export-output; color: #8c879c; font-size: 10px; wrap: word-wrap; }

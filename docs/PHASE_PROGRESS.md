@@ -33,7 +33,9 @@ Remaining acceptance work:
   cancel/retry/clear controls; cache-task presentation remains pending);
 - expose crash-recovery candidates through the Studio workflow (`--list-autosaves`,
   the stable `AutosaveSummary` boundary, and native newest-candidate discovery plus
-  no-clobber Recover As workflow are implemented and rendered on Home);
+  no-clobber Recover As workflow are implemented and rendered on Home; successful
+  edits/history actions feed a bounded background scheduler with newest-pending
+  coalescing, five-revision retention, and visible Jobs status);
 - provide a stable default keyboard map for selection, razor, trim, slip,
   slide, rolling, playback, undo, and redo (`--list-shortcuts` exposes the
   map for UI adapters; deterministic event resolution and native graphical
