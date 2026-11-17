@@ -103,6 +103,15 @@ pub struct CacheEvictionReport {
     pub removed_bytes: u64,
 }
 
+/// Read-only inventory of finalized derived artifacts.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CacheInventory {
+    /// Number of finalized regular-file artifacts.
+    pub artifact_count: usize,
+    /// Combined byte length of finalized artifacts.
+    pub total_bytes: u64,
+}
+
 /// One derived artifact write scheduled on a background cache worker.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CacheWriteRequest {
@@ -157,6 +166,7 @@ pub struct CacheEvictionResult {
 pub struct CacheEvictionWorker {
     requests: Option<SyncSender<CacheEvictionPolicy>>,
     results: Receiver<CacheEvictionResult>,
+    pending: Arc<AtomicUsize>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -252,6 +262,8 @@ impl CacheEvictionWorker {
         let (request_tx, request_rx) = sync_channel::<CacheEvictionPolicy>(capacity);
         let (result_tx, result_rx) =
             sync_channel::<CacheEvictionResult>(capacity.saturating_add(1));
+        let pending = Arc::new(AtomicUsize::new(0));
+        let worker_pending = Arc::clone(&pending);
         let worker_thread = thread::spawn(move || {
             while let Ok(policy) = request_rx.recv() {
                 let result = layout.evict(policy);
@@ -259,13 +271,16 @@ impl CacheEvictionWorker {
                     .send(CacheEvictionResult { policy, result })
                     .is_err()
                 {
+                    worker_pending.fetch_sub(1, Ordering::Relaxed);
                     break;
                 }
+                worker_pending.fetch_sub(1, Ordering::Relaxed);
             }
         });
         Self {
             requests: Some(request_tx),
             results: result_rx,
+            pending,
             thread: Some(worker_thread),
         }
     }
@@ -277,14 +292,25 @@ impl CacheEvictionWorker {
     /// Returns [`CacheSubmitError::QueueFull`] under backpressure or
     /// [`CacheSubmitError::WorkerStopped`] after shutdown.
     pub fn try_submit(&self, policy: CacheEvictionPolicy) -> Result<(), CacheSubmitError> {
-        self.requests
+        let sender = self
+            .requests
             .as_ref()
-            .ok_or(CacheSubmitError::WorkerStopped)?
-            .try_send(policy)
-            .map_err(|error| match error {
+            .ok_or(CacheSubmitError::WorkerStopped)?;
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        if let Err(error) = sender.try_send(policy) {
+            self.pending.fetch_sub(1, Ordering::Relaxed);
+            return Err(match error {
                 TrySendError::Full(_) => CacheSubmitError::QueueFull,
                 TrySendError::Disconnected(_) => CacheSubmitError::WorkerStopped,
-            })
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns the number of submitted eviction passes not yet delivered as results.
+    #[must_use]
+    pub fn pending_evictions(&self) -> usize {
+        self.pending.load(Ordering::Relaxed)
     }
 
     /// Polls for one completed eviction pass without blocking.
@@ -419,6 +445,51 @@ impl CacheLayout {
             .map_err(|error| CacheError::Io(error.to_string()))
     }
 
+    /// Counts finalized artifacts and their combined size without mutating the cache.
+    ///
+    /// Only regular files directly inside shard directories are counted. Symlinks,
+    /// nested directories, root-level files, and dot-prefixed temporary files are
+    /// ignored, matching the safety boundary used by eviction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheError::Io`] when an existing cache root cannot be enumerated
+    /// or artifact metadata cannot be inspected.
+    pub fn inventory(&self) -> Result<CacheInventory, CacheError> {
+        let mut inventory = CacheInventory::default();
+        if !self.root.exists() {
+            return Ok(inventory);
+        }
+        for shard in fs::read_dir(&self.root).map_err(|error| CacheError::Io(error.to_string()))? {
+            let shard = shard.map_err(|error| CacheError::Io(error.to_string()))?;
+            if !shard
+                .file_type()
+                .map_err(|error| CacheError::Io(error.to_string()))?
+                .is_dir()
+            {
+                continue;
+            }
+            for entry in
+                fs::read_dir(shard.path()).map_err(|error| CacheError::Io(error.to_string()))?
+            {
+                let entry = entry.map_err(|error| CacheError::Io(error.to_string()))?;
+                let file_type = entry
+                    .file_type()
+                    .map_err(|error| CacheError::Io(error.to_string()))?;
+                let name = entry.file_name();
+                if !file_type.is_file() || name.to_str().is_some_and(|name| name.starts_with('.')) {
+                    continue;
+                }
+                let metadata = entry
+                    .metadata()
+                    .map_err(|error| CacheError::Io(error.to_string()))?;
+                inventory.artifact_count = inventory.artifact_count.saturating_add(1);
+                inventory.total_bytes = inventory.total_bytes.saturating_add(metadata.len());
+            }
+        }
+        Ok(inventory)
+    }
+
     /// Atomically writes a new cache artifact without replacing an existing one.
     ///
     /// Parent directories are created as needed. The temporary file is synced
@@ -546,8 +617,8 @@ impl CacheLayout {
 #[cfg(test)]
 mod tests {
     use super::{
-        CacheError, CacheEvictionPolicy, CacheEvictionWorker, CacheKey, CacheLayout,
-        CacheSubmitError, CacheWorker, CacheWriteRequest,
+        CacheError, CacheEvictionPolicy, CacheEvictionWorker, CacheInventory, CacheKey,
+        CacheLayout, CacheSubmitError, CacheWorker, CacheWriteRequest,
     };
     use std::time::Duration;
 
@@ -651,6 +722,37 @@ mod tests {
     }
 
     #[test]
+    fn inventory_counts_only_finalized_sharded_artifacts() -> Result<(), CacheError> {
+        let root =
+            std::env::temp_dir().join(format!("prism-cache-inventory-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let layout = CacheLayout::new(&root);
+        assert_eq!(layout.inventory()?, CacheInventory::default());
+        let first = CacheKey::from_parts("thumbnail", b"media", "a", b"1");
+        let second = CacheKey::from_parts("waveform", b"media", "b", b"2");
+        layout.write_atomic(first, "rgba", b"four")?;
+        layout.write_atomic(second, "bin", b"three")?;
+        let shard = layout
+            .path_for(first, "rgba")?
+            .parent()
+            .ok_or_else(|| CacheError::Io("missing shard".to_owned()))?
+            .to_path_buf();
+        std::fs::write(shard.join(".pending.tmp"), b"ignored")
+            .map_err(|error| CacheError::Io(error.to_string()))?;
+        std::fs::write(root.join("unsharded.bin"), b"ignored")
+            .map_err(|error| CacheError::Io(error.to_string()))?;
+        assert_eq!(
+            layout.inventory()?,
+            CacheInventory {
+                artifact_count: 2,
+                total_bytes: 9,
+            }
+        );
+        std::fs::remove_dir_all(root).map_err(|error| CacheError::Io(error.to_string()))?;
+        Ok(())
+    }
+
+    #[test]
     fn worker_writes_off_thread_and_reports_backpressure() -> Result<(), Box<dyn std::error::Error>>
     {
         let root = std::env::temp_dir().join(format!("prism-cache-worker-{}", std::process::id()));
@@ -697,6 +799,7 @@ mod tests {
             max_age: None,
         })?;
         let result = worker.result_timeout(Duration::from_secs(2))?;
+        assert_eq!(worker.pending_evictions(), 0);
         assert_eq!(result.policy.max_bytes, Some(0));
         assert_eq!(result.result?.removed_files, 1);
         assert!(!path.exists());

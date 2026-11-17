@@ -32,8 +32,9 @@ Remaining acceptance work:
   and its project summary exposes locked/muted track and marker state. The
   native command bar renders export progress, failures, and state-valid
   cancel/retry/clear controls; Jobs now projects thumbnail decoder pending,
-  completion, and failure counts plus proxy generation state. Persistent derived-cache
-  write/eviction telemetry remains pending);
+  completion, and failure counts plus proxy generation state. The cache boundary now
+  reports finalized artifact count/bytes and pending write/eviction work; persistent
+  cache policy and Studio projection remain pending);
 - expose crash-recovery candidates through the Studio workflow (`--list-autosaves`,
   the stable `AutosaveSummary` boundary, and native newest-candidate discovery plus
   no-clobber Recover As workflow are implemented and rendered on Home; successful
