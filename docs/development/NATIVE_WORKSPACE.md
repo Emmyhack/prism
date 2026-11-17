@@ -71,6 +71,9 @@ that region, and Reset layout restores the session defaults.
 - Duplicate to track end copies the selected clip's exact media identity and source
   range after the last clip on its current track. The placement is overlap-safe,
   persisted, autosaved, and undoable.
+- Track ↑/↓ in Properties reorders the selected clip's track while preserving clip
+  selection by stable identity. Boundary actions disable automatically; successful
+  reorders persist, autosave, and support undo/redo.
 - Play/Pause (or Spacebar) advances the sequence clock and requests current video
   frames through the bounded preview worker. Newer requests supersede queued stale
   frames. When an unmuted audio clip is active, Prism starts `ffplay` at the matching

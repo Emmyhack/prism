@@ -527,6 +527,8 @@ impl NativeExportRuntime {
             "timeline.delete_marker" => self.delete_marker(ui),
             "timeline.toggle_dissolve" => self.toggle_dissolve(ui),
             "timeline.duplicate" => self.duplicate_clip(ui),
+            "timeline.track_up" => self.change_track(ui, ui.get_selected_track_index(), "up"),
+            "timeline.track_down" => self.change_track(ui, ui.get_selected_track_index(), "down"),
             "timeline.toggle_snap" => {
                 ui.set_snap_enabled(!ui.get_snap_enabled());
                 ui.set_feedback(
@@ -1580,7 +1582,7 @@ impl NativeExportRuntime {
     }
 
     fn change_track(&self, ui: &PrismStudio, index: i32, action: &str) -> Result<(), String> {
-        let operation = {
+        let (operation, selected_clip_id) = {
             let project = self.project.borrow();
             let sequence = project
                 .as_ref()
@@ -1590,7 +1592,13 @@ impl NativeExportRuntime {
                 .tracks
                 .get(usize::try_from(index).map_err(|e| e.to_string())?)
                 .ok_or_else(|| "Track unavailable".to_owned())?;
-            match action {
+            let selected_clip_id = sequence
+                .tracks
+                .iter()
+                .flat_map(|track| &track.clips)
+                .nth(usize::try_from(ui.get_selected_clip_index()).unwrap_or(usize::MAX))
+                .map(|clip| clip.id);
+            let operation = match action {
                 "lock" => Command::SetTrackLocked {
                     sequence_id: sequence.id,
                     track_id: track.id,
@@ -1606,10 +1614,49 @@ impl NativeExportRuntime {
                     track_id: track.id,
                     visible: !track.visible,
                 },
+                "up" | "down" => {
+                    let current = usize::try_from(index).map_err(|e| e.to_string())?;
+                    let destination_index = if action == "up" {
+                        current
+                            .checked_sub(1)
+                            .ok_or_else(|| "Track is already first".to_owned())?
+                    } else {
+                        let next = current + 1;
+                        if next >= sequence.tracks.len() {
+                            return Err("Track is already last".to_owned());
+                        }
+                        next
+                    };
+                    Command::ReorderTrack {
+                        sequence_id: sequence.id,
+                        track_id: track.id,
+                        destination_index,
+                    }
+                }
                 _ => return Err("Unknown track action".to_owned()),
-            }
+            };
+            (operation, selected_clip_id)
         };
-        self.commit(ui, operation, "Track updated")
+        self.commit(ui, operation, "Track updated")?;
+        if let Some(selected_clip_id) = selected_clip_id {
+            let new_index = self
+                .project
+                .borrow()
+                .as_ref()
+                .and_then(|project| project.sequences.values().next())
+                .and_then(|sequence| {
+                    sequence
+                        .tracks
+                        .iter()
+                        .flat_map(|track| &track.clips)
+                        .position(|clip| clip.id == selected_clip_id)
+                })
+                .and_then(|index| i32::try_from(index).ok())
+                .unwrap_or(-1);
+            ui.set_selected_clip_index(new_index);
+            self.update_inspector(ui);
+        }
+        Ok(())
     }
 
     fn reset_thumbnails(&self, ui: &PrismStudio) {
@@ -1811,6 +1858,7 @@ impl NativeExportRuntime {
                 .into(),
             );
             ui.set_inspector_locked(track.locked);
+            ui.set_selected_track_index(i32::try_from(row).unwrap_or(-1));
             ui.set_clip_start(timing_text(clip.timeline_start));
             ui.set_clip_source_in(timing_text(clip.source_start));
             ui.set_clip_duration(timing_text(clip.source_duration));
@@ -1829,6 +1877,7 @@ impl NativeExportRuntime {
             ui.set_inspector_name("".into());
             ui.set_inspector_path("".into());
             ui.set_inspector_locked(false);
+            ui.set_selected_track_index(-1);
             ui.set_selected_has_next(false);
             ui.set_selected_has_transition(false);
         }
@@ -2935,8 +2984,8 @@ pub fn launch(project_path: Option<PathBuf>) -> Result<(), NativeUiError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        NativeExportStatus, PROXY_AVAILABLE, ProxyGeneration, insert_media_into_project,
-        insert_video_into_project, next_proxy_version,
+        Command, NativeExportStatus, PROXY_AVAILABLE, ProxyGeneration, TrackId, TrackKind,
+        insert_media_into_project, insert_video_into_project, next_proxy_version,
     };
     use prism_project::Project;
     use prism_studio::desktop::ExportController;
@@ -3463,6 +3512,39 @@ mod tests {
         runtime.clear_proxy(&ui)?;
         assert_eq!(ui.get_selected_proxy(), "");
         assert!(!ui.get_proxy_active());
+        let sequence_id = runtime
+            .project
+            .borrow()
+            .as_ref()
+            .and_then(|project| project.sequences.values().next())
+            .map(|sequence| sequence.id)
+            .ok_or("missing sequence")?;
+        let audio_track_id = TrackId::new();
+        runtime.commit(
+            &ui,
+            Command::CreateTrack {
+                sequence_id,
+                id: audio_track_id,
+                kind: TrackKind::Audio,
+            },
+            "Create test audio track",
+        )?;
+        ui.set_selected_clip_index(0);
+        runtime.update_inspector(&ui);
+        runtime.change_track(&ui, 0, "down")?;
+        assert_eq!(ui.get_selected_track_index(), 1);
+        assert_eq!(
+            prism_persistence::load(&path)?
+                .sequences
+                .values()
+                .next()
+                .and_then(|sequence| sequence.tracks.first())
+                .map(|track| track.id),
+            Some(audio_track_id)
+        );
+        runtime.apply_history(&ui, false)?;
+        runtime.apply_history(&ui, false)?;
+        assert_eq!(ui.get_tracks().row_count(), 1);
         runtime.autosave_scheduler.borrow_mut().take();
         for candidate in prism_persistence::list_autosaves(&path)? {
             std::fs::remove_file(candidate.path)?;

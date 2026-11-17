@@ -63,6 +63,7 @@ export component PrismStudio inherits Window {
     in-out property <string> selected-media: "";
     in-out property <int> selected-media-index: -1;
     in-out property <int> selected-clip-index: -1;
+    in property <int> selected-track-index: -1;
     in-out property <string> search: "";
     in property <image> program-frame;
     in property <bool> has-program-frame: false;
@@ -478,6 +479,7 @@ export component PrismStudio inherits Window {
                                 Text { text: root.inspector-name == "" ? "A closer look." : root.inspector-name; color: #e5deed; font-size: 16px; wrap: word-wrap; }
                                 Text { text: root.selected-clip-index >= 0 ? root.inspector-track + (root.inspector-locked ? "  /  LOCKED" : "  /  VIDEO CLIP") : "Select a timeline clip to inspect its timing and source."; color: #89869c; font-size: 10px; wrap: word-wrap; }
                                 if root.selected-clip-index >= 0 : Rectangle { height: 1px; background: #393540; }
+                                if root.selected-track-index >= 0 : HorizontalLayout { height: 28px; spacing: 6px; Action { label: "Track ↑"; height: 27px; enabled: root.selected-track-index > 0; clicked => { root.command-invoked("timeline.track_up"); } } Action { label: "Track ↓"; height: 27px; enabled: root.selected-track-index + 1 < root.tracks.length; clicked => { root.command-invoked("timeline.track_down"); } } }
                                 if root.selected-clip-index >= 0 : Text { text: "CLIP TIMING"; color: #a69ac1; font-size: 9px; height: 18px; }
                                 if root.selected-clip-index >= 0 : Text { text: "Sequence start · seconds"; color: #9994a8; font-size: 10px; height: 16px; }
                                 if root.selected-clip-index >= 0 : Field { text <=> root.clip-start; enabled: !root.inspector-locked; }
