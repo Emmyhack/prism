@@ -68,6 +68,9 @@ that region, and Reset layout restores the session defaults.
   Studio chooses a validated duration up to 15 frames, renders the transition over the
   edit boundary, and uses the same control to remove it. Add/remove are persisted,
   autosaved, and undoable.
+- Duplicate to track end copies the selected clip's exact media identity and source
+  range after the last clip on its current track. The placement is overlap-safe,
+  persisted, autosaved, and undoable.
 - Play/Pause (or Spacebar) advances the sequence clock and requests current video
   frames through the bounded preview worker. Newer requests supersede queued stale
   frames. When an unmuted audio clip is active, Prism starts `ffplay` at the matching

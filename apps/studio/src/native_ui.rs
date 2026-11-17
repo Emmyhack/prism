@@ -526,6 +526,7 @@ impl NativeExportRuntime {
             "timeline.add_marker" => self.add_marker(ui),
             "timeline.delete_marker" => self.delete_marker(ui),
             "timeline.toggle_dissolve" => self.toggle_dissolve(ui),
+            "timeline.duplicate" => self.duplicate_clip(ui),
             "timeline.toggle_snap" => {
                 ui.set_snap_enabled(!ui.get_snap_enabled());
                 ui.set_feedback(
@@ -1544,6 +1545,38 @@ impl NativeExportRuntime {
             "Add dissolve"
         };
         self.commit(ui, operation, label)
+    }
+
+    fn duplicate_clip(&self, ui: &PrismStudio) -> Result<(), String> {
+        let selected = usize::try_from(ui.get_selected_clip_index())
+            .map_err(|_| "Select a clip first".to_owned())?;
+        let operation = {
+            let project = self.project.borrow();
+            let sequence = project
+                .as_ref()
+                .and_then(|project| project.sequences.values().next())
+                .ok_or_else(|| "No sequence available".to_owned())?;
+            let (track, clip) = sequence
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
+                .nth(selected)
+                .ok_or_else(|| "Selected clip is unavailable".to_owned())?;
+            let timeline_start = track
+                .clips
+                .iter()
+                .filter_map(|clip| clip.timeline_start.checked_add(clip.source_duration).ok())
+                .max()
+                .unwrap_or(RationalTime::ZERO);
+            Command::DuplicateClip {
+                sequence_id: sequence.id,
+                track_id: track.id,
+                clip_id: clip.id,
+                new_clip_id: ClipId::new(),
+                timeline_start,
+            }
+        };
+        self.commit(ui, operation, "Duplicate clip to track end")
     }
 
     fn change_track(&self, ui: &PrismStudio, index: i32, action: &str) -> Result<(), String> {
@@ -3354,6 +3387,34 @@ mod tests {
         assert_eq!(
             sequence.tracks[0].clips[1].source_duration,
             RationalTime::new(1, 4)?
+        );
+        runtime.apply_history(&ui, false)?;
+        assert_eq!(ui.get_timeline_clips().row_count(), 1);
+
+        ui.set_selected_clip_index(0);
+        runtime.update_inspector(&ui);
+        runtime.duplicate_clip(&ui)?;
+        assert_eq!(ui.get_timeline_clips().row_count(), 2);
+        let duplicated = prism_persistence::load(&path)?;
+        let duplicated_track = &duplicated
+            .sequences
+            .values()
+            .next()
+            .ok_or("missing sequence")?
+            .tracks[0];
+        assert_eq!(
+            duplicated_track.clips[1].source_start,
+            duplicated_track.clips[0].source_start
+        );
+        assert_eq!(
+            duplicated_track.clips[1].source_duration,
+            duplicated_track.clips[0].source_duration
+        );
+        assert_eq!(
+            duplicated_track.clips[1].timeline_start,
+            duplicated_track.clips[0]
+                .timeline_start
+                .checked_add(duplicated_track.clips[0].source_duration)?
         );
         runtime.apply_history(&ui, false)?;
         assert_eq!(ui.get_timeline_clips().row_count(), 1);
