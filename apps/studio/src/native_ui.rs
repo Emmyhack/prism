@@ -1,13 +1,13 @@
 //! Native Slint adapter for the Prism desktop workspace.
 
 use prism_commands::{Command, CommandEngine, UndoRecord};
-use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId};
+use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
 use prism_export::{ExportPreset, SingleTrackMp4ExportRequest, VideoAudioMp4ExportRequest};
 use prism_media::{
     FfmpegProxyGenerator, FfmpegReferenceDecoder, FfprobeInspector, ProxyProfile, ProxyRequest,
     StreamKind,
 };
-use prism_project::{Project, TrackKind};
+use prism_project::{Project, TrackKind, TransitionKind};
 use prism_studio::desktop::{ExportController, ExportStatus, ExportWorker, ExportWorkerEvent};
 use prism_timeline::RationalTime;
 use std::{
@@ -524,6 +524,7 @@ impl NativeExportRuntime {
             "timeline.ripple_delete" => self.edit_clip(command, ui),
             "timeline.add_marker" => self.add_marker(ui),
             "timeline.delete_marker" => self.delete_marker(ui),
+            "timeline.toggle_dissolve" => self.toggle_dissolve(ui),
             "timeline.toggle_snap" => {
                 ui.set_snap_enabled(!ui.get_snap_enabled());
                 ui.set_feedback(
@@ -1427,6 +1428,59 @@ impl NativeExportRuntime {
         Ok(())
     }
 
+    fn toggle_dissolve(&self, ui: &PrismStudio) -> Result<(), String> {
+        let selected = usize::try_from(ui.get_selected_clip_index())
+            .map_err(|_| "Select a video clip first".to_owned())?;
+        let operation = {
+            let project = self.project.borrow();
+            let sequence = project
+                .as_ref()
+                .and_then(|project| project.sequences.values().next())
+                .ok_or_else(|| "No sequence available".to_owned())?;
+            let (track, clip_index) = sequence
+                .tracks
+                .iter()
+                .flat_map(|track| (0..track.clips.len()).map(move |index| (track, index)))
+                .nth(selected)
+                .ok_or_else(|| "Selected clip is unavailable".to_owned())?;
+            if track.kind != TrackKind::Video {
+                return Err("Dissolves require a video track".to_owned());
+            }
+            let outgoing = &track.clips[clip_index];
+            let incoming = track
+                .clips
+                .get(clip_index + 1)
+                .ok_or_else(|| "Select a clip with an adjacent video clip after it".to_owned())?;
+            if let Some(transition) = sequence.transitions.iter().find(|transition| {
+                transition.outgoing_clip == outgoing.id && transition.incoming_clip == incoming.id
+            }) {
+                Command::DeleteTransition {
+                    sequence_id: sequence.id,
+                    transition_id: transition.id,
+                }
+            } else {
+                let duration = RationalTime::new(15, 30)
+                    .map_err(|error| error.to_string())?
+                    .min(outgoing.source_duration)
+                    .min(incoming.source_duration);
+                Command::AddTransition {
+                    sequence_id: sequence.id,
+                    id: TransitionId::new(),
+                    outgoing_clip: outgoing.id,
+                    incoming_clip: incoming.id,
+                    duration,
+                    kind: TransitionKind::Dissolve,
+                }
+            }
+        };
+        let label = if ui.get_selected_has_transition() {
+            "Remove dissolve"
+        } else {
+            "Add dissolve"
+        };
+        self.commit(ui, operation, label)
+    }
+
     fn change_track(&self, ui: &PrismStudio, index: i32, action: &str) -> Result<(), String> {
         let operation = {
             let project = self.project.borrow();
@@ -1624,9 +1678,9 @@ impl NativeExportRuntime {
                 .enumerate()
                 .flat_map(|(row, track)| track.clips.iter().map(move |clip| (row, track, clip)))
                 .nth(usize::try_from(ui.get_selected_clip_index()).ok()?)?;
-            Some((p, row, track, clip))
+            Some((p, sequence, row, track, clip))
         });
-        if let Some((project, row, track, clip)) = selected {
+        if let Some((project, sequence, row, track, clip)) = selected {
             let path = project
                 .media
                 .get(&clip.media_id)
@@ -1656,10 +1710,23 @@ impl NativeExportRuntime {
             ui.set_clip_start(timing_text(clip.timeline_start));
             ui.set_clip_source_in(timing_text(clip.source_start));
             ui.set_clip_duration(timing_text(clip.source_duration));
+            let next = track
+                .clips
+                .iter()
+                .position(|item| item.id == clip.id)
+                .and_then(|index| track.clips.get(index + 1));
+            ui.set_selected_has_next(track.kind == TrackKind::Video && next.is_some());
+            ui.set_selected_has_transition(next.is_some_and(|next| {
+                sequence.transitions.iter().any(|transition| {
+                    transition.outgoing_clip == clip.id && transition.incoming_clip == next.id
+                })
+            }));
         } else {
             ui.set_inspector_name("".into());
             ui.set_inspector_path("".into());
             ui.set_inspector_locked(false);
+            ui.set_selected_has_next(false);
+            ui.set_selected_has_transition(false);
         }
     }
 
@@ -2521,6 +2588,39 @@ fn apply_project_summary(ui: &PrismStudio, project: &Project, project_path: &Pat
         .unwrap_or_default();
     ui.set_timeline_clips(slint::ModelRc::new(slint::VecModel::from(timeline_items)));
     let sequence = project.sequences.values().next();
+    let transition_items = sequence
+        .map(|sequence| {
+            let total_seconds = sequence
+                .duration()
+                .map(|duration| duration.as_seconds_f64().max(0.001))
+                .unwrap_or(1.0);
+            sequence
+                .transitions
+                .iter()
+                .filter_map(|transition| {
+                    sequence.tracks.iter().enumerate().find_map(|(row, track)| {
+                        track
+                            .clips
+                            .iter()
+                            .find(|clip| clip.id == transition.outgoing_clip)
+                            .and_then(|clip| {
+                                clip.timeline_start
+                                    .checked_add(clip.source_duration)
+                                    .ok()
+                                    .map(|boundary| TimelineTransitionItem {
+                                        ratio: (boundary.as_seconds_f64() / total_seconds) as f32,
+                                        width_ratio: (transition.duration.as_seconds_f64()
+                                            / total_seconds)
+                                            as f32,
+                                        row: i32::try_from(row).unwrap_or(3),
+                                    })
+                            })
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    ui.set_timeline_transitions(slint::ModelRc::new(slint::VecModel::from(transition_items)));
     let tracks = sequence
         .map(|s| {
             s.tracks
@@ -2950,6 +3050,18 @@ mod tests {
             sequence.tracks[0].clips[1].timeline_start,
             RationalTime::new(1, 1)?
         );
+        ui.set_selected_clip_index(0);
+        runtime.update_inspector(&ui);
+        assert!(ui.get_selected_has_next());
+        runtime.toggle_dissolve(&ui)?;
+        assert_eq!(ui.get_timeline_transitions().row_count(), 1);
+        assert!(ui.get_selected_has_transition());
+        runtime.toggle_dissolve(&ui)?;
+        assert_eq!(ui.get_timeline_transitions().row_count(), 0);
+        runtime.apply_history(&ui, false)?;
+        assert_eq!(ui.get_timeline_transitions().row_count(), 1);
+        runtime.apply_history(&ui, false)?;
+        assert_eq!(ui.get_timeline_transitions().row_count(), 0);
 
         if std::env::var_os("PRISM_TEST_FFMPEG").is_some() {
             runtime.seek_time(&ui, RationalTime::new(1, 2)?);
@@ -3006,7 +3118,7 @@ mod tests {
         runtime.update_inspector(&ui);
         assert!(!ui.get_inspector_name().is_empty());
         assert!(ui.get_can_undo());
-        assert_eq!(ui.get_history_items().row_count(), 3);
+        assert_eq!(ui.get_history_items().row_count(), 5);
 
         // Render all four workspaces and the minimum supported desktop size.
         // Optional PPM artifacts support visual review without a live desktop session.

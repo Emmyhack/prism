@@ -4,6 +4,7 @@ export struct TimelineClipItem {
     name: string, start-ratio: float, width-ratio: float, row: int, audio: bool,
 }
 export struct TimelineMarkerItem { label: string, ratio: float }
+export struct TimelineTransitionItem { ratio: float, width-ratio: float, row: int }
 export struct MediaCard { index: int, name: string, frame: image, has-frame: bool, status: string }
 export struct HistoryItem { label: string, applied: bool }
 export struct TrackItem { name: string, audio: bool, locked: bool, muted: bool, visible: bool }
@@ -76,6 +77,7 @@ export component PrismStudio inherits Window {
     in property <[string]> ruler-labels;
     in property <[TimelineMarkerItem]> timeline-markers;
     in-out property <int> selected-marker-index: -1;
+    in property <[TimelineTransitionItem]> timeline-transitions;
     in-out property <string> export-status: "READY";
     in-out property <string> export-output: "Untitled Export.mp4";
     in-out property <string> export-error: "";
@@ -126,6 +128,8 @@ export component PrismStudio inherits Window {
     in-out property <bool> proxy-active: false;
     in-out property <bool> proxy-generating: false;
     in property <bool> inspector-locked: false;
+    in property <bool> selected-has-next: false;
+    in property <bool> selected-has-transition: false;
     in-out property <string> clip-start: "0";
     in-out property <string> clip-source-in: "0";
     in-out property <string> clip-duration: "0";
@@ -450,6 +454,7 @@ export component PrismStudio inherits Window {
                                                         TouchArea { width: 7px; mouse-cursor: ew-resize; pointer-event(event) => { if event.kind == PointerEventKind.up && Math.abs(self.mouse-x - self.pressed-x) > 2px { root.clip-adjusted(index, (self.mouse-x - self.pressed-x) / parent.width * clip.width-ratio, "in"); } } }
                                                         TouchArea { x: parent.width - 7px; width: 7px; mouse-cursor: ew-resize; pointer-event(event) => { if event.kind == PointerEventKind.up && Math.abs(self.mouse-x - self.pressed-x) > 2px { root.clip-adjusted(index, (self.mouse-x - self.pressed-x) / parent.width * clip.width-ratio, "out"); } } }
                                                     }
+                                                    for transition in root.timeline-transitions : Rectangle { x: parent.width * (transition.ratio - transition.width-ratio / 2 - root.timeline-offset) * root.timeline-zoom; y: 36px + transition.row * 60px; width: Math.max(14px, parent.width * transition.width-ratio * root.timeline-zoom); height: 15px; border-radius: 2px; background: #b48b4dcc; border-width: 1px; border-color: #e2bd72; Text { text: "D"; color: #211a12; font-size: 8px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
                                                     Rectangle { x: (root.playhead-ratio - root.timeline-offset) * root.timeline-zoom * (parent.width - 1px); y: 0px; width: 1px; height: parent.height; background: #c4b3f8; }
                                                     Rectangle { x: (root.playhead-ratio - root.timeline-offset) * root.timeline-zoom * (parent.width - 1px) - 3px; y: 0px; width: 7px; height: 9px; background: #c4b3f8; }
                                                     if root.clip-count == 0 : Text { y: 77px; width: parent.width; text: "Your story takes shape here"; color: #717184; font-size: 11px; horizontal-alignment: center; }
@@ -485,6 +490,7 @@ export component PrismStudio inherits Window {
                                 if root.selected-clip-index >= 0 : HorizontalLayout { height: 28px; spacing: 6px; Action { label: "Out −1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.trim_out_left"); } } Action { label: "Out +1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.trim_out_right"); } } }
                                 if root.selected-clip-index >= 0 : Text { text: "Use seconds or an exact fraction, e.g. 1.5 or 3/2."; color: #6e6b7e; font-size: 10px; wrap: word-wrap; }
                                 if root.selected-clip-index >= 0 : Action { label: "Apply timing"; primary: true; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.apply_timing"); } }
+                                if root.selected-clip-index >= 0 : Action { label: root.selected-has-transition ? "Remove dissolve" : "Add dissolve at clip end"; enabled: !root.inspector-locked && root.selected-has-next; clicked => { root.command-invoked("timeline.toggle_dissolve"); } }
                                 if root.selected-clip-index >= 0 : Text { text: "PRECISION EDITS"; color: #a69ac1; font-size: 9px; height: 18px; }
                                 if root.selected-clip-index >= 0 : HorizontalLayout { height: 28px; spacing: 6px; Action { label: "Slip −1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.slip_left"); } } Action { label: "Slip +1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.slip_right"); } } }
                                 if root.selected-clip-index >= 0 : HorizontalLayout { height: 28px; spacing: 6px; Action { label: "Roll In −1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.roll_in_left"); } } Action { label: "Roll In +1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.roll_in_right"); } } }

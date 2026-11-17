@@ -60,6 +60,10 @@ that region, and Reset layout restores the session defaults.
 - Sequence markers render as amber flags in the ruler. Clicking a flag selects it and
   seeks the playhead; ×M deletes the selected marker through the same persisted,
   undoable command path.
+- Select a video clip with an adjacent clip after it to add a dissolve at the cut.
+  Studio chooses a validated duration up to 15 frames, renders the transition over the
+  edit boundary, and uses the same control to remove it. Add/remove are persisted,
+  autosaved, and undoable.
 - Play/Pause (or Spacebar) advances the sequence clock and requests current video
   frames through the bounded preview worker. Newer requests supersede queued stale
   frames. When an unmuted audio clip is active, Prism starts `ffplay` at the matching
