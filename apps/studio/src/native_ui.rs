@@ -416,6 +416,7 @@ struct NativeExportRuntime {
     cards: RefCell<Vec<MediaCard>>,
     use_proxy: Cell<bool>,
     proxy_generation: RefCell<Option<ProxyGeneration>>,
+    recovery_candidates: RefCell<Vec<prism_persistence::AutosaveCandidate>>,
 }
 
 impl NativeExportRuntime {
@@ -444,6 +445,7 @@ impl NativeExportRuntime {
             cards: RefCell::new(Vec::new()),
             use_proxy: Cell::new(false),
             proxy_generation: RefCell::new(None),
+            recovery_candidates: RefCell::new(Vec::new()),
         }
     }
 
@@ -570,6 +572,7 @@ impl NativeExportRuntime {
                 Ok(())
             }
             "project.open" => self.open_project(ui),
+            "recovery.recover_latest" => self.recover_latest(ui),
             "project.import_media" => self.import_media(ui),
             "export.queue" => self.queue(ui),
             "export.cancel" => {
@@ -742,6 +745,84 @@ impl NativeExportRuntime {
         Ok(())
     }
 
+    fn refresh_recovery(&self, ui: &PrismStudio) {
+        let candidates = self
+            .project_path
+            .borrow()
+            .as_deref()
+            .map(prism_persistence::list_autosaves)
+            .transpose();
+        match candidates {
+            Ok(Some(candidates)) => {
+                ui.set_recovery_count(i32::try_from(candidates.len()).unwrap_or(i32::MAX));
+                if let Some(candidate) = candidates.first() {
+                    ui.set_recovery_revision(candidate.revision.to_string().into());
+                    ui.set_recovery_path(candidate.path.display().to_string().into());
+                } else {
+                    ui.set_recovery_revision("".into());
+                    ui.set_recovery_path("".into());
+                }
+                *self.recovery_candidates.borrow_mut() = candidates;
+            }
+            Ok(None) => {
+                self.recovery_candidates.borrow_mut().clear();
+                ui.set_recovery_count(0);
+                ui.set_recovery_revision("".into());
+                ui.set_recovery_path("".into());
+            }
+            Err(error) => {
+                self.recovery_candidates.borrow_mut().clear();
+                ui.set_recovery_count(0);
+                ui.set_recovery_revision("".into());
+                ui.set_recovery_path("".into());
+                ui.set_feedback(format!("Could not inspect recovery files: {error}").into());
+            }
+        }
+    }
+
+    fn recover_latest(&self, ui: &PrismStudio) -> Result<(), String> {
+        let source = self
+            .recovery_candidates
+            .borrow()
+            .first()
+            .map(|candidate| candidate.path.clone())
+            .ok_or_else(|| "No recovery candidate is available".to_owned())?;
+        let default_name = self
+            .project_path
+            .borrow()
+            .as_deref()
+            .and_then(Path::file_stem)
+            .and_then(|name| name.to_str())
+            .map(|name| format!("{name}.recovered.prism"))
+            .unwrap_or_else(|| "Recovered.prism".to_owned());
+        let Some(destination) = rfd::FileDialog::new()
+            .set_title("Recover Prism Autosave As")
+            .set_file_name(default_name)
+            .add_filter("Prism Project", &["prism"])
+            .save_file()
+        else {
+            return Ok(());
+        };
+        let revision = prism_persistence::recover_autosave(&source, &destination)
+            .map_err(|error| error.to_string())?;
+        let project = prism_persistence::load(&destination).map_err(|error| error.to_string())?;
+        apply_project_summary(ui, &project, &destination);
+        ui.set_export_output(
+            destination
+                .with_extension("export.mp4")
+                .display()
+                .to_string()
+                .into(),
+        );
+        *self.project.borrow_mut() = Some(project);
+        *self.project_path.borrow_mut() = Some(destination);
+        self.reset_view(ui);
+        ui.set_feedback(
+            format!("Recovered autosave revision {revision} into a new project").into(),
+        );
+        Ok(())
+    }
+
     fn reset_view(&self, ui: &PrismStudio) {
         self.stop_playback(ui);
         if let Some(generation) = self.proxy_generation.borrow().as_ref() {
@@ -755,6 +836,7 @@ impl NativeExportRuntime {
         ui.set_timeline_zoom(1.0);
         ui.set_timeline_offset(0.0);
         ui.set_snap_enabled(true);
+        self.refresh_recovery(ui);
         self.source_duration.set(RationalTime::ZERO);
         self.source_position.set(RationalTime::ZERO);
         self.source_in.set(RationalTime::ZERO);
@@ -2560,12 +2642,23 @@ mod tests {
             .join("../../fixtures/media/av-ntsc-48k.mp4");
         let mut project = Project::new("A different perspective");
         insert_video_into_project(&mut project, &fixture, RationalTime::new(2, 1)?)?;
-        let path = std::env::temp_dir().join(format!("prism-ui-test-{}.prism", std::process::id()));
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "prism-ui-test-{}-{nonce}.prism",
+            std::process::id()
+        ));
         prism_persistence::save_atomic(&project, &path)?;
+        let autosave_path = prism_persistence::save_autosave(&project, &path)?;
+        let autosave_revision = project.revision();
         apply_project_summary(&ui, &project, &path);
         let runtime = Rc::new(NativeExportRuntime::new(Some(project), Some(path.clone())));
         bind_editor_callbacks(&ui, &runtime);
         runtime.reset_view(&ui);
+        assert_eq!(ui.get_recovery_count(), 1);
+        assert_eq!(ui.get_recovery_path(), autosave_path.display().to_string());
+        assert_eq!(ui.get_recovery_revision(), autosave_revision.to_string());
         assert!(ui.get_snap_enabled());
         runtime.handle("timeline.toggle_snap", &ui)?;
         assert!(!ui.get_snap_enabled());
@@ -2858,6 +2951,7 @@ mod tests {
         assert_eq!(ui.get_selected_proxy(), "");
         assert!(!ui.get_proxy_active());
         std::fs::remove_file(proxy_path)?;
+        std::fs::remove_file(autosave_path)?;
         std::fs::remove_file(path)?;
         ui.hide()?;
         Ok(())

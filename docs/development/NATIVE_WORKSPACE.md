@@ -16,6 +16,9 @@ that region, and Reset layout restores the session defaults.
 ## Supported interactions
 
 - Create/open a local project; save with the header button or Ctrl/Cmd+S.
+- When revision-scoped autosaves exist beside the current project, Home shows the
+  newest discoverable candidate and its revision. Recovery validates it and writes to a new
+  user-selected project path and never replaces the active project or autosave.
 - Import one or more videos with native file dialogs (Ctrl/Cmd+I). Imports append
   clips to the first unlocked video track, creating a sequence/track if required.
   New projects prompt for a save destination. Cancellation leaves the project intact.

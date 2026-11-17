@@ -113,6 +113,9 @@ export component PrismStudio inherits Window {
     in property <string> inspector-path: "";
     in property <string> selected-proxy: "";
     in property <string> proxy-status: "MISSING";
+    in property <int> recovery-count: 0;
+    in property <string> recovery-revision: "";
+    in property <string> recovery-path: "";
     in-out property <bool> proxy-active: false;
     in-out property <bool> proxy-generating: false;
     in property <bool> inspector-locked: false;
@@ -212,6 +215,11 @@ export component PrismStudio inherits Window {
                             Text { x: 22px; y: 20px; text: root.has-project ? root.project-name : "Your canvas is ready"; color: #e1e1eb; font-size: 16px; }
                             Text { x: 22px; y: 52px; width: parent.width - 180px; text: root.has-project ? root.project-path : "Create a project or open an existing .prism file."; color: #8e8e9b; font-size: 11px; overflow: elide; }
                             Action { visible: root.has-project; x: parent.width - 128px; y: 30px; width: 106px; label: "Continue  →"; clicked => { root.active-workspace = "EDIT"; } }
+                        }
+                        if root.recovery-count > 0 : Rectangle { height: 82px; background: #302a22; border-radius: 5px; border-width: 1px; border-color: #665238;
+                            Text { x: 18px; y: 13px; text: "RECOVERY AVAILABLE  /  REVISION " + root.recovery-revision; color: #d6ae68; font-size: 9px; }
+                            Text { x: 18px; y: 38px; width: parent.width - 190px; text: root.recovery-path; color: #a89b88; font-size: 10px; overflow: elide; }
+                            Action { x: parent.width - 156px; y: 24px; width: 138px; label: "Recover as…"; clicked => { root.command-invoked("recovery.recover_latest"); } }
                         }
                         Rectangle { vertical-stretch: 1; }
                         Text { text: "01  IMPORT       /       02  SHAPE YOUR STORY       /       03  EXPORT"; color: #6e6e7d; font-size: 10px; height: 20px; }

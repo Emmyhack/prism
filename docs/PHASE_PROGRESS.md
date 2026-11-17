@@ -31,8 +31,9 @@ Remaining acceptance work:
   and its project summary exposes locked/muted track and marker state. The
   native command bar renders export progress, failures, and state-valid
   cancel/retry/clear controls; cache-task presentation remains pending);
-- expose crash-recovery candidates through the Studio workflow (implemented
-  through `--list-autosaves` and the stable `AutosaveSummary` boundary);
+- expose crash-recovery candidates through the Studio workflow (`--list-autosaves`,
+  the stable `AutosaveSummary` boundary, and native newest-candidate discovery plus
+  no-clobber Recover As workflow are implemented and rendered on Home);
 - provide a stable default keyboard map for selection, razor, trim, slip,
   slide, rolling, playback, undo, and redo (`--list-shortcuts` exposes the
   map for UI adapters; deterministic event resolution and native graphical
