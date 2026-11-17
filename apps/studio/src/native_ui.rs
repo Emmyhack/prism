@@ -1,7 +1,7 @@
 //! Native Slint adapter for the Prism desktop workspace.
 
 use prism_commands::{Command, CommandEngine, UndoRecord};
-use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
+use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId};
 use prism_export::{ExportPreset, SingleTrackMp4ExportRequest, VideoAudioMp4ExportRequest};
 use prism_media::{
     FfmpegProxyGenerator, FfmpegReferenceDecoder, FfprobeInspector, ProxyProfile, ProxyRequest,
@@ -510,6 +510,20 @@ impl NativeExportRuntime {
                 Ok(())
             }
             "timeline.split" | "timeline.delete" => self.edit_clip(command, ui),
+            "timeline.ripple_delete" => self.edit_clip(command, ui),
+            "timeline.add_marker" => self.add_marker(ui),
+            "timeline.toggle_snap" => {
+                ui.set_snap_enabled(!ui.get_snap_enabled());
+                ui.set_feedback(
+                    if ui.get_snap_enabled() {
+                        "Timeline snapping enabled"
+                    } else {
+                        "Timeline snapping disabled"
+                    }
+                    .into(),
+                );
+                Ok(())
+            }
             "playback.play_pause" => {
                 let playing = !self.playing.get();
                 self.playing.set(playing);
@@ -740,6 +754,7 @@ impl NativeExportRuntime {
         self.update_history(ui);
         ui.set_timeline_zoom(1.0);
         ui.set_timeline_offset(0.0);
+        ui.set_snap_enabled(true);
         self.source_duration.set(RationalTime::ZERO);
         self.source_position.set(RationalTime::ZERO);
         self.source_in.set(RationalTime::ZERO);
@@ -1171,32 +1186,56 @@ impl NativeExportRuntime {
                 .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
                 .nth(index)
                 .ok_or_else(|| "Selected clip is no longer available".to_owned())?;
-            if command == "timeline.split" {
-                Command::SplitClip {
+            match command {
+                "timeline.split" => Command::SplitClip {
                     sequence_id: sequence.id,
                     track_id: track.id,
                     clip_id: clip.id,
                     right_clip_id: ClipId::new(),
                     timeline_position: self.playhead.get(),
-                }
-            } else {
-                Command::DeleteClip {
+                },
+                "timeline.ripple_delete" => Command::RippleDelete {
                     sequence_id: sequence.id,
                     track_id: track.id,
                     clip_id: clip.id,
-                }
+                },
+                _ => Command::DeleteClip {
+                    sequence_id: sequence.id,
+                    track_id: track.id,
+                    clip_id: clip.id,
+                },
             }
         };
         // End the immutable project borrow before commit replaces the snapshot.
-        let label = if command == "timeline.split" {
-            "Split clip"
-        } else {
-            "Delete clip"
+        let label = match command {
+            "timeline.split" => "Split clip",
+            "timeline.ripple_delete" => "Ripple delete clip",
+            _ => "Delete clip",
         };
         self.commit(ui, operation, label)?;
         ui.set_selected_clip_index(-1);
         self.update_inspector(ui);
         Ok(())
+    }
+
+    fn add_marker(&self, ui: &PrismStudio) -> Result<(), String> {
+        let (sequence_id, marker_number) = self
+            .project
+            .borrow()
+            .as_ref()
+            .and_then(|project| project.sequences.values().next())
+            .map(|sequence| (sequence.id, sequence.markers.len() + 1))
+            .ok_or_else(|| "No sequence available".to_owned())?;
+        self.commit(
+            ui,
+            Command::AddMarker {
+                sequence_id,
+                id: MarkerId::new(),
+                time: self.playhead.get(),
+                label: format!("Marker {marker_number}"),
+            },
+            "Add timeline marker",
+        )
     }
 
     fn change_track(&self, ui: &PrismStudio, index: i32, action: &str) -> Result<(), String> {
@@ -1659,13 +1698,15 @@ impl NativeExportRuntime {
             .as_ref()
             .and_then(|project| project.sequences.values().next()?.duration().ok())
             .ok_or_else(|| "No sequence available".to_owned())?;
+        let timescale = if ui.get_snap_enabled() { 30 } else { 300 };
         #[allow(clippy::cast_possible_truncation)]
-        let frames =
-            (sequence_duration.as_seconds_f64() * f64::from(delta_ratio) * 30.0).round() as i64;
-        if frames == 0 {
+        let ticks =
+            (sequence_duration.as_seconds_f64() * f64::from(delta_ratio) * f64::from(timescale))
+                .round() as i64;
+        if ticks == 0 {
             return Ok(());
         }
-        let delta = RationalTime::new(frames, 30).map_err(|error| error.to_string())?;
+        let delta = RationalTime::new(ticks, timescale).map_err(|error| error.to_string())?;
         if edge == "move" {
             let current = parse_timing(ui.get_clip_start().as_str())?;
             let target = current
@@ -2525,6 +2566,21 @@ mod tests {
         let runtime = Rc::new(NativeExportRuntime::new(Some(project), Some(path.clone())));
         bind_editor_callbacks(&ui, &runtime);
         runtime.reset_view(&ui);
+        assert!(ui.get_snap_enabled());
+        runtime.handle("timeline.toggle_snap", &ui)?;
+        assert!(!ui.get_snap_enabled());
+        runtime.handle("timeline.toggle_snap", &ui)?;
+        runtime.add_marker(&ui)?;
+        assert_eq!(
+            runtime
+                .project
+                .borrow()
+                .as_ref()
+                .and_then(|project| project.sequences.values().next())
+                .map(|sequence| sequence.markers.len()),
+            Some(1)
+        );
+        runtime.apply_history(&ui, false)?;
         assert_eq!(ui.get_tracks().row_count(), 1);
         assert_eq!(ui.get_timeline_clips().row_count(), 1);
         assert_eq!(ui.get_duration_label(), "00:00:02:00");
@@ -2747,6 +2803,11 @@ mod tests {
         runtime.seek_source(&ui, 0.4);
         assert_eq!(runtime.playhead.get(), sequence_position);
         runtime.append_source(&ui)?;
+        assert_eq!(ui.get_timeline_clips().row_count(), 2);
+        ui.set_selected_clip_index(0);
+        runtime.edit_clip("timeline.ripple_delete", &ui)?;
+        assert_eq!(ui.get_timeline_clips().row_count(), 1);
+        runtime.apply_history(&ui, false)?;
         assert_eq!(ui.get_timeline_clips().row_count(), 2);
         ui.set_selected_clip_index(0);
         runtime.precision_edit_frame(&ui, "timeline.roll_out_right")?;

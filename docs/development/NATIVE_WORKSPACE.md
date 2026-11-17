@@ -40,6 +40,10 @@ that region, and Reset layout restores the session defaults.
 - Use one-frame Slip, Roll In/Out, and Slide controls in Properties for exact
   three-point and boundary edits. Invalid edge operations report the missing neighbor;
   successful edits use the same atomic save and undo history as other timeline edits.
+- The native keyboard map is active in Edit: V/C/T/Y/U/R select editing tools,
+  Space plays, arrows step frames, comma inserts the marked source range, Backspace
+  ripple-deletes, S toggles snapping, M adds a marker, and the platform primary
+  modifier drives undo/redo. The timeline header shows the active tool and snap state.
 - Play/Pause (or Spacebar) advances the sequence clock and requests current video
   frames through the bounded preview worker. Newer requests supersede queued stale
   frames. When an unmuted audio clip is active, Prism starts `ffplay` at the matching

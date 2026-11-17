@@ -35,8 +35,8 @@ Remaining acceptance work:
   through `--list-autosaves` and the stable `AutosaveSummary` boundary);
 - provide a stable default keyboard map for selection, razor, trim, slip,
   slide, rolling, playback, undo, and redo (`--list-shortcuts` exposes the
-  map for UI adapters; deterministic event resolution is implemented, while
-  graphical event wiring remains pending);
+  map for UI adapters; deterministic event resolution and native graphical
+  event wiring are implemented, including insert, ripple delete, snap, and markers);
 - verify the complete import/edit/save/reopen/export workflow with a real media
   fixture on each supported platform (the complete fixture workflow now passes
   on the development macOS host; Windows and Linux verification remain).
