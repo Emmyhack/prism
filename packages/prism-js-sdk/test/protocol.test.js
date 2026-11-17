@@ -57,8 +57,9 @@ test("emits project-building operations", () => {
   assert.equal(createSequence({ id: "s", name: "Main" }).type, "createSequence");
   assert.equal(createTrack({ sequenceId: "s", id: "t", kind: "video" }).kind, "video");
   assert.equal(insertClip({ sequenceId: "s", trackId: "t", id: "c", mediaId: "m", timelineStart: time, sourceStart: time, sourceDuration: new RationalTime(1, 1) }).type, "insertClip");
-  assert.deepEqual(setMediaProxy({ mediaId: "m", proxyPath: "proxy.mp4" }), { type: "setMediaProxy", mediaId: "m", proxyPath: "proxy.mp4" });
-  assert.deepEqual(setMediaProxy({ mediaId: "m", proxyPath: null }), { type: "setMediaProxy", mediaId: "m", proxyPath: null });
+  const sourceSha256 = "a".repeat(64);
+  assert.deepEqual(setMediaProxy({ mediaId: "m", proxyPath: "proxy.mp4", sourceSha256, sourceBytes: 42 }), { type: "setMediaProxy", mediaId: "m", proxyPath: "proxy.mp4", sourceSha256, sourceBytes: 42 });
+  assert.deepEqual(setMediaProxy({ mediaId: "m", proxyPath: null }), { type: "setMediaProxy", mediaId: "m", proxyPath: null, sourceSha256: null, sourceBytes: null });
 });
 
 test("emits track lock operations", () => {

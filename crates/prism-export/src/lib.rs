@@ -1523,6 +1523,7 @@ mod tests {
                 id: media_id,
                 source_path: "missing.mp4".to_owned(),
                 proxy_path: None,
+                proxy_source_fingerprint: None,
             },
         );
         project.sequences.insert(
@@ -1633,6 +1634,7 @@ mod tests {
                 id: media_id,
                 source_path: "source.mp4".to_owned(),
                 proxy_path: None,
+                proxy_source_fingerprint: None,
             },
         );
         project.sequences.insert(
@@ -1750,6 +1752,7 @@ mod tests {
                 id: media_id,
                 source_path: "speech.wav".to_owned(),
                 proxy_path: None,
+                proxy_source_fingerprint: None,
             },
         );
         project.sequences.insert(
@@ -1879,6 +1882,7 @@ mod tests {
                 id: media_id,
                 source_path: "source.mp4".to_owned(),
                 proxy_path: None,
+                proxy_source_fingerprint: None,
             },
         );
         project.sequences.insert(
@@ -1962,6 +1966,7 @@ mod tests {
                 id: media_id,
                 source_path: source.display().to_string(),
                 proxy_path: None,
+                proxy_source_fingerprint: None,
             },
         );
         project.sequences.insert(

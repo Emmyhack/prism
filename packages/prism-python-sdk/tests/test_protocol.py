@@ -86,7 +86,7 @@ class ProtocolTests(unittest.TestCase):
             InsertClip("s", "t", "c", "m", time, time, RationalTime(1, 1)).as_dict()["type"],
             "insertClip",
         )
-        self.assertEqual(SetMediaProxy("m", "proxy.mp4").as_dict()["proxyPath"], "proxy.mp4")
+        self.assertEqual(SetMediaProxy("m", "proxy.mp4", "a" * 64, 42).as_dict()["sourceBytes"], 42)
         self.assertIsNone(SetMediaProxy("m", None).as_dict()["proxyPath"])
 
     def test_emits_track_lock_operation(self) -> None:

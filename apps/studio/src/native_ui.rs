@@ -5,15 +5,15 @@ use prism_commands::{Command, CommandEngine, UndoRecord};
 use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
 use prism_export::{ExportPreset, SingleTrackMp4ExportRequest, VideoAudioMp4ExportRequest};
 use prism_media::{
-    FfmpegProxyGenerator, FfmpegReferenceDecoder, FfprobeInspector, ProxyProfile, ProxyRequest,
-    StreamKind,
+    FfmpegProxyGenerator, FfmpegReferenceDecoder, FfprobeInspector, MediaFingerprint, ProxyProfile,
+    ProxyRequest, ProxyStatus, StreamKind, fingerprint,
 };
-use prism_project::{Project, TrackKind, TransitionKind};
+use prism_project::{MediaAsset, Project, ProxySourceFingerprint, TrackKind, TransitionKind};
 use prism_studio::desktop::{ExportController, ExportStatus, ExportWorker, ExportWorkerEvent};
 use prism_timeline::RationalTime;
 use std::{
     cell::{Cell, RefCell},
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     process::{Child, Command as ProcessCommand, Stdio},
     rc::Rc,
@@ -47,25 +47,19 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn proxy_status(source: &Path, proxy: Option<&Path>) -> &'static str {
-    let Some(proxy) = proxy else {
-        return PROXY_MISSING;
-    };
-    if !proxy.is_file() {
-        return PROXY_MISSING;
-    }
-    let Ok(source_modified) = std::fs::metadata(source).and_then(|metadata| metadata.modified())
-    else {
-        return PROXY_STALE;
-    };
-    let Ok(proxy_modified) = std::fs::metadata(proxy).and_then(|metadata| metadata.modified())
-    else {
-        return PROXY_STALE;
-    };
-    if proxy_modified < source_modified {
-        PROXY_STALE
-    } else {
-        PROXY_AVAILABLE
+fn proxy_status(
+    source: &Path,
+    proxy: Option<&Path>,
+    recorded: Option<&ProxySourceFingerprint>,
+) -> &'static str {
+    let recorded = recorded.map(|fingerprint| MediaFingerprint {
+        sha256: fingerprint.sha256.clone(),
+        byte_length: fingerprint.byte_length,
+    });
+    match prism_media::proxy_status(source, proxy, recorded.as_ref()) {
+        Ok(ProxyStatus::Available) => PROXY_AVAILABLE,
+        Ok(ProxyStatus::Missing) => PROXY_MISSING,
+        Ok(ProxyStatus::Stale) | Err(_) => PROXY_STALE,
     }
 }
 
@@ -232,6 +226,7 @@ struct ProxyGeneration {
     receiver: Receiver<Result<PathBuf, String>>,
     cancelled: Arc<AtomicBool>,
     media_id: MediaAssetId,
+    source_fingerprint: ProxySourceFingerprint,
 }
 
 impl PreviewWorker {
@@ -434,6 +429,7 @@ struct NativeExportRuntime {
     cards: RefCell<Vec<MediaCard>>,
     use_proxy: Cell<bool>,
     proxy_generation: RefCell<Option<ProxyGeneration>>,
+    proxy_availability: RefCell<BTreeMap<MediaAssetId, bool>>,
     recovery_candidates: RefCell<Vec<prism_persistence::AutosaveCandidate>>,
     autosave_scheduler: RefCell<Option<prism_persistence::AutosaveScheduler>>,
     pending_autosave: RefCell<Option<Project>>,
@@ -469,6 +465,7 @@ impl NativeExportRuntime {
             cards: RefCell::new(Vec::new()),
             use_proxy: Cell::new(false),
             proxy_generation: RefCell::new(None),
+            proxy_availability: RefCell::new(BTreeMap::new()),
             recovery_candidates: RefCell::new(Vec::new()),
             autosave_scheduler: RefCell::new(None),
             pending_autosave: RefCell::new(None),
@@ -929,6 +926,7 @@ impl NativeExportRuntime {
             generation.cancelled.store(true, Ordering::Release);
         }
         self.proxy_generation.borrow_mut().take();
+        self.proxy_availability.borrow_mut().clear();
         ui.set_proxy_generating(false);
         self.undo.borrow_mut().clear();
         self.redo.borrow_mut().clear();
@@ -1036,6 +1034,7 @@ impl NativeExportRuntime {
         else {
             return;
         };
+        self.proxy_availability.borrow_mut().remove(&asset.id);
         ui.set_selected_media_index(index);
         ui.set_selected_media(
             Path::new(&asset.source_path)
@@ -1056,7 +1055,11 @@ impl NativeExportRuntime {
         let status = proxy_status(
             Path::new(&asset.source_path),
             asset.proxy_path.as_deref().map(Path::new),
+            asset.proxy_source_fingerprint.as_ref(),
         );
+        self.proxy_availability
+            .borrow_mut()
+            .insert(asset.id, status == PROXY_AVAILABLE);
         ui.set_proxy_status(status.into());
         if status != PROXY_AVAILABLE {
             self.use_proxy.set(false);
@@ -1069,6 +1072,21 @@ impl NativeExportRuntime {
         };
         self.source_preview
             .request(PathBuf::from(preview_path), RationalTime::ZERO);
+    }
+
+    fn proxy_is_available(&self, asset: &MediaAsset) -> bool {
+        if let Some(available) = self.proxy_availability.borrow().get(&asset.id) {
+            return *available;
+        }
+        let available = proxy_status(
+            Path::new(&asset.source_path),
+            asset.proxy_path.as_deref().map(Path::new),
+            asset.proxy_source_fingerprint.as_ref(),
+        ) == PROXY_AVAILABLE;
+        self.proxy_availability
+            .borrow_mut()
+            .insert(asset.id, available);
+        available
     }
 
     fn select_clip(&self, ui: &PrismStudio, index: i32) {
@@ -1150,10 +1168,7 @@ impl NativeExportRuntime {
                         .ok()?
                         .checked_add(clip.source_start)
                         .ok()?;
-                    let proxy_is_available = proxy_status(
-                        Path::new(&asset.source_path),
-                        asset.proxy_path.as_deref().map(Path::new),
-                    ) == PROXY_AVAILABLE;
+                    let proxy_is_available = self.proxy_is_available(asset);
                     let path = if self.use_proxy.get() && proxy_is_available {
                         asset.proxy_path.as_deref().unwrap_or(&asset.source_path)
                     } else {
@@ -1253,6 +1268,13 @@ impl NativeExportRuntime {
 
     fn assign_proxy(&self, ui: &PrismStudio) -> Result<(), String> {
         let media_id = self.selected_media_id(ui)?;
+        let source = self
+            .project
+            .borrow()
+            .as_ref()
+            .and_then(|project| project.media.get(&media_id))
+            .map(|asset| PathBuf::from(&asset.source_path))
+            .ok_or_else(|| "Selected media is unavailable".to_owned())?;
         let Some(path) = rfd::FileDialog::new()
             .set_title("Assign Proxy Media")
             .add_filter("Video", &["mp4", "mov", "m4v", "mkv", "webm"])
@@ -1261,11 +1283,16 @@ impl NativeExportRuntime {
             return Ok(());
         };
         let index = ui.get_selected_media_index();
+        let source_fingerprint = fingerprint(&source).map_err(|error| error.to_string())?;
         self.commit(
             ui,
             Command::SetMediaProxy {
                 media_id,
                 proxy_path: Some(path.display().to_string()),
+                source_fingerprint: Some(ProxySourceFingerprint {
+                    sha256: source_fingerprint.sha256,
+                    byte_length: source_fingerprint.byte_length,
+                }),
             },
             "Assign media proxy",
         )?;
@@ -1347,6 +1374,7 @@ impl NativeExportRuntime {
             Command::SetMediaProxy {
                 media_id,
                 proxy_path: None,
+                source_fingerprint: None,
             },
             "Clear media proxy",
         )?;
@@ -1417,6 +1445,7 @@ impl NativeExportRuntime {
         if self.proxy_generation.borrow().is_some() {
             return Err("A proxy is already being generated".to_owned());
         }
+        let source_fingerprint = fingerprint(&source).map_err(|error| error.to_string())?;
         let profile = ProxyProfile::new(960, 540, "libx264", Some("aac".to_owned()), "mp4")
             .map_err(|error| error.to_string())?;
         let request = ProxyRequest {
@@ -1437,6 +1466,10 @@ impl NativeExportRuntime {
             receiver,
             cancelled,
             media_id,
+            source_fingerprint: ProxySourceFingerprint {
+                sha256: source_fingerprint.sha256,
+                byte_length: source_fingerprint.byte_length,
+            },
         });
         ui.set_proxy_generating(true);
         ui.set_feedback("Generating 540p proxy in the background…".into());
@@ -2515,13 +2548,15 @@ impl NativeExportRuntime {
             .borrow()
             .as_ref()
             .and_then(|generation| {
-                generation
-                    .receiver
-                    .try_recv()
-                    .ok()
-                    .map(|result| (generation.media_id, result))
+                generation.receiver.try_recv().ok().map(|result| {
+                    (
+                        generation.media_id,
+                        generation.source_fingerprint.clone(),
+                        result,
+                    )
+                })
             });
-        if let Some((media_id, result)) = proxy_result {
+        if let Some((media_id, source_fingerprint, result)) = proxy_result {
             self.proxy_generation.borrow_mut().take();
             ui.set_proxy_generating(false);
             match result {
@@ -2529,6 +2564,7 @@ impl NativeExportRuntime {
                     let command = Command::SetMediaProxy {
                         media_id,
                         proxy_path: Some(path.display().to_string()),
+                        source_fingerprint: Some(source_fingerprint),
                     };
                     if let Err(error) = self.commit(ui, command, "Generate media proxy") {
                         ui.set_feedback(error.into());
@@ -3089,8 +3125,9 @@ pub fn launch(project_path: Option<PathBuf>) -> Result<(), NativeUiError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Command, NativeExportStatus, PROXY_AVAILABLE, ProxyGeneration, TrackId, TrackKind,
-        insert_media_into_project, insert_video_into_project, next_proxy_version,
+        Command, NativeExportStatus, PROXY_AVAILABLE, ProxyGeneration, ProxySourceFingerprint,
+        TrackId, TrackKind, fingerprint, insert_media_into_project, insert_video_into_project,
+        next_proxy_version,
     };
     use prism_cache::{CacheKey, CacheLayout};
     use prism_project::Project;
@@ -3604,10 +3641,15 @@ mod tests {
         std::fs::write(&proxy_path, b"proxy")?;
         let (proxy_sender, proxy_receiver) = std::sync::mpsc::sync_channel(1);
         proxy_sender.send(Ok(proxy_path.clone()))?;
+        let recorded_source = fingerprint(&fixture)?;
         *runtime.proxy_generation.borrow_mut() = Some(ProxyGeneration {
             receiver: proxy_receiver,
             cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             media_id,
+            source_fingerprint: ProxySourceFingerprint {
+                sha256: recorded_source.sha256,
+                byte_length: recorded_source.byte_length,
+            },
         });
         ui.set_proxy_generating(true);
         runtime.poll(&ui);

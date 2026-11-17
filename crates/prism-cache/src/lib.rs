@@ -184,6 +184,7 @@ impl CacheWorker {
                 let key = request.key;
                 let extension = request.extension.clone();
                 let result = layout.write_atomic(key, &extension, &request.contents);
+                worker_pending.fetch_sub(1, Ordering::Release);
                 if result_tx
                     .send(CacheWriteResult {
                         key,
@@ -192,10 +193,8 @@ impl CacheWorker {
                     })
                     .is_err()
                 {
-                    worker_pending.fetch_sub(1, Ordering::Relaxed);
                     break;
                 }
-                worker_pending.fetch_sub(1, Ordering::Relaxed);
             }
         });
         Self {
@@ -267,14 +266,13 @@ impl CacheEvictionWorker {
         let worker_thread = thread::spawn(move || {
             while let Ok(policy) = request_rx.recv() {
                 let result = layout.evict(policy);
+                worker_pending.fetch_sub(1, Ordering::Release);
                 if result_tx
                     .send(CacheEvictionResult { policy, result })
                     .is_err()
                 {
-                    worker_pending.fetch_sub(1, Ordering::Relaxed);
                     break;
                 }
-                worker_pending.fetch_sub(1, Ordering::Relaxed);
             }
         });
         Self {

@@ -110,6 +110,26 @@ impl Project {
                 }
                 .into());
             }
+            if asset.proxy_path.is_none() && asset.proxy_source_fingerprint.is_some() {
+                return Err(ProjectValidationError::InvalidProxyFingerprint {
+                    media_id: asset.id.as_uuid().to_string(),
+                }
+                .into());
+            }
+            if let Some(fingerprint) = &asset.proxy_source_fingerprint {
+                if fingerprint.byte_length == 0
+                    || fingerprint.sha256.len() != 64
+                    || !fingerprint
+                        .sha256
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(ProjectValidationError::InvalidProxyFingerprint {
+                        media_id: asset.id.as_uuid().to_string(),
+                    }
+                    .into());
+                }
+            }
         }
         for (sequence_key, sequence) in &self.sequences {
             validate_sequence(
@@ -308,6 +328,17 @@ pub struct MediaAsset {
     pub source_path: String,
     /// Optional relinked proxy path used when proxy playback is selected.
     pub proxy_path: Option<String>,
+    /// Fingerprint of the original source when the configured proxy was assigned.
+    pub proxy_source_fingerprint: Option<ProxySourceFingerprint>,
+}
+
+/// Stable source identity recorded when a derived proxy is assigned.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProxySourceFingerprint {
+    /// Lowercase SHA-256 digest of the complete source file.
+    pub sha256: String,
+    /// Exact source byte length captured with the digest.
+    pub byte_length: u64,
 }
 
 impl MediaAsset {
@@ -516,6 +547,12 @@ pub enum ProjectValidationError {
         /// Invalid media identifier.
         media_id: String,
     },
+    /// A proxy source fingerprint is empty or not a lowercase SHA-256 digest.
+    #[error("media {media_id} has an invalid proxy source fingerprint")]
+    InvalidProxyFingerprint {
+        /// Invalid media identifier.
+        media_id: String,
+    },
     /// An ID required to be globally unique was repeated.
     #[error("duplicate {object} identifier")]
     DuplicateId {
@@ -662,6 +699,7 @@ mod tests {
                 id: media_id,
                 source_path: "/media/source.mov".to_owned(),
                 proxy_path: None,
+                proxy_source_fingerprint: None,
             },
         );
         let sequence_id = SequenceId::new();

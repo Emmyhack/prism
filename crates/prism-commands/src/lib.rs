@@ -2,7 +2,8 @@
 
 use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
 use prism_project::{
-    Clip, Marker, MediaAsset, Project, Sequence, Track, TrackKind, Transition, TransitionKind,
+    Clip, Marker, MediaAsset, Project, ProxySourceFingerprint, Sequence, Track, TrackKind,
+    Transition, TransitionKind,
 };
 use prism_timeline::RationalTime;
 use thiserror::Error;
@@ -388,6 +389,8 @@ pub enum Command {
         media_id: MediaAssetId,
         /// New proxy path, or `None` to clear the relink.
         proxy_path: Option<String>,
+        /// Source identity captured when the proxy was assigned.
+        source_fingerprint: Option<ProxySourceFingerprint>,
     },
     /// Adds an empty sequence.
     CreateSequence {
@@ -777,6 +780,9 @@ pub enum CommandError {
         /// Invalid field name.
         field: &'static str,
     },
+    /// A proxy mutation supplied an invalid or inconsistent source fingerprint.
+    #[error("proxy source fingerprint must be a non-empty lowercase SHA-256 identity")]
+    InvalidProxyFingerprint,
     /// A transaction must contain at least one mutation.
     #[error("transaction must contain at least one command")]
     EmptyTransaction,
@@ -999,7 +1005,8 @@ impl CommandEngine {
             Command::SetMediaProxy {
                 media_id,
                 proxy_path,
-            } => set_media_proxy(project, media_id, proxy_path),
+                source_fingerprint,
+            } => set_media_proxy(project, media_id, proxy_path, source_fingerprint),
             Command::CreateSequence { id, name } => create_sequence(project, id, name),
             Command::AddMarker {
                 sequence_id,
@@ -1202,6 +1209,7 @@ fn import_media(
             id,
             source_path,
             proxy_path: None,
+            proxy_source_fingerprint: None,
         },
     );
     Ok(Event::MediaImported { id })
@@ -1211,6 +1219,7 @@ fn set_media_proxy(
     project: &mut Project,
     media_id: MediaAssetId,
     proxy_path: Option<String>,
+    source_fingerprint: Option<ProxySourceFingerprint>,
 ) -> Result<Event, CommandError> {
     if proxy_path
         .as_deref()
@@ -1220,11 +1229,26 @@ fn set_media_proxy(
             field: "proxy_path",
         });
     }
+    if proxy_path.is_none() && source_fingerprint.is_some() {
+        return Err(CommandError::InvalidProxyFingerprint);
+    }
+    if let Some(fingerprint) = &source_fingerprint {
+        if fingerprint.byte_length == 0
+            || fingerprint.sha256.len() != 64
+            || !fingerprint
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(CommandError::InvalidProxyFingerprint);
+        }
+    }
     let asset = project
         .media
         .get_mut(&media_id)
         .ok_or(CommandError::MediaNotFound)?;
     asset.proxy_path = proxy_path;
+    asset.proxy_source_fingerprint = source_fingerprint;
     Ok(Event::MediaProxyUpdated { id: media_id })
 }
 
@@ -2043,7 +2067,7 @@ fn ensure_range_available(
 mod tests {
     use super::{Command, CommandEngine, CommandError, CommandRegistry, Event};
     use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
-    use prism_project::{Project, TrackKind, TransitionKind};
+    use prism_project::{Project, ProxySourceFingerprint, TrackKind, TransitionKind};
     use prism_timeline::{RationalTime, TimeError};
 
     #[test]
@@ -2181,6 +2205,10 @@ mod tests {
             Command::SetMediaProxy {
                 media_id,
                 proxy_path: Some("proxy.mp4".to_owned()),
+                source_fingerprint: Some(ProxySourceFingerprint {
+                    sha256: "a".repeat(64),
+                    byte_length: 42,
+                }),
             },
         )?;
         assert_eq!(
@@ -2192,6 +2220,7 @@ mod tests {
             Command::SetMediaProxy {
                 media_id,
                 proxy_path: None,
+                source_fingerprint: None,
             },
         )?;
         assert!(!project.media[&media_id].has_proxy_path());
@@ -2201,6 +2230,7 @@ mod tests {
                 Command::SetMediaProxy {
                     media_id,
                     proxy_path: Some("  ".to_owned()),
+                    source_fingerprint: None,
                 },
             ),
             Err(CommandError::EmptyField {

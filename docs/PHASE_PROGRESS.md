@@ -15,13 +15,14 @@ background cache workers, export presets, and crash-safe persistence helpers.
 Remaining acceptance work:
 
 - expose proxy assignment, switching, invalidation, and relinking in the
-  project model and command API (proxy paths now persist through schema v5,
+  project model and command API (proxy paths and their source fingerprints now persist through schema v6,
   `SetMediaProxy` and all three SDKs can set/clear validated relinks, and
   source/proxy freshness is available through the media boundary; Studio can generate,
   cancel, assign, clear, and switch persisted proxies graphically, classifies assigned
   proxies as available/missing/stale, and safely regenerates invalid proxies to a
   versioned sibling; original sources can be graphically relinked with stream/duration
-  validation and undo; content-fingerprint-driven invalidation remains);
+  validation and undo; Studio now records the full source fingerprint when assigning or
+  generating a proxy and invalidates it when source bytes change);
 - implement and test slip, slide, and rolling timeline edits with exact-time
   validation and undo records (slip and rolling edits are now implemented in
   the Rust command engine; slip, rolling, and slide protocol builders and Studio

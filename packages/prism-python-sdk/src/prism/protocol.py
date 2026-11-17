@@ -44,11 +44,30 @@ class ImportMedia:
 class SetMediaProxy:
     media_id: str
     proxy_path: str | None
+    source_sha256: str | None = None
+    source_bytes: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         if self.proxy_path is not None and not self.proxy_path.strip():
             raise ValueError("proxy_path must not be empty")
-        return {"type": "setMediaProxy", "mediaId": self.media_id, "proxyPath": self.proxy_path}
+        if self.proxy_path is None and (self.source_sha256 is not None or self.source_bytes is not None):
+            raise ValueError("cleared proxies cannot retain a source fingerprint")
+        if (self.source_sha256 is None) != (self.source_bytes is None):
+            raise ValueError("source_sha256 and source_bytes must be supplied together")
+        if self.source_sha256 is not None and (
+            len(self.source_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.source_sha256)
+            or not isinstance(self.source_bytes, int)
+            or self.source_bytes <= 0
+        ):
+            raise ValueError("proxy assignments require a lowercase SHA-256 and positive source byte length")
+        return {
+            "type": "setMediaProxy",
+            "mediaId": self.media_id,
+            "proxyPath": self.proxy_path,
+            "sourceSha256": self.source_sha256,
+            "sourceBytes": self.source_bytes,
+        }
 
 
 @dataclass(frozen=True)

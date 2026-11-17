@@ -573,6 +573,7 @@ mod tests {
                 id: video_media_id,
                 source_path: "video.mp4".to_owned(),
                 proxy_path: None,
+                proxy_source_fingerprint: None,
             },
         );
         project.media.insert(
@@ -581,6 +582,7 @@ mod tests {
                 id: audio_media_id,
                 source_path: "audio.wav".to_owned(),
                 proxy_path: None,
+                proxy_source_fingerprint: None,
             },
         );
         let video_clip_id = ClipId::new();

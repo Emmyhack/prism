@@ -6,7 +6,7 @@
 
 use prism_commands::{Command, CommandEngine};
 use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId};
-use prism_project::{Project, TrackKind};
+use prism_project::{Project, ProxySourceFingerprint, TrackKind};
 use prism_recipe::{RecipeError, RecipeLanguage, RecipeManifest, RecipePermission};
 use prism_timeline::RationalTime;
 use serde::{Deserialize, Serialize};
@@ -1025,6 +1025,10 @@ pub enum Operation {
         media_id: Uuid,
         /// New proxy path, or `None` to clear it.
         proxy_path: Option<String>,
+        /// Lowercase source SHA-256 recorded for the proxy assignment.
+        source_sha256: Option<String>,
+        /// Exact source byte length recorded with the digest.
+        source_bytes: Option<u64>,
     },
     /// Create an empty sequence.
     CreateSequence {
@@ -1286,6 +1290,9 @@ pub enum ProtocolError {
     /// Serialized rational time used a zero timescale.
     #[error("invalid rational time: timescale must be greater than zero")]
     InvalidTimebase,
+    /// Proxy fingerprint fields were only partially supplied.
+    #[error("invalid proxy fingerprint: SHA-256 and byte length must be supplied together")]
+    InvalidProxyFingerprint,
     /// Recipe metadata or inputs failed validation.
     #[error("invalid recipe: {0}")]
     InvalidRecipe(RecipeError),
@@ -1391,9 +1398,21 @@ impl Operation {
             Self::SetMediaProxy {
                 media_id,
                 proxy_path,
+                source_sha256,
+                source_bytes,
             } => Command::SetMediaProxy {
                 media_id: MediaAssetId::from_uuid(media_id),
                 proxy_path,
+                source_fingerprint: match (source_sha256, source_bytes) {
+                    (Some(sha256), Some(byte_length)) => Some(ProxySourceFingerprint {
+                        sha256,
+                        byte_length,
+                    }),
+                    (None, None) => None,
+                    _ => {
+                        return Err(ProtocolError::InvalidProxyFingerprint);
+                    }
+                },
             },
             Self::CreateSequence { id, name } => Command::CreateSequence {
                 id: SequenceId::from_uuid(id),

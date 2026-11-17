@@ -2928,6 +2928,7 @@ mod tests {
                 id: media_id,
                 source_path: "source.mp4".to_owned(),
                 proxy_path: None,
+                proxy_source_fingerprint: None,
             },
         );
         project.sequences.insert(

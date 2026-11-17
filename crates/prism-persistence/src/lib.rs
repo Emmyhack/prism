@@ -2,8 +2,8 @@
 
 use prism_core::{ClipId, MarkerId, MediaAssetId, ProjectId, SequenceId, TrackId, TransitionId};
 use prism_project::{
-    Clip, Marker, MediaAsset, Project, ProjectError, RestoredProject, Sequence, Track, TrackKind,
-    Transition, TransitionKind,
+    Clip, Marker, MediaAsset, Project, ProjectError, ProxySourceFingerprint, RestoredProject,
+    Sequence, Track, TrackKind, Transition, TransitionKind,
 };
 use prism_timeline::{RationalTime, TimeError};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -18,7 +18,7 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const STORAGE_SCHEMA_VERSION: u32 = 5;
+const STORAGE_SCHEMA_VERSION: u32 = 6;
 
 /// Persistence and stored-data validation failures.
 #[derive(Debug, Error)]
@@ -519,7 +519,9 @@ fn initialize(connection: &Connection) -> Result<(), PersistenceError> {
          CREATE TABLE IF NOT EXISTS media (
              id TEXT PRIMARY KEY,
              source_path TEXT NOT NULL,
-             proxy_path TEXT
+             proxy_path TEXT,
+             proxy_source_sha256 TEXT,
+             proxy_source_bytes INTEGER
          );
          CREATE TABLE IF NOT EXISTS sequence (
              id TEXT PRIMARY KEY,
@@ -568,7 +570,7 @@ fn initialize(connection: &Connection) -> Result<(), PersistenceError> {
              duration_scale INTEGER NOT NULL CHECK(duration_scale > 0),
              UNIQUE(track_id, position)
          );
-         PRAGMA user_version = 5;",
+         PRAGMA user_version = 6;",
     )?;
     Ok(())
 }
@@ -619,6 +621,14 @@ fn upgrade_storage_schema(connection: &Connection) -> Result<(), PersistenceErro
         connection.execute_batch(
             "ALTER TABLE media ADD COLUMN proxy_path TEXT;
              PRAGMA user_version = 5;",
+        )?;
+    }
+    let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 5 {
+        connection.execute_batch(
+            "ALTER TABLE media ADD COLUMN proxy_source_sha256 TEXT;
+             ALTER TABLE media ADD COLUMN proxy_source_bytes INTEGER;
+             PRAGMA user_version = 6;",
         )?;
     }
     Ok(())
@@ -692,11 +702,22 @@ fn write_project(transaction: &Transaction<'_>, project: &Project) -> Result<(),
     )?;
     for asset in project.media.values() {
         transaction.execute(
-            "INSERT INTO media(id, source_path, proxy_path) VALUES(?1, ?2, ?3)",
+            "INSERT INTO media(
+                 id, source_path, proxy_path, proxy_source_sha256, proxy_source_bytes
+             ) VALUES(?1, ?2, ?3, ?4, ?5)",
             params![
                 asset.id.as_uuid().to_string(),
                 asset.source_path,
-                asset.proxy_path
+                asset.proxy_path,
+                asset
+                    .proxy_source_fingerprint
+                    .as_ref()
+                    .map(|fingerprint| fingerprint.sha256.as_str()),
+                asset
+                    .proxy_source_fingerprint
+                    .as_ref()
+                    .map(|fingerprint| to_i64(fingerprint.byte_length, "proxy_source_bytes"))
+                    .transpose()?
             ],
         )?;
     }
@@ -848,18 +869,34 @@ fn read_root(connection: &Connection) -> Result<RootRow, PersistenceError> {
 fn read_media(
     connection: &Connection,
 ) -> Result<BTreeMap<MediaAssetId, MediaAsset>, PersistenceError> {
-    let mut statement =
-        connection.prepare("SELECT id, source_path, proxy_path FROM media ORDER BY id")?;
+    let mut statement = connection.prepare(
+        "SELECT id, source_path, proxy_path, proxy_source_sha256, proxy_source_bytes
+             FROM media ORDER BY id",
+    )?;
     let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
         ))
     })?;
     let mut media = BTreeMap::new();
     for row in rows {
-        let (raw_id, source_path, proxy_path) = row?;
+        let (raw_id, source_path, proxy_path, proxy_source_sha256, proxy_source_bytes) = row?;
+        let proxy_source_fingerprint = match (proxy_source_sha256, proxy_source_bytes) {
+            (Some(sha256), Some(byte_length)) => Some(ProxySourceFingerprint {
+                sha256,
+                byte_length: to_u64(byte_length, "media.proxy_source_bytes")?,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(PersistenceError::Integrity(
+                    "proxy source fingerprint columns must both be present or absent".to_owned(),
+                ));
+            }
+        };
         let id = MediaAssetId::from_uuid(parse_uuid("media.id", &raw_id)?);
         media.insert(
             id,
@@ -867,6 +904,7 @@ fn read_media(
                 id,
                 source_path,
                 proxy_path,
+                proxy_source_fingerprint,
             },
         );
     }
@@ -1158,7 +1196,7 @@ mod tests {
     };
     use prism_commands::{Command, CommandEngine};
     use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
-    use prism_project::{Project, TrackKind, TransitionKind};
+    use prism_project::{Project, ProxySourceFingerprint, TrackKind, TransitionKind};
     use prism_timeline::RationalTime;
     use rusqlite::Connection;
     use std::time::Duration;
@@ -1220,6 +1258,14 @@ mod tests {
             .get_mut(&media_id)
             .ok_or("missing media")?
             .proxy_path = Some("/cache/source-proxy.mp4".to_owned());
+        project
+            .media
+            .get_mut(&media_id)
+            .ok_or("missing media")?
+            .proxy_source_fingerprint = Some(ProxySourceFingerprint {
+            sha256: "a".repeat(64),
+            byte_length: 42,
+        });
         let first_clip_id = project.sequences[&sequence_id].tracks[0].clips[0].id;
         let second_clip_id = ClipId::new();
         CommandEngine::execute(
@@ -1273,6 +1319,13 @@ mod tests {
             loaded.media[&media_id].proxy_path.as_deref(),
             Some("/cache/source-proxy.mp4")
         );
+        assert_eq!(
+            loaded.media[&media_id].proxy_source_fingerprint,
+            Some(ProxySourceFingerprint {
+                sha256: "a".repeat(64),
+                byte_length: 42,
+            })
+        );
         let loaded_sequence = loaded.sequences.values().next().ok_or("missing sequence")?;
         assert!(!loaded_sequence.tracks[0].visible);
         assert!(loaded_sequence.tracks[0].muted);
@@ -1314,7 +1367,7 @@ mod tests {
         assert!(track.visible);
         assert!(!track.muted);
         let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         Ok(())
     }
 

@@ -25,7 +25,7 @@ export interface RippleDeleteOperation { readonly type: "rippleDelete"; readonly
 export interface AddTransitionOperation { readonly type: "addTransition"; readonly sequenceId: string; readonly id: string; readonly outgoingClip: string; readonly incomingClip: string; readonly duration: RationalTime; readonly kind: "dissolve"; }
 export interface DeleteTransitionOperation { readonly type: "deleteTransition"; readonly sequenceId: string; readonly transitionId: string; }
 export interface ImportMediaOperation { readonly type: "importMedia"; readonly id: string; readonly sourcePath: string; }
-export interface SetMediaProxyOperation { readonly type: "setMediaProxy"; readonly mediaId: string; readonly proxyPath: string | null; }
+export interface SetMediaProxyOperation { readonly type: "setMediaProxy"; readonly mediaId: string; readonly proxyPath: string | null; readonly sourceSha256: string | null; readonly sourceBytes: number | null; }
 export interface CreateSequenceOperation { readonly type: "createSequence"; readonly id: string; readonly name: string; }
 export interface CreateTrackOperation { readonly type: "createTrack"; readonly sequenceId: string; readonly id: string; readonly kind: "video" | "audio"; }
 export interface SetTrackLockedOperation { readonly type: "setTrackLocked"; readonly sequenceId: string; readonly trackId: string; readonly locked: boolean; }
@@ -53,9 +53,12 @@ export function rationalTime(value: number, timescale: number): RationalTime {
   return { value, timescale };
 }
 export function importMedia(id: string, sourcePath: string): ImportMediaOperation { return { type: "importMedia", id, sourcePath }; }
-export function setMediaProxy(mediaId: string, proxyPath: string | null): SetMediaProxyOperation {
+export function setMediaProxy(mediaId: string, proxyPath: string | null, sourceSha256: string | null = null, sourceBytes: number | null = null): SetMediaProxyOperation {
   if (proxyPath !== null && !proxyPath.trim()) throw new TypeError("proxyPath must not be empty");
-  return { type: "setMediaProxy", mediaId, proxyPath };
+  if (proxyPath === null && (sourceSha256 !== null || sourceBytes !== null)) throw new TypeError("cleared proxies cannot retain a source fingerprint");
+  if ((sourceSha256 === null) !== (sourceBytes === null)) throw new TypeError("sourceSha256 and sourceBytes must be supplied together");
+  if (sourceSha256 !== null && (!sourceSha256.match(/^[0-9a-f]{64}$/) || !Number.isSafeInteger(sourceBytes) || (sourceBytes ?? 0) <= 0)) throw new TypeError("proxy assignments require a lowercase SHA-256 and positive source byte length");
+  return { type: "setMediaProxy", mediaId, proxyPath, sourceSha256, sourceBytes };
 }
 export function createSequence(id: string, name: string): CreateSequenceOperation { return { type: "createSequence", id, name }; }
 export function createTrack(sequenceId: string, id: string, kind: "video" | "audio"): CreateTrackOperation {
