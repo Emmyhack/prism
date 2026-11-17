@@ -49,6 +49,10 @@ that region, and Reset layout restores the session defaults.
 - Use one-frame Slip, Roll In/Out, and Slide controls in Properties for exact
   three-point and boundary edits. Invalid edge operations report the missing neighbor;
   successful edits use the same atomic save and undo history as other timeline edits.
+- The T/Y/U/R timeline tools also perform trim, slip, slide, and rolling edits by
+  dragging a clip; T and R choose the nearest edge from the drag start. Gestures honor
+  frame snapping, use finer 1/300-second resolution when snapping is off, and remain
+  command-validated and undoable.
 - The native keyboard map is active in Edit: V/C/T/Y/U/R select editing tools,
   Space plays, arrows step frames, comma inserts the marked source range, Backspace
   ripple-deletes, S toggles snapping, M adds a marker, and the platform primary

@@ -387,6 +387,10 @@ export component PrismStudio inherits Window {
                                     VerticalLayout { padding: 4px; spacing: 6px;
                                         Action { label: "V"; hint: "Selection and scrub tool"; active: root.active-tool == "V"; height: 28px; clicked => { root.active-tool = "V"; } }
                                         Action { label: "C"; hint: "Razor: split a clip at the clicked frame"; active: root.active-tool == "C"; height: 28px; clicked => { root.active-tool = "C"; } }
+                                        Action { label: "T"; hint: "Trim the nearest clip edge"; active: root.active-tool == "T"; height: 28px; clicked => { root.active-tool = "T"; } }
+                                        Action { label: "Y"; hint: "Slip source beneath the clip"; active: root.active-tool == "Y"; height: 28px; clicked => { root.active-tool = "Y"; } }
+                                        Action { label: "U"; hint: "Slide clip between both neighbors"; active: root.active-tool == "U"; height: 28px; clicked => { root.active-tool = "U"; } }
+                                        Action { label: "R"; hint: "Roll the nearest edit boundary"; active: root.active-tool == "R"; height: 28px; clicked => { root.active-tool = "R"; } }
                                         Rectangle { vertical-stretch: 1; }
                                     }
                                 }
@@ -433,7 +437,7 @@ export component PrismStudio inherits Window {
                                                         Rectangle { x: 0px; y: 0px; width: parent.width; height: 17px; background: #ffffff0a; }
                                                         Text { x: 6px; y: 5px; width: parent.width - 12px; text: clip.name; color: #e8dff3; font-size: 9px; overflow: elide; }
                                                         Text { x: 6px; y: 32px; text: clip.audio ? "AUDIO" : "VIDEO"; color: #c1afd6; font-size: 7px; }
-                                                        clip-drag := TouchArea { x: 7px; width: parent.width - 14px; clicked => { keyboard.focus(); root.selected-clip-index = index; root.clip-selected(index); root.seek(clip.start-ratio + Math.max(0, Math.min(1, self.mouse-x / self.width)) * clip.width-ratio); if root.active-tool == "C" { root.command-invoked("timeline.split"); } } pointer-event(event) => { if event.kind == PointerEventKind.up && root.active-tool == "V" && Math.abs(self.mouse-x - self.pressed-x) > 3px { root.clip-adjusted(index, (self.mouse-x - self.pressed-x) / self.width * clip.width-ratio, "move"); } } }
+                                                        clip-drag := TouchArea { x: 7px; width: parent.width - 14px; clicked => { keyboard.focus(); root.selected-clip-index = index; root.clip-selected(index); root.seek(clip.start-ratio + Math.max(0, Math.min(1, self.mouse-x / self.width)) * clip.width-ratio); if root.active-tool == "C" { root.command-invoked("timeline.split"); } } pointer-event(event) => { if event.kind == PointerEventKind.up && root.active-tool != "C" && Math.abs(self.mouse-x - self.pressed-x) > 3px { root.clip-adjusted(index, (self.mouse-x - self.pressed-x) / self.width * clip.width-ratio, root.active-tool == "V" ? "move" : root.active-tool == "T" ? (self.pressed-x < self.width / 2 ? "in" : "out") : root.active-tool == "Y" ? "slip" : root.active-tool == "U" ? "slide" : root.active-tool == "R" ? (self.pressed-x < self.width / 2 ? "roll_in" : "roll_out") : "none"); } } }
                                                         TouchArea { width: 7px; mouse-cursor: ew-resize; pointer-event(event) => { if event.kind == PointerEventKind.up && Math.abs(self.mouse-x - self.pressed-x) > 2px { root.clip-adjusted(index, (self.mouse-x - self.pressed-x) / parent.width * clip.width-ratio, "in"); } } }
                                                         TouchArea { x: parent.width - 7px; width: 7px; mouse-cursor: ew-resize; pointer-event(event) => { if event.kind == PointerEventKind.up && Math.abs(self.mouse-x - self.pressed-x) > 2px { root.clip-adjusted(index, (self.mouse-x - self.pressed-x) / parent.width * clip.width-ratio, "out"); } } }
                                                     }
@@ -447,7 +451,7 @@ export component PrismStudio inherits Window {
                                             Rectangle { x: parent.width * root.timeline-offset; y: 3px; width: parent.width / root.timeline-zoom; height: 7px; border-radius: 4px; background: #595368; }
                                             TouchArea { clicked => { root.timeline-offset = Math.max(0, Math.min(1 - 1 / root.timeline-zoom, self.mouse-x / self.width - 0.5 / root.timeline-zoom)); root.view-changed(); } moved => { if self.pressed { root.timeline-offset = Math.max(0, Math.min(1 - 1 / root.timeline-zoom, self.mouse-x / self.width - 0.5 / root.timeline-zoom)); root.view-changed(); } } }
                                         }
-                                        Rectangle { height: 24px; background: #24242c; Text { x: 10px; text: "V  SELECT / SCRUB    C  RAZOR    ← →  FRAME"; color: #727186; font-size: 8px; vertical-alignment: center; } }
+                                        Rectangle { height: 24px; background: #24242c; Text { x: 10px; text: "V SELECT   C RAZOR   T TRIM   Y SLIP   U SLIDE   R ROLL"; color: #727186; font-size: 8px; vertical-alignment: center; } }
                                     }
                                 }
                             }

@@ -1799,6 +1799,24 @@ impl NativeExportRuntime {
         } else {
             frame
         };
+        let kind = if operation.contains("slip") {
+            "slip"
+        } else if operation.contains("roll_in") {
+            "roll_in"
+        } else if operation.contains("roll_out") {
+            "roll_out"
+        } else {
+            "slide"
+        };
+        self.precision_edit_delta(ui, kind, delta)
+    }
+
+    fn precision_edit_delta(
+        &self,
+        ui: &PrismStudio,
+        operation: &str,
+        delta: RationalTime,
+    ) -> Result<(), String> {
         let command = {
             let project = self.project.borrow();
             let sequence = project
@@ -1815,13 +1833,13 @@ impl NativeExportRuntime {
                 .ok_or_else(|| "Selected clip unavailable".to_owned())?;
             let clip = &track.clips[clip_index];
             match operation {
-                "timeline.slip_left" | "timeline.slip_right" => Command::SlipClip {
+                "slip" => Command::SlipClip {
                     sequence_id: sequence.id,
                     track_id: track.id,
                     clip_id: clip.id,
                     source_delta: delta,
                 },
-                "timeline.roll_in_left" | "timeline.roll_in_right" => {
+                "roll_in" => {
                     let previous = clip_index
                         .checked_sub(1)
                         .and_then(|index| track.clips.get(index))
@@ -1836,7 +1854,7 @@ impl NativeExportRuntime {
                         delta,
                     }
                 }
-                "timeline.roll_out_left" | "timeline.roll_out_right" => {
+                "roll_out" => {
                     let next = track.clips.get(clip_index + 1).ok_or_else(|| {
                         "Roll Out requires an adjacent clip after this clip".to_owned()
                     })?;
@@ -1848,7 +1866,7 @@ impl NativeExportRuntime {
                         delta,
                     }
                 }
-                "timeline.slide_left" | "timeline.slide_right" => {
+                "slide" => {
                     let previous = clip_index
                         .checked_sub(1)
                         .and_then(|index| track.clips.get(index))
@@ -1869,12 +1887,12 @@ impl NativeExportRuntime {
                 _ => return Err("Unknown precision edit".to_owned()),
             }
         };
-        let label = if operation.contains("slip") {
-            "Slip clip one frame"
-        } else if operation.contains("roll") {
-            "Roll edit one frame"
+        let label = if operation == "slip" {
+            "Slip clip"
+        } else if operation.starts_with("roll") {
+            "Roll edit"
         } else {
-            "Slide clip one frame"
+            "Slide clip"
         };
         self.commit(ui, command, label)
     }
@@ -1906,6 +1924,9 @@ impl NativeExportRuntime {
             return Ok(());
         }
         let delta = RationalTime::new(ticks, timescale).map_err(|error| error.to_string())?;
+        if matches!(edge, "slip" | "slide" | "roll_in" | "roll_out") {
+            return self.precision_edit_delta(ui, edge, delta);
+        }
         if edge == "move" {
             let current = parse_timing(ui.get_clip_start().as_str())?;
             let target = current
@@ -3036,7 +3057,7 @@ mod tests {
         runtime.apply_history(&ui, false)?;
         ui.set_selected_clip_index(0);
         runtime.update_inspector(&ui);
-        runtime.precision_edit_frame(&ui, "timeline.slip_right")?;
+        runtime.drag_clip(&ui, 0, 1.0 / 30.0, "slip")?;
         assert_eq!(ui.get_clip_source_in(), "1/30");
         runtime.apply_history(&ui, false)?;
         assert!(
@@ -3079,12 +3100,12 @@ mod tests {
         runtime.apply_history(&ui, false)?;
         assert_eq!(ui.get_timeline_clips().row_count(), 2);
         ui.set_selected_clip_index(0);
-        runtime.precision_edit_frame(&ui, "timeline.roll_out_right")?;
+        runtime.drag_clip(&ui, 0, 1.0 / 30.0, "roll_out")?;
         runtime.apply_history(&ui, false)?;
         runtime.append_source(&ui)?;
         assert_eq!(ui.get_timeline_clips().row_count(), 3);
         ui.set_selected_clip_index(1);
-        runtime.precision_edit_frame(&ui, "timeline.slide_right")?;
+        runtime.drag_clip(&ui, 1, 1.0 / 30.0, "slide")?;
         runtime.apply_history(&ui, false)?;
         runtime.apply_history(&ui, false)?;
         assert_eq!(ui.get_timeline_clips().row_count(), 2);
