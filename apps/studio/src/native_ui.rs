@@ -412,6 +412,9 @@ struct NativeExportRuntime {
     thumbnail_preview: PreviewWorker,
     thumbnail_queue: RefCell<VecDeque<(usize, PathBuf)>>,
     thumbnail_current: Cell<Option<usize>>,
+    thumbnail_total: Cell<usize>,
+    thumbnail_completed: Cell<usize>,
+    thumbnail_failed: Cell<usize>,
     cards: RefCell<Vec<MediaCard>>,
     use_proxy: Cell<bool>,
     proxy_generation: RefCell<Option<ProxyGeneration>>,
@@ -443,6 +446,9 @@ impl NativeExportRuntime {
             thumbnail_preview: PreviewWorker::with_thumbnails(true),
             thumbnail_queue: RefCell::new(VecDeque::new()),
             thumbnail_current: Cell::new(None),
+            thumbnail_total: Cell::new(0),
+            thumbnail_completed: Cell::new(0),
+            thumbnail_failed: Cell::new(0),
             cards: RefCell::new(Vec::new()),
             use_proxy: Cell::new(false),
             proxy_generation: RefCell::new(None),
@@ -1452,8 +1458,11 @@ impl NativeExportRuntime {
             .iter()
             .map(|(i, a)| (*i, PathBuf::from(&a.source_path)))
             .collect();
+        self.thumbnail_total.set(media.len());
+        self.thumbnail_completed.set(0);
+        self.thumbnail_failed.set(0);
         self.filter_cards(ui);
-        self.next_thumbnail();
+        self.next_thumbnail(ui);
     }
 
     fn filter_cards(&self, ui: &PrismStudio) {
@@ -1468,13 +1477,45 @@ impl NativeExportRuntime {
         ui.set_media_cards(slint::ModelRc::new(slint::VecModel::from(cards)));
     }
 
-    fn next_thumbnail(&self) {
+    fn update_media_task_state(&self, ui: &PrismStudio) {
+        let total = self.thumbnail_total.get();
+        let completed = self.thumbnail_completed.get();
+        let failed = self.thumbnail_failed.get();
+        let pending = total.saturating_sub(completed);
+        ui.set_media_task_pending(i32::try_from(pending).unwrap_or(i32::MAX));
+        ui.set_media_task_status(
+            if total == 0 {
+                "IDLE"
+            } else if pending > 0 {
+                "DECODING"
+            } else if failed > 0 {
+                "COMPLETE WITH ERRORS"
+            } else {
+                "COMPLETE"
+            }
+            .into(),
+        );
+        ui.set_media_task_detail(
+            format!(
+                "{completed}/{total} previews{}",
+                if failed > 0 {
+                    format!(" · {failed} unavailable")
+                } else {
+                    String::new()
+                }
+            )
+            .into(),
+        );
+    }
+
+    fn next_thumbnail(&self, ui: &PrismStudio) {
         if let Some((index, path)) = self.thumbnail_queue.borrow_mut().pop_front() {
             self.thumbnail_current.set(Some(index));
             self.thumbnail_preview.request(path, RationalTime::ZERO);
         } else {
             self.thumbnail_current.set(None);
         }
+        self.update_media_task_state(ui);
     }
 
     fn update_history(&self, ui: &PrismStudio) {
@@ -2156,10 +2197,14 @@ impl NativeExportRuntime {
                         card.status = "".into();
                     } else {
                         card.status = "Preview unavailable".into();
+                        self.thumbnail_failed
+                            .set(self.thumbnail_failed.get().saturating_add(1));
                     }
                 }
+                self.thumbnail_completed
+                    .set(self.thumbnail_completed.get().saturating_add(1));
                 self.filter_cards(ui);
-                self.next_thumbnail();
+                self.next_thumbnail(ui);
             }
         }
         if let Some(frame) = self.program_preview.poll() {
@@ -2758,6 +2803,8 @@ mod tests {
         let runtime = Rc::new(NativeExportRuntime::new(Some(project), Some(path.clone())));
         bind_editor_callbacks(&ui, &runtime);
         runtime.reset_view(&ui);
+        assert_eq!(ui.get_media_task_status(), "DECODING");
+        assert_eq!(ui.get_media_task_pending(), 1);
         assert_eq!(ui.get_recovery_count(), 1);
         assert_eq!(ui.get_recovery_path(), autosave_path.display().to_string());
         assert_eq!(ui.get_recovery_revision(), autosave_revision.to_string());
@@ -2858,6 +2905,16 @@ mod tests {
                 ui.get_feedback()
             );
         }
+        let media_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while ui.get_media_task_pending() > 0 && std::time::Instant::now() < media_deadline {
+            runtime.poll(&ui);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(ui.get_media_task_pending(), 0);
+        assert!(matches!(
+            ui.get_media_task_status().as_str(),
+            "COMPLETE" | "COMPLETE WITH ERRORS"
+        ));
 
         assert_eq!(ui.get_media_cards().row_count(), 1);
         ui.set_search("no match".into());

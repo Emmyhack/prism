@@ -117,6 +117,9 @@ export component PrismStudio inherits Window {
     in property <string> recovery-revision: "";
     in property <string> recovery-path: "";
     in property <string> autosave-status: "UNAVAILABLE";
+    in property <string> media-task-status: "IDLE";
+    in property <string> media-task-detail: "0/0 previews";
+    in property <int> media-task-pending: 0;
     in-out property <bool> proxy-active: false;
     in-out property <bool> proxy-generating: false;
     in property <bool> inspector-locked: false;
@@ -505,6 +508,11 @@ export component PrismStudio inherits Window {
                             if root.inspector-tab == "Jobs" : Rectangle { VerticalLayout { padding: 16px; spacing: 14px;
                                 Text { text: "PROJECT SAFETY"; color: #a69ac1; font-size: 9px; height: 16px; }
                                 Text { text: "AUTOSAVE  /  " + root.autosave-status; color: root.autosave-status == "FAILED" ? #db9b9f : #8fb9a5; font-size: 11px; height: 20px; }
+                                Rectangle { height: 1px; background: #393540; }
+                                Text { text: "MEDIA PREPARATION"; color: #a69ac1; font-size: 9px; height: 16px; }
+                                Text { text: "THUMBNAILS  /  " + root.media-task-status; color: root.media-task-status == "COMPLETE WITH ERRORS" ? #d0a85c : #ded2f2; font-size: 11px; height: 20px; }
+                                Text { text: root.media-task-detail + (root.media-task-pending > 0 ? " · " + root.media-task-pending + " pending" : ""); color: #8c879c; font-size: 10px; height: 18px; }
+                                Text { text: "PROXY  /  " + (root.proxy-generating ? "GENERATING" : root.proxy-status); color: root.proxy-generating ? #d0a85c : #8fb9a5; font-size: 11px; height: 20px; }
                                 Rectangle { height: 1px; background: #393540; }
                                 Text { text: "EXPORT"; color: #a69ac1; font-size: 9px; height: 16px; }
                                 Text { text: root.export-status; color: #ded2f2; font-size: 18px; height: 28px; }

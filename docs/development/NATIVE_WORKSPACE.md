@@ -27,7 +27,9 @@ that region, and Reset layout restores the session defaults.
   New projects prompt for a save destination. Cancellation leaves the project intact.
 - Browse real background-generated thumbnails in Import and the project media bin.
   Filter filenames without changing source identities. Failed previews retain an
-  explicit unavailable state. The Media/Info tabs separate assets from project details.
+  explicit unavailable state. Jobs reports authoritative queued/running/completed and
+  unavailable counts for the decoder queue. The Media/Info tabs separate assets from
+  project details.
 - Assign or clear a proxy for selected media from Properties, and switch monitor
   decoding between the original and persisted proxy without changing media identity.
 - Generate a cancellable 960×540 H.264/AAC proxy in the background. Successful
@@ -35,6 +37,7 @@ that region, and Reset layout restores the session defaults.
   media assignment unchanged. Assigned proxies are classified as available, missing,
   or stale from source/proxy modification times. Missing and stale proxies can be
   regenerated to a new versioned sibling without deleting the prior assignment.
+  Proxy generation state is also visible in Jobs beside media preparation and export.
 - Select footage to inspect it independently of the sequence playhead. Scrub the
   Source bar, mark In/Out, and append the marked range to an unlocked video track.
   Mark Out includes the current 30 fps frame, clamped to the source duration.
