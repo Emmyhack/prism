@@ -24,6 +24,9 @@ that region, and Reset layout restores the session defaults.
   explicit unavailable state. The Media/Info tabs separate assets from project details.
 - Assign or clear a proxy for selected media from Properties, and switch monitor
   decoding between the original and persisted proxy without changing media identity.
+- Generate a cancellable 960×540 H.264/AAC proxy in the background. Successful
+  no-clobber completion persists and activates the proxy; failure leaves the original
+  media assignment unchanged.
 - Select footage to inspect it independently of the sequence playhead. Scrub the
   Source bar, mark In/Out, and append the marked range to an unlocked video track.
   Mark Out includes the current 30 fps frame, clamped to the source duration.
@@ -67,7 +70,7 @@ Decoder failures appear in the feedback bar instead of leaving a fake preview.
 ## Current limits
 
 This is a functional desktop foundation, not a completed production editor.
-Automatic proxy generation, low-latency library-backed audiovisual playback, audio mixing, effects controls/rendering,
+Low-latency library-backed audiovisual playback, audio mixing, effects controls/rendering,
 arbitrary docking layouts, saved custom workspace layouts, and export preset selection are not provided
 by this interface. The UI deliberately omits simulated waveforms, meters, and
 unsupported workspace controls. Export uses synchronized video/audio when an

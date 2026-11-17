@@ -3,7 +3,10 @@
 use prism_commands::{Command, CommandEngine, UndoRecord};
 use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
 use prism_export::{ExportPreset, SingleTrackMp4ExportRequest, VideoAudioMp4ExportRequest};
-use prism_media::{FfmpegReferenceDecoder, FfprobeInspector, StreamKind};
+use prism_media::{
+    FfmpegProxyGenerator, FfmpegReferenceDecoder, FfprobeInspector, ProxyProfile, ProxyRequest,
+    StreamKind,
+};
 use prism_project::{Project, TrackKind};
 use prism_studio::desktop::{ExportController, ExportStatus, ExportWorker, ExportWorkerEvent};
 use prism_timeline::RationalTime;
@@ -13,7 +16,11 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command as ProcessCommand, Stdio},
     rc::Rc,
-    sync::mpsc::{self, Receiver, SyncSender, TrySendError},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, SyncSender, TrySendError},
+    },
     time::{Duration, Instant},
 };
 use thiserror::Error;
@@ -149,6 +156,13 @@ struct PreviewWorker {
     )>,
     pending: RefCell<Option<PreviewRequest>>,
     generation: Cell<u64>,
+}
+
+#[derive(Debug)]
+struct ProxyGeneration {
+    receiver: Receiver<Result<PathBuf, String>>,
+    cancelled: Arc<AtomicBool>,
+    media_id: MediaAssetId,
 }
 
 impl PreviewWorker {
@@ -348,6 +362,7 @@ struct NativeExportRuntime {
     thumbnail_current: Cell<Option<usize>>,
     cards: RefCell<Vec<MediaCard>>,
     use_proxy: Cell<bool>,
+    proxy_generation: RefCell<Option<ProxyGeneration>>,
 }
 
 impl NativeExportRuntime {
@@ -375,6 +390,7 @@ impl NativeExportRuntime {
             thumbnail_current: Cell::new(None),
             cards: RefCell::new(Vec::new()),
             use_proxy: Cell::new(false),
+            proxy_generation: RefCell::new(None),
         }
     }
 
@@ -393,6 +409,14 @@ impl NativeExportRuntime {
             "source.append" => self.append_source(ui),
             "media.assign_proxy" => self.assign_proxy(ui),
             "media.clear_proxy" => self.clear_proxy(ui),
+            "media.generate_proxy" => self.generate_proxy(ui),
+            "media.cancel_proxy" => {
+                if let Some(generation) = self.proxy_generation.borrow().as_ref() {
+                    generation.cancelled.store(true, Ordering::Release);
+                    ui.set_feedback("Cancelling proxy generation…".into());
+                }
+                Ok(())
+            }
             "media.toggle_proxy" => {
                 self.use_proxy.set(!self.use_proxy.get());
                 ui.set_proxy_active(self.use_proxy.get());
@@ -644,6 +668,11 @@ impl NativeExportRuntime {
 
     fn reset_view(&self, ui: &PrismStudio) {
         self.stop_playback(ui);
+        if let Some(generation) = self.proxy_generation.borrow().as_ref() {
+            generation.cancelled.store(true, Ordering::Release);
+        }
+        self.proxy_generation.borrow_mut().take();
+        ui.set_proxy_generating(false);
         self.undo.borrow_mut().clear();
         self.redo.borrow_mut().clear();
         self.update_history(ui);
@@ -924,6 +953,57 @@ impl NativeExportRuntime {
         self.use_proxy.set(false);
         ui.set_proxy_active(false);
         self.select_media(ui, index);
+        Ok(())
+    }
+
+    fn generate_proxy(&self, ui: &PrismStudio) -> Result<(), String> {
+        if self.proxy_generation.borrow().is_some() {
+            return Err("A proxy is already being generated".to_owned());
+        }
+        let media_id = self.selected_media_id(ui)?;
+        let source = self
+            .project
+            .borrow()
+            .as_ref()
+            .and_then(|project| project.media.get(&media_id))
+            .map(|asset| PathBuf::from(&asset.source_path))
+            .ok_or_else(|| "Selected media is unavailable".to_owned())?;
+        let default_name = source
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .map(|name| format!("{name}.proxy.mp4"))
+            .unwrap_or_else(|| "Prism.proxy.mp4".to_owned());
+        let Some(output) = rfd::FileDialog::new()
+            .set_title("Generate Prism Proxy")
+            .set_file_name(default_name)
+            .add_filter("MP4 proxy", &["mp4"])
+            .save_file()
+        else {
+            return Ok(());
+        };
+        let profile = ProxyProfile::new(960, 540, "libx264", Some("aac".to_owned()), "mp4")
+            .map_err(|error| error.to_string())?;
+        let request = ProxyRequest {
+            source,
+            output,
+            profile,
+        };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = Arc::clone(&cancelled);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let result = FfmpegProxyGenerator::new("ffmpeg")
+                .generate(&request, Some(&worker_cancelled))
+                .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+        *self.proxy_generation.borrow_mut() = Some(ProxyGeneration {
+            receiver,
+            cancelled,
+            media_id,
+        });
+        ui.set_proxy_generating(true);
+        ui.set_feedback("Generating 540p proxy in the background…".into());
         Ok(())
     }
 
@@ -1593,6 +1673,44 @@ impl NativeExportRuntime {
     }
 
     fn poll(&self, ui: &PrismStudio) {
+        let proxy_result = self
+            .proxy_generation
+            .borrow()
+            .as_ref()
+            .and_then(|generation| {
+                generation
+                    .receiver
+                    .try_recv()
+                    .ok()
+                    .map(|result| (generation.media_id, result))
+            });
+        if let Some((media_id, result)) = proxy_result {
+            self.proxy_generation.borrow_mut().take();
+            ui.set_proxy_generating(false);
+            match result {
+                Ok(path) => {
+                    let command = Command::SetMediaProxy {
+                        media_id,
+                        proxy_path: Some(path.display().to_string()),
+                    };
+                    if let Err(error) = self.commit(ui, command, "Generate media proxy") {
+                        ui.set_feedback(error.into());
+                    } else {
+                        self.use_proxy.set(true);
+                        ui.set_proxy_active(true);
+                        let index = self
+                            .project
+                            .borrow()
+                            .as_ref()
+                            .and_then(|project| project.media.keys().position(|id| *id == media_id))
+                            .and_then(|index| i32::try_from(index).ok())
+                            .unwrap_or(-1);
+                        self.select_media(ui, index);
+                    }
+                }
+                Err(error) => ui.set_feedback(error.into()),
+            }
+        }
         if self.playing.get() {
             if let Some(started) = self.playback_started.get() {
                 let elapsed = started.elapsed();
@@ -2078,8 +2196,9 @@ pub fn launch(project_path: Option<PathBuf>) -> Result<(), NativeUiError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{NativeExportStatus, insert_media_into_project, insert_video_into_project};
-    use prism_commands::Command;
+    use super::{
+        NativeExportStatus, ProxyGeneration, insert_media_into_project, insert_video_into_project,
+    };
     use prism_project::Project;
     use prism_studio::desktop::ExportController;
     use prism_timeline::RationalTime;
@@ -2440,18 +2559,18 @@ mod tests {
             .as_ref()
             .and_then(|project| project.media.keys().next().copied())
             .ok_or("missing media")?;
-        runtime.commit(
-            &ui,
-            Command::SetMediaProxy {
-                media_id,
-                proxy_path: Some("proxy-preview.mp4".to_owned()),
-            },
-            "Assign test proxy",
-        )?;
-        runtime.select_media(&ui, 0);
+        let (proxy_sender, proxy_receiver) = std::sync::mpsc::sync_channel(1);
+        proxy_sender.send(Ok(PathBuf::from("proxy-preview.mp4")))?;
+        *runtime.proxy_generation.borrow_mut() = Some(ProxyGeneration {
+            receiver: proxy_receiver,
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            media_id,
+        });
+        ui.set_proxy_generating(true);
+        runtime.poll(&ui);
         assert_eq!(ui.get_selected_proxy(), "proxy-preview.mp4");
-        runtime.handle("media.toggle_proxy", &ui)?;
         assert!(ui.get_proxy_active());
+        assert!(!ui.get_proxy_generating());
         runtime.clear_proxy(&ui)?;
         assert_eq!(ui.get_selected_proxy(), "");
         assert!(!ui.get_proxy_active());
