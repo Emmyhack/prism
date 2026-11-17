@@ -32,6 +32,10 @@ that region, and Reset layout restores the session defaults.
   project details.
 - Assign or clear a proxy for selected media from Properties, and switch monitor
   decoding between the original and persisted proxy without changing media identity.
+- Relink Source repairs moved/offline media without changing its stable project identity.
+  Replacements must contain video and cover every source range already used by clips;
+  successful relinks persist atomically, refresh previews, re-evaluate proxies, autosave,
+  and support undo/redo.
 - Generate a cancellable 960×540 H.264/AAC proxy in the background. Successful
   no-clobber completion persists and activates the proxy; failure leaves the original
   media assignment unchanged. Assigned proxies are classified as available, missing,

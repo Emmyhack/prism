@@ -480,6 +480,7 @@ impl NativeExportRuntime {
             | "timeline.slide_right" => self.precision_edit_frame(ui, command),
             "source.append" => self.append_source(ui),
             "media.assign_proxy" => self.assign_proxy(ui),
+            "media.relink_source" => self.relink_source(ui),
             "media.clear_proxy" => self.clear_proxy(ui),
             "media.generate_proxy" => self.generate_proxy(ui),
             "media.regenerate_proxy" => self.regenerate_proxy(ui),
@@ -1186,6 +1187,70 @@ impl NativeExportRuntime {
         Ok(())
     }
 
+    fn relink_source(&self, ui: &PrismStudio) -> Result<(), String> {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Relink Source Media")
+            .add_filter(
+                "Video",
+                &["mp4", "mov", "m4v", "mkv", "avi", "webm", "mpeg", "mpg"],
+            )
+            .pick_file()
+        else {
+            return Ok(());
+        };
+        self.relink_source_to(ui, path)
+    }
+
+    fn relink_source_to(&self, ui: &PrismStudio, path: PathBuf) -> Result<(), String> {
+        let media_id = self.selected_media_id(ui)?;
+        let metadata = FfprobeInspector::new("ffprobe")
+            .inspect(&path)
+            .map_err(|error| error.to_string())?;
+        if !metadata
+            .streams
+            .iter()
+            .any(|stream| matches!(stream.kind, StreamKind::Video(_)))
+        {
+            return Err("The replacement file has no video stream".to_owned());
+        }
+        let available = metadata
+            .duration
+            .filter(|duration| duration.is_positive())
+            .ok_or_else(|| "The replacement file has no valid duration".to_owned())?;
+        let required = self
+            .project
+            .borrow()
+            .as_ref()
+            .into_iter()
+            .flat_map(|project| project.sequences.values())
+            .flat_map(|sequence| &sequence.tracks)
+            .flat_map(|track| &track.clips)
+            .filter(|clip| clip.media_id == media_id)
+            .filter_map(|clip| clip.source_start.checked_add(clip.source_duration).ok())
+            .max()
+            .unwrap_or(RationalTime::ZERO);
+        if available < required {
+            return Err(format!(
+                "Replacement is too short: clips require {}, file provides {}",
+                timing_text(required),
+                timing_text(available)
+            ));
+        }
+        let index = ui.get_selected_media_index();
+        self.commit(
+            ui,
+            Command::RelinkMedia {
+                media_id,
+                source_path: path.display().to_string(),
+            },
+            "Relink source media",
+        )?;
+        self.reset_thumbnails(ui);
+        self.select_media(ui, index);
+        self.update_inspector(ui);
+        Ok(())
+    }
+
     fn clear_proxy(&self, ui: &PrismStudio) -> Result<(), String> {
         let media_id = self.selected_media_id(ui)?;
         let index = ui.get_selected_media_index();
@@ -1658,6 +1723,12 @@ impl NativeExportRuntime {
         self.update_inspector(ui);
         self.update_ruler(ui);
         self.seek_time(ui, self.playhead.get());
+        if label == "Relink source media" {
+            let media_index = ui.get_selected_media_index();
+            self.reset_thumbnails(ui);
+            self.select_media(ui, media_index);
+            self.update_inspector(ui);
+        }
         ui.set_feedback(
             format!(
                 "{} {label} · saved",
@@ -3287,6 +3358,25 @@ mod tests {
         runtime.apply_history(&ui, false)?;
         assert_eq!(ui.get_timeline_clips().row_count(), 1);
 
+        let replacement = std::env::temp_dir().join(format!(
+            "prism-relink-test-{}-{nonce}.mp4",
+            std::process::id()
+        ));
+        std::fs::copy(&fixture, &replacement)?;
+        ui.set_selected_media_index(0);
+        runtime.relink_source_to(&ui, replacement.clone())?;
+        assert_eq!(ui.get_source_detail(), replacement.display().to_string());
+        assert_eq!(
+            prism_persistence::load(&path)?
+                .media
+                .values()
+                .next()
+                .map(|asset| asset.source_path.as_str()),
+            replacement.to_str()
+        );
+        runtime.apply_history(&ui, false)?;
+        assert_eq!(ui.get_source_detail(), fixture.display().to_string());
+
         let media_id = runtime
             .project
             .borrow()
@@ -3317,6 +3407,7 @@ mod tests {
             std::fs::remove_file(candidate.path)?;
         }
         std::fs::remove_file(proxy_path)?;
+        std::fs::remove_file(replacement)?;
         std::fs::remove_file(path)?;
         ui.hide()?;
         Ok(())

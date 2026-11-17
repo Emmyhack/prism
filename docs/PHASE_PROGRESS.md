@@ -20,7 +20,8 @@ Remaining acceptance work:
   source/proxy freshness is available through the media boundary; Studio can generate,
   cancel, assign, clear, and switch persisted proxies graphically, classifies assigned
   proxies as available/missing/stale, and safely regenerates invalid proxies to a
-  versioned sibling; content-fingerprint-driven invalidation remains);
+  versioned sibling; original sources can be graphically relinked with stream/duration
+  validation and undo; content-fingerprint-driven invalidation remains);
 - implement and test slip, slide, and rolling timeline edits with exact-time
   validation and undo records (slip and rolling edits are now implemented in
   the Rust command engine; slip, rolling, and slide protocol builders and Studio

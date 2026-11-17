@@ -498,6 +498,7 @@ export component PrismStudio inherits Window {
                                 if root.selected-clip-index >= 0 : HorizontalLayout { height: 28px; spacing: 6px; Action { label: "Slide −1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.slide_left"); } } Action { label: "Slide +1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.slide_right"); } } }
                                 if root.selected-clip-index >= 0 : Text { text: "SOURCE FILE"; color: #a69ac1; font-size: 9px; height: 18px; }
                                 if root.selected-clip-index >= 0 : Text { text: root.inspector-path; color: #8c879c; font-size: 10px; wrap: word-wrap; }
+                                if root.selected-media-index >= 0 : Action { label: "Relink source…"; clicked => { root.command-invoked("media.relink_source"); } }
                                 if root.selected-media-index >= 0 : Text { text: "PROXY"; color: #a69ac1; font-size: 9px; height: 18px; }
                                 if root.selected-media-index >= 0 : Text { text: root.selected-proxy == "" ? "No proxy assigned" : root.selected-proxy; color: #8c879c; font-size: 10px; wrap: word-wrap; }
                                 if root.selected-media-index >= 0 : Text { text: "STATUS  " + root.proxy-status; color: root.proxy-status == "AVAILABLE" ? #79b89d : root.proxy-status == "STALE" ? #d0a85c : #9a8490; font-size: 9px; height: 16px; }
