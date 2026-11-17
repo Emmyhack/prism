@@ -37,6 +37,9 @@ that region, and Reset layout restores the session defaults.
   step at a fixed 30 fps preview/edit grid. Time labels use non-drop 30 fps display;
   source timestamps and stored edits remain rational. The export preset retains its
   independent 30000/1001 fps setting.
+- Use one-frame Slip, Roll In/Out, and Slide controls in Properties for exact
+  three-point and boundary edits. Invalid edge operations report the missing neighbor;
+  successful edits use the same atomic save and undo history as other timeline edits.
 - Play/Pause (or Spacebar) advances the sequence clock and requests current video
   frames through the bounded preview worker. Newer requests supersede queued stale
   frames. When an unmuted audio clip is active, Prism starts `ffplay` at the matching

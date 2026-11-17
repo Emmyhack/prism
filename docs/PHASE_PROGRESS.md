@@ -23,8 +23,8 @@ Remaining acceptance work:
   versioned sibling; content-fingerprint-driven invalidation remains);
 - implement and test slip, slide, and rolling timeline edits with exact-time
   validation and undo records (slip and rolling edits are now implemented in
-  the Rust command engine; slip, rolling, and slide protocol builders are now
-  complete, while UI parity remains);
+  the Rust command engine; slip, rolling, and slide protocol builders and Studio
+  one-frame precision controls are now complete);
 - connect background media/cache work to user-visible task state (the cache
   worker exposes bounded pending-write state; Studio now projects authoritative
   export queue progress, failures, destinations, and valid lifecycle actions,

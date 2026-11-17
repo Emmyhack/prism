@@ -459,6 +459,14 @@ impl NativeExportRuntime {
             | "timeline.trim_in_right"
             | "timeline.trim_out_left"
             | "timeline.trim_out_right" => self.adjust_clip_frame(ui, command),
+            "timeline.slip_left"
+            | "timeline.slip_right"
+            | "timeline.roll_in_left"
+            | "timeline.roll_in_right"
+            | "timeline.roll_out_left"
+            | "timeline.roll_out_right"
+            | "timeline.slide_left"
+            | "timeline.slide_right" => self.precision_edit_frame(ui, command),
             "source.append" => self.append_source(ui),
             "media.assign_proxy" => self.assign_proxy(ui),
             "media.clear_proxy" => self.clear_proxy(ui),
@@ -1544,6 +1552,95 @@ impl NativeExportRuntime {
         Ok(())
     }
 
+    fn precision_edit_frame(&self, ui: &PrismStudio, operation: &str) -> Result<(), String> {
+        let frame = RationalTime::new(1, 30).map_err(|error| error.to_string())?;
+        let delta = if operation.ends_with("_left") {
+            RationalTime::ZERO
+                .checked_sub(frame)
+                .map_err(|error| error.to_string())?
+        } else {
+            frame
+        };
+        let command = {
+            let project = self.project.borrow();
+            let sequence = project
+                .as_ref()
+                .and_then(|project| project.sequences.values().next())
+                .ok_or_else(|| "No sequence available".to_owned())?;
+            let selected = usize::try_from(ui.get_selected_clip_index())
+                .map_err(|_| "Select a clip first".to_owned())?;
+            let (track, clip_index) = sequence
+                .tracks
+                .iter()
+                .flat_map(|track| (0..track.clips.len()).map(move |index| (track, index)))
+                .nth(selected)
+                .ok_or_else(|| "Selected clip unavailable".to_owned())?;
+            let clip = &track.clips[clip_index];
+            match operation {
+                "timeline.slip_left" | "timeline.slip_right" => Command::SlipClip {
+                    sequence_id: sequence.id,
+                    track_id: track.id,
+                    clip_id: clip.id,
+                    source_delta: delta,
+                },
+                "timeline.roll_in_left" | "timeline.roll_in_right" => {
+                    let previous = clip_index
+                        .checked_sub(1)
+                        .and_then(|index| track.clips.get(index))
+                        .ok_or_else(|| {
+                            "Roll In requires an adjacent clip before this clip".to_owned()
+                        })?;
+                    Command::RollEdit {
+                        sequence_id: sequence.id,
+                        track_id: track.id,
+                        left_clip_id: previous.id,
+                        right_clip_id: clip.id,
+                        delta,
+                    }
+                }
+                "timeline.roll_out_left" | "timeline.roll_out_right" => {
+                    let next = track.clips.get(clip_index + 1).ok_or_else(|| {
+                        "Roll Out requires an adjacent clip after this clip".to_owned()
+                    })?;
+                    Command::RollEdit {
+                        sequence_id: sequence.id,
+                        track_id: track.id,
+                        left_clip_id: clip.id,
+                        right_clip_id: next.id,
+                        delta,
+                    }
+                }
+                "timeline.slide_left" | "timeline.slide_right" => {
+                    let previous = clip_index
+                        .checked_sub(1)
+                        .and_then(|index| track.clips.get(index))
+                        .ok_or_else(|| "Slide requires clips on both sides".to_owned())?;
+                    let next = track
+                        .clips
+                        .get(clip_index + 1)
+                        .ok_or_else(|| "Slide requires clips on both sides".to_owned())?;
+                    Command::SlideEdit {
+                        sequence_id: sequence.id,
+                        track_id: track.id,
+                        previous_clip_id: previous.id,
+                        clip_id: clip.id,
+                        next_clip_id: next.id,
+                        delta,
+                    }
+                }
+                _ => return Err("Unknown precision edit".to_owned()),
+            }
+        };
+        let label = if operation.contains("slip") {
+            "Slip clip one frame"
+        } else if operation.contains("roll") {
+            "Roll edit one frame"
+        } else {
+            "Slide clip one frame"
+        };
+        self.commit(ui, command, label)
+    }
+
     fn drag_clip(
         &self,
         ui: &PrismStudio,
@@ -2612,6 +2709,16 @@ mod tests {
         runtime.adjust_clip_frame(&ui, "timeline.trim_out_left")?;
         assert_eq!(ui.get_clip_duration(), "29/30");
         runtime.apply_history(&ui, false)?;
+        ui.set_selected_clip_index(0);
+        runtime.update_inspector(&ui);
+        runtime.precision_edit_frame(&ui, "timeline.slip_right")?;
+        assert_eq!(ui.get_clip_source_in(), "1/30");
+        runtime.apply_history(&ui, false)?;
+        assert!(
+            runtime
+                .precision_edit_frame(&ui, "timeline.roll_out_right")
+                .is_err()
+        );
 
         runtime.drag_clip(&ui, 0, 1.0 / 30.0, "move")?;
         assert_eq!(ui.get_clip_start(), "1/30");
@@ -2640,6 +2747,16 @@ mod tests {
         runtime.seek_source(&ui, 0.4);
         assert_eq!(runtime.playhead.get(), sequence_position);
         runtime.append_source(&ui)?;
+        assert_eq!(ui.get_timeline_clips().row_count(), 2);
+        ui.set_selected_clip_index(0);
+        runtime.precision_edit_frame(&ui, "timeline.roll_out_right")?;
+        runtime.apply_history(&ui, false)?;
+        runtime.append_source(&ui)?;
+        assert_eq!(ui.get_timeline_clips().row_count(), 3);
+        ui.set_selected_clip_index(1);
+        runtime.precision_edit_frame(&ui, "timeline.slide_right")?;
+        runtime.apply_history(&ui, false)?;
+        runtime.apply_history(&ui, false)?;
         assert_eq!(ui.get_timeline_clips().row_count(), 2);
         let saved = prism_persistence::load(&path)?;
         let sequence = saved.sequences.values().next().ok_or("missing sequence")?;
