@@ -443,6 +443,26 @@ impl CacheLayout {
             .map_err(|error| CacheError::Io(error.to_string()))
     }
 
+    /// Removes one exact derived artifact, returning whether an entry was removed.
+    ///
+    /// This is intended for self-healing after an artifact fails format or
+    /// integrity validation. The target is derived only from a validated
+    /// extension and content-addressed key; shard enumeration is not involved.
+    /// A concurrent removal is treated as a cache miss.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CacheError::InvalidExtension`] for an unsafe extension or
+    /// [`CacheError::Io`] when an existing target cannot be removed.
+    pub fn remove(&self, key: CacheKey, extension: &str) -> Result<bool, CacheError> {
+        let path = self.path_for(key, extension)?;
+        match fs::remove_file(path) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(CacheError::Io(error.to_string())),
+        }
+    }
+
     /// Counts finalized artifacts and their combined size without mutating the cache.
     ///
     /// Only regular files directly inside shard directories are counted. Symlinks,
@@ -676,6 +696,28 @@ mod tests {
             std::fs::read(&path).map_err(|error| CacheError::Io(error.to_string()))?,
             b"first"
         );
+        assert!(layout.remove(key, "bin")?);
+        assert!(!layout.remove(key, "bin")?);
+        assert_eq!(layout.read(key, "bin")?, None);
+        std::fs::remove_dir_all(root).map_err(|error| CacheError::Io(error.to_string()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn exact_removal_validates_extension_before_filesystem_access() -> Result<(), CacheError> {
+        let root = std::env::temp_dir().join(format!(
+            "prism-cache-remove-safety-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let layout = CacheLayout::new(&root);
+        let key = CacheKey::from_parts("thumbnail", b"media", "rgba", b"corrupt");
+        layout.write_atomic(key, "rgba", b"corrupt")?;
+        assert_eq!(
+            layout.remove(key, "../rgba"),
+            Err(CacheError::InvalidExtension)
+        );
+        assert_eq!(layout.read(key, "rgba")?, Some(b"corrupt".to_vec()));
         std::fs::remove_dir_all(root).map_err(|error| CacheError::Io(error.to_string()))?;
         Ok(())
     }
