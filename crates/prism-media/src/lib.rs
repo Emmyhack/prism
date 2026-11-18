@@ -4,7 +4,7 @@
 //! playback, and export will use a separate library-backed worker architecture.
 
 use prism_cache::{
-    CacheLayout, CacheSubmitError, CacheWorker, CacheWriteRequest, CacheWriteResult,
+    CacheError, CacheLayout, CacheSubmitError, CacheWorker, CacheWriteRequest, CacheWriteResult,
 };
 use prism_timeline::{RationalTime, RoundingMode, TimeError};
 use serde::Deserialize;
@@ -190,6 +190,12 @@ pub enum MediaArtifactError {
     /// The bounded artifact queue applied backpressure or stopped.
     #[error("could not queue media artifact: {0}")]
     Queue(#[from] CacheSubmitError),
+    /// A finalized cache artifact could not be read safely.
+    #[error("could not read media artifact: {0}")]
+    Cache(#[from] CacheError),
+    /// Cached thumbnail bytes did not match the versioned artifact contract.
+    #[error("invalid cached thumbnail artifact: {0}")]
+    InvalidThumbnail(&'static str),
 }
 
 /// Bounded asynchronous writer for derived media artifacts.
@@ -228,14 +234,71 @@ impl MediaArtifactWorker {
         let thumbnail = frame.thumbnail(width, height)?;
         let key = entry.artifact_key(
             MediaArtifactKind::Thumbnail,
-            format!("{width}x{height}").as_bytes(),
+            format!("v1:{width}x{height}").as_bytes(),
         );
+        let mut contents = Vec::with_capacity(13usize.saturating_add(thumbnail.rgba.len()));
+        contents.extend_from_slice(b"PRTH");
+        contents.push(1);
+        contents.extend_from_slice(&thumbnail.width.to_be_bytes());
+        contents.extend_from_slice(&thumbnail.height.to_be_bytes());
+        contents.extend_from_slice(&thumbnail.rgba);
         self.worker.try_submit(CacheWriteRequest {
             key,
             extension: MediaArtifactKind::Thumbnail.extension().to_owned(),
-            contents: thumbnail.rgba,
+            contents,
         })?;
         Ok(key)
+    }
+
+    /// Reads and validates a versioned cached thumbnail for exact dimensions.
+    ///
+    /// Legacy raw-RGBA entries are treated as invalid rather than guessing their
+    /// dimensions. Callers may safely regenerate them through `schedule_thumbnail`.
+    pub fn read_thumbnail(
+        &self,
+        entry: &MediaCatalogEntry,
+        width: u32,
+        height: u32,
+    ) -> Result<Option<DecodedVideoFrame>, MediaArtifactError> {
+        let key = entry.artifact_key(
+            MediaArtifactKind::Thumbnail,
+            format!("v1:{width}x{height}").as_bytes(),
+        );
+        let Some(contents) = self.read_artifact(key, MediaArtifactKind::Thumbnail)? else {
+            return Ok(None);
+        };
+        if contents.len() < 13 || &contents[..4] != b"PRTH" || contents[4] != 1 {
+            return Err(MediaArtifactError::InvalidThumbnail(
+                "unsupported header or version",
+            ));
+        }
+        let stored_width = u32::from_be_bytes(
+            contents[5..9]
+                .try_into()
+                .map_err(|_| MediaArtifactError::InvalidThumbnail("missing width"))?,
+        );
+        let stored_height = u32::from_be_bytes(
+            contents[9..13]
+                .try_into()
+                .map_err(|_| MediaArtifactError::InvalidThumbnail("missing height"))?,
+        );
+        if stored_width != width || stored_height != height {
+            return Err(MediaArtifactError::InvalidThumbnail(
+                "stored dimensions do not match cache key",
+            ));
+        }
+        let rgba = contents[13..].to_vec();
+        let expected = checked_rgba_length(width, height)?;
+        if rgba.len() != expected {
+            return Err(MediaArtifactError::InvalidThumbnail(
+                "RGBA payload length does not match dimensions",
+            ));
+        }
+        Ok(Some(DecodedVideoFrame {
+            width,
+            height,
+            rgba,
+        }))
     }
 
     /// Queues a deterministic mono peak/RMS waveform artifact.
@@ -1649,11 +1712,17 @@ mod tests {
         let result = worker.result_timeout(std::time::Duration::from_secs(1))?;
         assert_eq!(result.key, key);
         let path = result.result?;
-        assert_eq!(fs::read(path)?, vec![255, 0, 0, 255]);
+        let bytes = fs::read(path)?;
+        assert_eq!(&bytes[..5], b"PRTH\x01");
         assert_eq!(
-            worker.read_artifact(key, MediaArtifactKind::Thumbnail)?,
-            Some(vec![255, 0, 0, 255])
+            worker.read_thumbnail(&entry, 1, 1)?,
+            Some(DecodedVideoFrame {
+                width: 1,
+                height: 1,
+                rgba: vec![255, 0, 0, 255],
+            })
         );
+        assert_eq!(worker.read_thumbnail(&entry, 2, 1)?, None);
         let _ = fs::remove_dir_all(root);
         Ok(())
     }

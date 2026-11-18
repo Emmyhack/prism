@@ -80,7 +80,9 @@ that region, and Reset layout restores the session defaults.
   completion or failure without blocking editing.
 - Successfully decoded browser thumbnails are fingerprinted off the UI thread and
   written through the bounded project cache worker. Jobs includes pending cache writes,
-  and completed artifacts immediately contribute to cache inventory.
+  and completed artifacts immediately contribute to cache inventory. Thumbnail cache
+  entries carry a versioned width/height header and validated RGBA payload so later
+  cache-hit presentation never has to guess image geometry.
 - Play/Pause (or Spacebar) advances the sequence clock and requests current video
   frames through the bounded preview worker. Newer requests supersede queued stale
   frames. When an unmuted audio clip is active, Prism starts `ffplay` at the matching
