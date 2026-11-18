@@ -123,6 +123,8 @@ export component PrismStudio inherits Window {
     in property <string> recovery-revision: "";
     in property <string> recovery-path: "";
     in property <string> autosave-status: "UNAVAILABLE";
+    in property <bool> autosave-enabled: false;
+    in property <int> autosave-retention: 5;
     in property <string> media-task-status: "IDLE";
     in property <string> media-task-detail: "0/0 previews";
     in property <int> media-task-pending: 0;
@@ -534,6 +536,7 @@ export component PrismStudio inherits Window {
                             if root.inspector-tab == "Jobs" : Rectangle { VerticalLayout { padding: 16px; spacing: 14px;
                                 Text { text: "PROJECT SAFETY"; color: #a69ac1; font-size: 9px; height: 16px; }
                                 Text { text: "AUTOSAVE  /  " + root.autosave-status; color: root.autosave-status == "FAILED" ? #db9b9f : #8fb9a5; font-size: 11px; height: 20px; }
+                                HorizontalLayout { height: 28px; spacing: 6px; Action { label: root.autosave-enabled ? "Autosave on" : "Autosave off"; active: root.autosave-enabled; enabled: root.autosave-status != "UNAVAILABLE"; clicked => { root.command-invoked("autosave.toggle"); } } Action { label: "Keep " + root.autosave-retention; enabled: root.autosave-status != "UNAVAILABLE"; clicked => { root.command-invoked("autosave.retention"); } } }
                                 Rectangle { height: 1px; background: #393540; }
                                 Text { text: "MEDIA PREPARATION"; color: #a69ac1; font-size: 9px; height: 16px; }
                                 Text { text: "THUMBNAILS  /  " + root.media-task-status; color: root.media-task-status == "COMPLETE WITH ERRORS" ? #d0a85c : #ded2f2; font-size: 11px; height: 20px; }

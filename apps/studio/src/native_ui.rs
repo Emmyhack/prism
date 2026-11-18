@@ -9,7 +9,10 @@ use prism_media::{
     ProxyRequest, ProxyStatus, StreamKind, fingerprint,
 };
 use prism_project::{MediaAsset, Project, ProxySourceFingerprint, TrackKind, TransitionKind};
-use prism_studio::desktop::{ExportController, ExportStatus, ExportWorker, ExportWorkerEvent};
+use prism_studio::desktop::{
+    AutosavePreferences, AutosavePreferencesStore, ExportController, ExportStatus, ExportWorker,
+    ExportWorkerEvent,
+};
 use prism_timeline::RationalTime;
 use std::{
     cell::{Cell, RefCell},
@@ -433,6 +436,7 @@ struct NativeExportRuntime {
     recovery_candidates: RefCell<Vec<prism_persistence::AutosaveCandidate>>,
     autosave_scheduler: RefCell<Option<prism_persistence::AutosaveScheduler>>,
     pending_autosave: RefCell<Option<Project>>,
+    autosave_preferences: Cell<AutosavePreferences>,
     cache_eviction: RefCell<Option<CacheEvictionWorker>>,
 }
 
@@ -469,6 +473,7 @@ impl NativeExportRuntime {
             recovery_candidates: RefCell::new(Vec::new()),
             autosave_scheduler: RefCell::new(None),
             pending_autosave: RefCell::new(None),
+            autosave_preferences: Cell::new(AutosavePreferences::default()),
             cache_eviction: RefCell::new(None),
         }
     }
@@ -507,6 +512,8 @@ impl NativeExportRuntime {
                 Ok(())
             }
             "cache.clean" => self.clean_cache(ui),
+            "autosave.toggle" => self.update_autosave_preferences(ui, true),
+            "autosave.retention" => self.update_autosave_preferences(ui, false),
             "media.toggle_proxy" => {
                 self.use_proxy.set(!self.use_proxy.get());
                 ui.set_proxy_active(self.use_proxy.get());
@@ -815,9 +822,30 @@ impl NativeExportRuntime {
         self.autosave_scheduler.borrow_mut().take();
         self.pending_autosave.borrow_mut().take();
         let Some(path) = self.project_path.borrow().clone() else {
+            self.autosave_preferences
+                .set(AutosavePreferences::default());
+            ui.set_autosave_enabled(false);
+            ui.set_autosave_retention(5);
             ui.set_autosave_status("UNAVAILABLE".into());
             return;
         };
+        let store = AutosavePreferencesStore::new(path.with_extension("autosave.json"));
+        let preferences = match store.load() {
+            Ok(preferences) => preferences,
+            Err(error) => {
+                ui.set_feedback(format!("Could not load autosave preferences: {error}").into());
+                AutosavePreferences::default()
+            }
+        };
+        self.autosave_preferences.set(preferences);
+        ui.set_autosave_enabled(preferences.enabled);
+        ui.set_autosave_retention(
+            i32::try_from(preferences.retained_revisions).unwrap_or(i32::MAX),
+        );
+        if !preferences.enabled {
+            ui.set_autosave_status("DISABLED".into());
+            return;
+        }
         match prism_persistence::AutosaveScheduler::spawn(path, 2) {
             Ok(scheduler) => {
                 *self.autosave_scheduler.borrow_mut() = Some(scheduler);
@@ -830,7 +858,51 @@ impl NativeExportRuntime {
         }
     }
 
+    fn update_autosave_preferences(
+        &self,
+        ui: &PrismStudio,
+        toggle_enabled: bool,
+    ) -> Result<(), String> {
+        let project_path =
+            self.project_path.borrow().clone().ok_or_else(|| {
+                "Save the project before changing autosave preferences".to_owned()
+            })?;
+        let mut preferences = self.autosave_preferences.get();
+        if toggle_enabled {
+            preferences.enabled = !preferences.enabled;
+        } else {
+            preferences.retained_revisions = match preferences.retained_revisions {
+                1 => 5,
+                5 => 10,
+                10 => 20,
+                _ => 1,
+            };
+        }
+        AutosavePreferencesStore::new(project_path.with_extension("autosave.json"))
+            .save(preferences)
+            .map_err(|error| error.to_string())?;
+        self.autosave_preferences.set(preferences);
+        self.reset_autosave_scheduler(ui);
+        ui.set_feedback(
+            format!(
+                "Autosave {} · retaining {} revisions",
+                if preferences.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                preferences.retained_revisions
+            )
+            .into(),
+        );
+        Ok(())
+    }
+
     fn queue_autosave(&self, ui: &PrismStudio, project: &Project) {
+        if !self.autosave_preferences.get().enabled {
+            ui.set_autosave_status("DISABLED".into());
+            return;
+        }
         if self.pending_autosave.borrow().is_some() {
             *self.pending_autosave.borrow_mut() = Some(project.clone());
             ui.set_autosave_status("BUSY".into());
@@ -2530,7 +2602,10 @@ impl NativeExportRuntime {
                 Ok(()) => {
                     ui.set_autosave_status(format!("SAVED R{}", result.revision).into());
                     if let Some(path) = self.project_path.borrow().as_deref() {
-                        if let Err(error) = prism_persistence::retain_autosaves(path, 5) {
+                        if let Err(error) = prism_persistence::retain_autosaves(
+                            path,
+                            self.autosave_preferences.get().retained_revisions,
+                        ) {
                             ui.set_feedback(format!("Autosave retention failed: {error}").into());
                         }
                     }
@@ -3711,13 +3786,21 @@ mod tests {
         }
         assert!(!ui.get_cache_cleaning());
         assert_eq!(ui.get_cache_detail(), "0 artifacts · 0 B");
+        runtime.update_autosave_preferences(&ui, true)?;
+        assert!(!ui.get_autosave_enabled());
+        assert_eq!(ui.get_autosave_status(), "DISABLED");
+        runtime.update_autosave_preferences(&ui, false)?;
+        assert_eq!(ui.get_autosave_retention(), 10);
+        runtime.update_autosave_preferences(&ui, true)?;
+        assert!(ui.get_autosave_enabled());
         runtime.autosave_scheduler.borrow_mut().take();
         for candidate in prism_persistence::list_autosaves(&path)? {
             std::fs::remove_file(candidate.path)?;
         }
         std::fs::remove_file(proxy_path)?;
         std::fs::remove_file(replacement)?;
-        std::fs::remove_file(path)?;
+        std::fs::remove_file(&path)?;
+        std::fs::remove_file(path.with_extension("autosave.json"))?;
         std::fs::remove_dir_all(cache_root)?;
         ui.hide()?;
         Ok(())

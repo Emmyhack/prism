@@ -21,7 +21,8 @@ that region, and Reset layout restores the session defaults.
   user-selected project path and never replaces the active project or autosave.
 - Every successful edit, undo, and redo queues a validated snapshot on a bounded
   background autosave worker. Bursts coalesce to the newest pending revision, the Jobs
-  panel reports status, and retention keeps the five newest project autosaves.
+  panel reports status. Jobs can enable/disable autosave and cycle retention through
+  1, 5, 10, or 20 revisions; these preferences persist atomically beside the project.
 - Import one or more videos with native file dialogs (Ctrl/Cmd+I). Imports append
   clips to the first unlocked video track, creating a sequence/track if required.
   New projects prompt for a save destination. Cancellation leaves the project intact.

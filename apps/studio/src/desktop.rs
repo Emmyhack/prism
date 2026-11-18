@@ -109,6 +109,75 @@ pub struct WorkspaceStore {
     path: PathBuf,
 }
 
+/// Per-project autosave behavior persisted independently from project content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutosavePreferences {
+    /// Whether successful edits should enqueue recovery snapshots.
+    pub enabled: bool,
+    /// Maximum number of newest autosave revisions retained for the project.
+    pub retained_revisions: usize,
+}
+
+impl Default for AutosavePreferences {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            retained_revisions: 5,
+        }
+    }
+}
+
+impl AutosavePreferences {
+    /// Validates bounds before preferences affect background work.
+    pub fn validate(self) -> Result<Self, io::Error> {
+        if !(1..=50).contains(&self.retained_revisions) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "autosave retained revisions must be between 1 and 50",
+            ));
+        }
+        Ok(self)
+    }
+}
+
+/// Atomic JSON persistence for per-project autosave preferences.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutosavePreferencesStore {
+    path: PathBuf,
+}
+
+impl AutosavePreferencesStore {
+    /// Creates a store rooted at `path`; no I/O occurs until save/load.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// Loads validated preferences, returning defaults when no store exists.
+    pub fn load(&self) -> Result<AutosavePreferences, io::Error> {
+        if !self.path.is_file() {
+            return Ok(AutosavePreferences::default());
+        }
+        let bytes = fs::read(&self.path)?;
+        serde_json::from_slice::<AutosavePreferences>(&bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+            .validate()
+    }
+
+    /// Atomically persists validated preferences.
+    pub fn save(&self, preferences: AutosavePreferences) -> Result<(), io::Error> {
+        let preferences = preferences.validate()?;
+        let bytes = serde_json::to_vec_pretty(&preferences)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let temporary = self.path.with_extension("tmp");
+        fs::write(&temporary, bytes)?;
+        fs::rename(temporary, &self.path)
+    }
+}
+
 impl WorkspaceStore {
     /// Creates a store rooted at `path`; no I/O occurs until save/load.
     #[must_use]
@@ -864,12 +933,40 @@ impl DesktopState {
 #[cfg(test)]
 mod tests {
     use super::{
-        DesktopState, EditTool, ExportController, ExportStatus, ExportWorker, ExportWorkerEvent,
-        MIN_VIEWPORT, PanelId, Size, TransportState, WorkspaceKind, WorkspaceLayout,
-        WorkspacePreset, WorkspaceStore,
+        AutosavePreferences, AutosavePreferencesStore, DesktopState, EditTool, ExportController,
+        ExportStatus, ExportWorker, ExportWorkerEvent, MIN_VIEWPORT, PanelId, Size, TransportState,
+        WorkspaceKind, WorkspaceLayout, WorkspacePreset, WorkspaceStore,
     };
     use prism_export::ExportJobState;
     use std::path::PathBuf;
+
+    #[test]
+    fn autosave_preferences_round_trip_and_validate_bounds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let path = std::env::temp_dir().join(format!(
+            "prism-autosave-preferences-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = AutosavePreferencesStore::new(&path);
+        assert_eq!(store.load()?, AutosavePreferences::default());
+        let preferences = AutosavePreferences {
+            enabled: false,
+            retained_revisions: 10,
+        };
+        store.save(preferences)?;
+        assert_eq!(store.load()?, preferences);
+        assert!(
+            store
+                .save(AutosavePreferences {
+                    enabled: true,
+                    retained_revisions: 0,
+                })
+                .is_err()
+        );
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
 
     #[test]
     fn wide_layout_matches_familiar_nle_regions_without_overlap() {

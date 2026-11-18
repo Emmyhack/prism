@@ -41,7 +41,8 @@ Remaining acceptance work:
   the stable `AutosaveSummary` boundary, and native newest-candidate discovery plus
   no-clobber Recover As workflow are implemented and rendered on Home; successful
   edits/history actions feed a bounded background scheduler with newest-pending
-  coalescing, five-revision retention, and visible Jobs status);
+  coalescing and visible Jobs status; per-project enable/disable and bounded
+  1/5/10/20-revision retention preferences persist atomically and drive the worker);
 - provide a stable default keyboard map for selection, razor, trim, slip,
   slide, rolling, playback, undo, and redo (`--list-shortcuts` exposes the
   map for UI adapters; deterministic event resolution and native graphical
