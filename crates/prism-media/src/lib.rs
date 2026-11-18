@@ -231,17 +231,21 @@ impl MediaArtifactWorker {
         width: u32,
         height: u32,
     ) -> Result<prism_cache::CacheKey, MediaArtifactError> {
+        self.schedule_thumbnail_variant(entry, frame, width, height, &format!("{width}x{height}"))
+    }
+
+    /// Queues a resized thumbnail under a stable presentation variant.
+    pub fn schedule_thumbnail_variant(
+        &self,
+        entry: &MediaCatalogEntry,
+        frame: &DecodedVideoFrame,
+        width: u32,
+        height: u32,
+        variant: &str,
+    ) -> Result<prism_cache::CacheKey, MediaArtifactError> {
         let thumbnail = frame.thumbnail(width, height)?;
-        let key = entry.artifact_key(
-            MediaArtifactKind::Thumbnail,
-            format!("v1:{width}x{height}").as_bytes(),
-        );
-        let mut contents = Vec::with_capacity(13usize.saturating_add(thumbnail.rgba.len()));
-        contents.extend_from_slice(b"PRTH");
-        contents.push(1);
-        contents.extend_from_slice(&thumbnail.width.to_be_bytes());
-        contents.extend_from_slice(&thumbnail.height.to_be_bytes());
-        contents.extend_from_slice(&thumbnail.rgba);
+        let key = Self::thumbnail_variant_key(entry, variant);
+        let contents = encode_thumbnail_artifact(&thumbnail);
         self.worker.try_submit(CacheWriteRequest {
             key,
             extension: MediaArtifactKind::Thumbnail.extension().to_owned(),
@@ -260,45 +264,41 @@ impl MediaArtifactWorker {
         width: u32,
         height: u32,
     ) -> Result<Option<DecodedVideoFrame>, MediaArtifactError> {
-        let key = entry.artifact_key(
-            MediaArtifactKind::Thumbnail,
-            format!("v1:{width}x{height}").as_bytes(),
-        );
-        let Some(contents) = self.read_artifact(key, MediaArtifactKind::Thumbnail)? else {
-            return Ok(None);
-        };
-        if contents.len() < 13 || &contents[..4] != b"PRTH" || contents[4] != 1 {
-            return Err(MediaArtifactError::InvalidThumbnail(
-                "unsupported header or version",
-            ));
-        }
-        let stored_width = u32::from_be_bytes(
-            contents[5..9]
-                .try_into()
-                .map_err(|_| MediaArtifactError::InvalidThumbnail("missing width"))?,
-        );
-        let stored_height = u32::from_be_bytes(
-            contents[9..13]
-                .try_into()
-                .map_err(|_| MediaArtifactError::InvalidThumbnail("missing height"))?,
-        );
-        if stored_width != width || stored_height != height {
+        let thumbnail = self.read_thumbnail_variant(entry, &format!("{width}x{height}"))?;
+        if thumbnail
+            .as_ref()
+            .is_some_and(|frame| frame.width != width || frame.height != height)
+        {
             return Err(MediaArtifactError::InvalidThumbnail(
                 "stored dimensions do not match cache key",
             ));
         }
-        let rgba = contents[13..].to_vec();
-        let expected = checked_rgba_length(width, height)?;
-        if rgba.len() != expected {
-            return Err(MediaArtifactError::InvalidThumbnail(
-                "RGBA payload length does not match dimensions",
-            ));
-        }
-        Ok(Some(DecodedVideoFrame {
-            width,
-            height,
-            rgba,
-        }))
+        Ok(thumbnail)
+    }
+
+    /// Reads a validated cached thumbnail stored under a presentation variant.
+    pub fn read_thumbnail_variant(
+        &self,
+        entry: &MediaCatalogEntry,
+        variant: &str,
+    ) -> Result<Option<DecodedVideoFrame>, MediaArtifactError> {
+        let key = Self::thumbnail_variant_key(entry, variant);
+        let Some(contents) = self.read_artifact(key, MediaArtifactKind::Thumbnail)? else {
+            return Ok(None);
+        };
+        decode_thumbnail_artifact(&contents).map(Some)
+    }
+
+    /// Returns the content-addressed key for one thumbnail presentation variant.
+    #[must_use]
+    pub fn thumbnail_variant_key(
+        entry: &MediaCatalogEntry,
+        variant: &str,
+    ) -> prism_cache::CacheKey {
+        entry.artifact_key(
+            MediaArtifactKind::Thumbnail,
+            format!("v1:{variant}").as_bytes(),
+        )
     }
 
     /// Queues a deterministic mono peak/RMS waveform artifact.
@@ -424,6 +424,47 @@ impl MediaArtifactWorker {
     ) -> Result<Option<PathBuf>, prism_cache::CacheError> {
         self.layout.lookup(key, artifact.extension())
     }
+}
+
+fn encode_thumbnail_artifact(thumbnail: &DecodedVideoFrame) -> Vec<u8> {
+    let mut contents = Vec::with_capacity(13usize.saturating_add(thumbnail.rgba.len()));
+    contents.extend_from_slice(b"PRTH");
+    contents.push(1);
+    contents.extend_from_slice(&thumbnail.width.to_be_bytes());
+    contents.extend_from_slice(&thumbnail.height.to_be_bytes());
+    contents.extend_from_slice(&thumbnail.rgba);
+    contents
+}
+
+/// Decodes a self-describing cached thumbnail after strict structural validation.
+pub fn decode_thumbnail_artifact(contents: &[u8]) -> Result<DecodedVideoFrame, MediaArtifactError> {
+    if contents.len() < 13 || &contents[..4] != b"PRTH" || contents[4] != 1 {
+        return Err(MediaArtifactError::InvalidThumbnail(
+            "unsupported header or version",
+        ));
+    }
+    let width = u32::from_be_bytes(
+        contents[5..9]
+            .try_into()
+            .map_err(|_| MediaArtifactError::InvalidThumbnail("missing width"))?,
+    );
+    let height = u32::from_be_bytes(
+        contents[9..13]
+            .try_into()
+            .map_err(|_| MediaArtifactError::InvalidThumbnail("missing height"))?,
+    );
+    let rgba = contents[13..].to_vec();
+    let expected = checked_rgba_length(width, height)?;
+    if rgba.len() != expected {
+        return Err(MediaArtifactError::InvalidThumbnail(
+            "RGBA payload length does not match dimensions",
+        ));
+    }
+    Ok(DecodedVideoFrame {
+        width,
+        height,
+        rgba,
+    })
 }
 
 impl MediaArtifactKind {
@@ -1628,8 +1669,8 @@ mod tests {
         MediaArtifactWorker, MediaCatalog, MediaCatalogEntry, MediaError, MediaFingerprint,
         MediaItemKind, MediaMetadata, MediaSourceSelection, PacketTimingEvidence, ProbeOutput,
         ProbePacket, ProxyProfile, ProxyRequest, ProxyStatus, StreamKind, analyze_packet_timing,
-        checked_rgba_length, fingerprint, format_seek_timestamp, parse_decimal_time, proxy_status,
-        select_media_source,
+        checked_rgba_length, decode_thumbnail_artifact, fingerprint, format_seek_timestamp,
+        parse_decimal_time, proxy_status, select_media_source,
     };
     use prism_timeline::RationalTime;
     use std::{fs, path::Path};
@@ -1723,8 +1764,32 @@ mod tests {
             })
         );
         assert_eq!(worker.read_thumbnail(&entry, 2, 1)?, None);
+
+        let variant_key =
+            worker.schedule_thumbnail_variant(&entry, &frame, 2, 1, "browser:max-edge=160")?;
+        let variant_result = worker.result_timeout(std::time::Duration::from_secs(1))?;
+        assert_eq!(variant_result.key, variant_key);
+        variant_result.result?;
+        assert_eq!(
+            worker.read_thumbnail_variant(&entry, "browser:max-edge=160")?,
+            Some(DecodedVideoFrame {
+                width: 2,
+                height: 1,
+                rgba: vec![255, 0, 0, 255, 0, 255, 0, 255],
+            })
+        );
         let _ = fs::remove_dir_all(root);
         Ok(())
+    }
+
+    #[test]
+    fn cached_thumbnail_decoder_rejects_invalid_artifacts() {
+        assert!(decode_thumbnail_artifact(b"raw rgba").is_err());
+
+        let mut truncated = b"PRTH\x01".to_vec();
+        truncated.extend_from_slice(&1_u32.to_be_bytes());
+        truncated.extend_from_slice(&1_u32.to_be_bytes());
+        assert!(decode_thumbnail_artifact(&truncated).is_err());
     }
 
     #[test]
