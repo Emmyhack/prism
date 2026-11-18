@@ -36,7 +36,9 @@ Remaining acceptance work:
   completion, and failure counts plus proxy generation state. The cache boundary now
   reports finalized artifact count/bytes and pending write/eviction work; Studio now
   uses a project-scoped persistent cache root and projects its inventory, cleanup
-  activity, results, and failures in Jobs. Broader derived-media integration remains);
+  activity, results, and failures in Jobs. Decoded media thumbnails now write through
+  the bounded content-addressed artifact worker with visible pending state; cache-hit
+  thumbnail reads and waveform integration remain);
 - expose crash-recovery candidates through the Studio workflow (`--list-autosaves`,
   the stable `AutosaveSummary` boundary, and native newest-candidate discovery plus
   no-clobber Recover As workflow are implemented and rendered on Home; successful

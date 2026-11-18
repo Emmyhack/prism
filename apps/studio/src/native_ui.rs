@@ -1,12 +1,13 @@
 //! Native Slint adapter for the Prism desktop workspace.
 
-use prism_cache::{CacheEvictionPolicy, CacheEvictionWorker, CacheLayout};
+use prism_cache::{CacheError, CacheEvictionPolicy, CacheEvictionWorker, CacheLayout};
 use prism_commands::{Command, CommandEngine, UndoRecord};
 use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
 use prism_export::{ExportPreset, SingleTrackMp4ExportRequest, VideoAudioMp4ExportRequest};
 use prism_media::{
-    FfmpegProxyGenerator, FfmpegReferenceDecoder, FfprobeInspector, MediaFingerprint, ProxyProfile,
-    ProxyRequest, ProxyStatus, StreamKind, fingerprint,
+    FfmpegProxyGenerator, FfmpegReferenceDecoder, FfprobeInspector, MediaArtifactWorker,
+    MediaCatalogEntry, MediaFingerprint, MediaItemKind, ProxyProfile, ProxyRequest, ProxyStatus,
+    StreamKind, fingerprint,
 };
 use prism_project::{MediaAsset, Project, ProxySourceFingerprint, TrackKind, TransitionKind};
 use prism_studio::desktop::{
@@ -218,7 +219,14 @@ struct PreviewWorker {
     sender: SyncSender<PreviewRequest>,
     receiver: Receiver<(
         u64,
-        Result<(prism_media::DecodedVideoFrame, RationalTime), String>,
+        Result<
+            (
+                prism_media::DecodedVideoFrame,
+                RationalTime,
+                Option<MediaFingerprint>,
+            ),
+            String,
+        >,
     )>,
     pending: RefCell<Option<PreviewRequest>>,
     generation: Cell<u64>,
@@ -255,12 +263,13 @@ impl PreviewWorker {
                             let height = u32::try_from(u64::from(frame.height) * 160 / longest)
                                 .unwrap_or(1)
                                 .max(1);
+                            let source_fingerprint = fingerprint(&request.path).ok();
                             frame
                                 .thumbnail(width, height)
-                                .map(|frame| (frame, duration))
+                                .map(|frame| (frame, duration, source_fingerprint))
                                 .map_err(|e| e.to_string())
                         } else {
-                            Ok((frame, duration))
+                            Ok((frame, duration, None))
                         }
                     });
                 if replies.send((request.generation, result)).is_err() {
@@ -301,18 +310,35 @@ impl PreviewWorker {
     }
 
     fn poll(&self) -> Option<Result<(slint::Image, RationalTime), String>> {
+        self.poll_decoded().map(|result| {
+            result.map(|(frame, duration, _)| {
+                let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                    &frame.rgba,
+                    frame.width,
+                    frame.height,
+                );
+                (slint::Image::from_rgba8(buffer), duration)
+            })
+        })
+    }
+
+    fn poll_decoded(
+        &self,
+    ) -> Option<
+        Result<
+            (
+                prism_media::DecodedVideoFrame,
+                RationalTime,
+                Option<MediaFingerprint>,
+            ),
+            String,
+        >,
+    > {
         self.flush();
         let mut result = None;
         while let Ok((generation, frame)) = self.receiver.try_recv() {
             if generation == self.generation.get() {
-                result = Some(frame.map(|(frame, duration)| {
-                    let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                        &frame.rgba,
-                        frame.width,
-                        frame.height,
-                    );
-                    (slint::Image::from_rgba8(buffer), duration)
-                }));
+                result = Some(frame);
             }
         }
         result
@@ -429,6 +455,7 @@ struct NativeExportRuntime {
     thumbnail_total: Cell<usize>,
     thumbnail_completed: Cell<usize>,
     thumbnail_failed: Cell<usize>,
+    media_artifacts: RefCell<Option<MediaArtifactWorker>>,
     cards: RefCell<Vec<MediaCard>>,
     use_proxy: Cell<bool>,
     proxy_generation: RefCell<Option<ProxyGeneration>>,
@@ -466,6 +493,7 @@ impl NativeExportRuntime {
             thumbnail_total: Cell::new(0),
             thumbnail_completed: Cell::new(0),
             thumbnail_failed: Cell::new(0),
+            media_artifacts: RefCell::new(None),
             cards: RefCell::new(Vec::new()),
             use_proxy: Cell::new(false),
             proxy_generation: RefCell::new(None),
@@ -1009,6 +1037,10 @@ impl NativeExportRuntime {
         self.refresh_recovery(ui);
         self.reset_autosave_scheduler(ui);
         self.cache_eviction.borrow_mut().take();
+        self.media_artifacts.borrow_mut().take();
+        if let Some(root) = self.cache_root() {
+            *self.media_artifacts.borrow_mut() = Some(MediaArtifactWorker::spawn(root, 8));
+        }
         self.update_cache_state(ui);
         self.source_duration.set(RationalTime::ZERO);
         self.source_position.set(RationalTime::ZERO);
@@ -1898,13 +1930,21 @@ impl NativeExportRuntime {
         let total = self.thumbnail_total.get();
         let completed = self.thumbnail_completed.get();
         let failed = self.thumbnail_failed.get();
-        let pending = total.saturating_sub(completed);
+        let pending_decode = total.saturating_sub(completed);
+        let pending_writes = self
+            .media_artifacts
+            .borrow()
+            .as_ref()
+            .map_or(0, MediaArtifactWorker::pending_writes);
+        let pending = pending_decode.saturating_add(pending_writes);
         ui.set_media_task_pending(i32::try_from(pending).unwrap_or(i32::MAX));
         ui.set_media_task_status(
             if total == 0 {
                 "IDLE"
-            } else if pending > 0 {
+            } else if pending_decode > 0 {
                 "DECODING"
+            } else if pending_writes > 0 {
+                "CACHING"
             } else if failed > 0 {
                 "COMPLETE WITH ERRORS"
             } else {
@@ -1914,9 +1954,14 @@ impl NativeExportRuntime {
         );
         ui.set_media_task_detail(
             format!(
-                "{completed}/{total} previews{}",
+                "{completed}/{total} previews{}{}",
                 if failed > 0 {
                     format!(" · {failed} unavailable")
+                } else {
+                    String::new()
+                },
+                if pending_writes > 0 {
+                    format!(" · {pending_writes} cache writes")
                 } else {
                     String::new()
                 }
@@ -2673,11 +2718,62 @@ impl NativeExportRuntime {
                 }
             }
         }
-        if let Some(result) = self.thumbnail_preview.poll() {
+        let mut cache_changed = false;
+        loop {
+            let cache_result = self
+                .media_artifacts
+                .borrow()
+                .as_ref()
+                .and_then(|worker| worker.try_result().ok());
+            let Some(cache_result) = cache_result else {
+                break;
+            };
+            cache_changed = true;
+            match cache_result.result {
+                Ok(_) | Err(CacheError::AlreadyExists(_)) => {}
+                Err(error) => {
+                    ui.set_feedback(format!("Could not cache media preview: {error}").into());
+                }
+            }
+        }
+        if cache_changed {
+            self.update_cache_state(ui);
+            self.update_media_task_state(ui);
+        }
+        if let Some(result) = self.thumbnail_preview.poll_decoded() {
             if let Some(index) = self.thumbnail_current.take() {
                 if let Some(card) = self.cards.borrow_mut().get_mut(index) {
-                    if let Ok((frame, _)) = result {
-                        card.frame = frame;
+                    if let Ok((frame, _, source_fingerprint)) = result {
+                        if let Some(worker) = self.media_artifacts.borrow().as_ref()
+                            && let Some(asset) = self
+                                .project
+                                .borrow()
+                                .as_ref()
+                                .and_then(|project| project.media.values().nth(index))
+                        {
+                            let entry = MediaCatalogEntry {
+                                path: PathBuf::from(&asset.source_path),
+                                kind: MediaItemKind::Video,
+                                metadata: None,
+                                fingerprint: source_fingerprint,
+                                offline: false,
+                                diagnostic: None,
+                            };
+                            if let Err(error) =
+                                worker.schedule_thumbnail(&entry, &frame, frame.width, frame.height)
+                            {
+                                ui.set_feedback(
+                                    format!("Could not queue thumbnail cache: {error}").into(),
+                                );
+                            }
+                        }
+                        let buffer =
+                            slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                &frame.rgba,
+                                frame.width,
+                                frame.height,
+                            );
+                        card.frame = slint::Image::from_rgba8(buffer);
                         card.has_frame = true;
                         card.status = "".into();
                     } else {
@@ -3204,7 +3300,7 @@ mod tests {
         TrackId, TrackKind, fingerprint, insert_media_into_project, insert_video_into_project,
         next_proxy_version,
     };
-    use prism_cache::{CacheKey, CacheLayout};
+    use prism_cache::CacheLayout;
     use prism_project::Project;
     use prism_studio::desktop::ExportController;
     use prism_timeline::RationalTime;
@@ -3770,11 +3866,22 @@ mod tests {
         assert_eq!(ui.get_tracks().row_count(), 1);
         let cache_root = path.with_extension("prism-cache");
         let cache_layout = CacheLayout::new(&cache_root);
-        let cache_key = CacheKey::from_parts("thumbnail", b"fixture", "rgba", b"160x90");
-        cache_layout.write_atomic(cache_key, "rgba", b"cached thumbnail")?;
+        let cache_started = std::time::Instant::now();
+        while runtime
+            .media_artifacts
+            .borrow()
+            .as_ref()
+            .is_some_and(|worker| worker.pending_writes() > 0)
+            && cache_started.elapsed() < std::time::Duration::from_secs(2)
+        {
+            runtime.poll(&ui);
+            std::thread::yield_now();
+        }
+        runtime.poll(&ui);
+        assert!(cache_layout.inventory()?.artifact_count >= 1);
         runtime.update_cache_state(&ui);
         assert_eq!(ui.get_cache_status(), "READY");
-        assert!(ui.get_cache_detail().contains("1 artifacts"));
+        assert!(!ui.get_cache_detail().starts_with("0 artifacts"));
         runtime.clean_cache(&ui)?;
         assert!(ui.get_cache_cleaning());
         let cleanup_started = std::time::Instant::now();
