@@ -79,6 +79,22 @@ pub enum MediaError {
         /// Actual byte count returned by the process.
         actual: usize,
     },
+    /// Audio decode bounds were zero or could not be represented safely.
+    #[error("invalid audio decode bounds: {sample_rate} Hz, {max_samples} samples")]
+    InvalidAudioDecodeBounds {
+        /// Requested output sample rate.
+        sample_rate: u32,
+        /// Maximum decoded mono samples.
+        max_samples: usize,
+    },
+    /// The decoder returned malformed or excessive mono `f32` PCM bytes.
+    #[error("decoded mono audio had {actual} bytes; maximum valid length is {maximum}")]
+    InvalidAudioFrameLength {
+        /// Maximum permitted byte count.
+        maximum: usize,
+        /// Actual byte count returned by the process.
+        actual: usize,
+    },
     /// A proxy profile contained invalid dimensions or codec identifiers.
     #[error("invalid proxy profile: {reason}")]
     InvalidProxyProfile {
@@ -114,6 +130,7 @@ pub enum MediaError {
 }
 
 const MAX_REFERENCE_FRAME_BYTES: usize = 512 * 1024 * 1024;
+const MAX_REFERENCE_AUDIO_BYTES: usize = 512 * 1024 * 1024;
 
 /// Runtime discovery report. This is not proof that a codec workflow works.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -327,6 +344,21 @@ impl MediaArtifactWorker {
         samples: &[f32],
         samples_per_point: usize,
     ) -> Result<prism_cache::CacheKey, MediaArtifactError> {
+        self.schedule_waveform_variant(entry, samples, samples_per_point, "mono")
+    }
+
+    /// Queues a mono waveform under a caller-defined decode variant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid samples, an excessive point count, or queue backpressure.
+    pub fn schedule_waveform_variant(
+        &self,
+        entry: &MediaCatalogEntry,
+        samples: &[f32],
+        samples_per_point: usize,
+        variant: &str,
+    ) -> Result<prism_cache::CacheKey, MediaArtifactError> {
         let points = prism_audio::generate_waveform(samples, samples_per_point)?;
         let point_count = u32::try_from(points.len())
             .map_err(|_| MediaArtifactError::InvalidWaveform("too many waveform points"))?;
@@ -340,10 +372,7 @@ impl MediaArtifactWorker {
             contents.extend_from_slice(&point.max.to_le_bytes());
             contents.extend_from_slice(&point.rms.to_le_bytes());
         }
-        let key = entry.artifact_key(
-            MediaArtifactKind::Waveform,
-            format!("v1:mono:{samples_per_point}").as_bytes(),
-        );
+        let key = Self::waveform_variant_key(entry, samples_per_point, variant);
         self.worker.try_submit(CacheWriteRequest {
             key,
             extension: MediaArtifactKind::Waveform.extension().to_owned(),
@@ -362,14 +391,54 @@ impl MediaArtifactWorker {
         entry: &MediaCatalogEntry,
         samples_per_point: usize,
     ) -> Result<Option<Vec<prism_audio::WaveformPoint>>, MediaArtifactError> {
+        self.read_waveform_variant(entry, samples_per_point, "mono")
+    }
+
+    /// Reads a validated mono waveform stored under a decode variant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for cache I/O or an invalid versioned artifact.
+    pub fn read_waveform_variant(
+        &self,
+        entry: &MediaCatalogEntry,
+        samples_per_point: usize,
+        variant: &str,
+    ) -> Result<Option<Vec<prism_audio::WaveformPoint>>, MediaArtifactError> {
         let key = entry.artifact_key(
             MediaArtifactKind::Waveform,
-            format!("v1:mono:{samples_per_point}").as_bytes(),
+            format!("v1:{variant}:{samples_per_point}").as_bytes(),
         );
         let Some(contents) = self.read_artifact(key, MediaArtifactKind::Waveform)? else {
             return Ok(None);
         };
         decode_waveform_artifact(&contents).map(Some)
+    }
+
+    /// Returns the content-addressed key for one mono waveform decode variant.
+    #[must_use]
+    pub fn waveform_variant_key(
+        entry: &MediaCatalogEntry,
+        samples_per_point: usize,
+        variant: &str,
+    ) -> prism_cache::CacheKey {
+        entry.artifact_key(
+            MediaArtifactKind::Waveform,
+            format!("v1:{variant}:{samples_per_point}").as_bytes(),
+        )
+    }
+
+    /// Removes one exact derived artifact so failed validation can regenerate it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a cache filesystem or extension validation error.
+    pub fn remove_artifact(
+        &self,
+        key: prism_cache::CacheKey,
+        artifact: MediaArtifactKind,
+    ) -> Result<bool, prism_cache::CacheError> {
+        self.layout.remove(key, artifact.extension())
     }
 
     /// Queues a deterministic stereo peak/RMS waveform artifact.
@@ -387,7 +456,13 @@ impl MediaArtifactWorker {
         frames_per_point: usize,
     ) -> Result<prism_cache::CacheKey, MediaArtifactError> {
         let points = prism_audio::generate_stereo_waveform(interleaved_samples, frames_per_point)?;
-        let mut contents = Vec::with_capacity(points.len() * 24);
+        let point_count = u32::try_from(points.len())
+            .map_err(|_| MediaArtifactError::InvalidWaveform("too many waveform points"))?;
+        let mut contents = Vec::with_capacity(10usize.saturating_add(points.len() * 24));
+        contents.extend_from_slice(b"PRWF");
+        contents.push(1);
+        contents.push(2);
+        contents.extend_from_slice(&point_count.to_be_bytes());
         for point in points {
             for value in [
                 point.left.min,
@@ -402,7 +477,7 @@ impl MediaArtifactWorker {
         }
         let key = entry.artifact_key(
             MediaArtifactKind::Waveform,
-            format!("stereo:{frames_per_point}").as_bytes(),
+            format!("v1:stereo:{frames_per_point}").as_bytes(),
         );
         self.worker.try_submit(CacheWriteRequest {
             key,
@@ -410,6 +485,26 @@ impl MediaArtifactWorker {
             contents,
         })?;
         Ok(key)
+    }
+
+    /// Reads a validated versioned stereo waveform, returning `None` on a miss.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for cache I/O or an invalid versioned artifact.
+    pub fn read_stereo_waveform(
+        &self,
+        entry: &MediaCatalogEntry,
+        frames_per_point: usize,
+    ) -> Result<Option<Vec<prism_audio::StereoWaveformPoint>>, MediaArtifactError> {
+        let key = entry.artifact_key(
+            MediaArtifactKind::Waveform,
+            format!("v1:stereo:{frames_per_point}").as_bytes(),
+        );
+        let Some(contents) = self.read_artifact(key, MediaArtifactKind::Waveform)? else {
+            return Ok(None);
+        };
+        decode_stereo_waveform_artifact(&contents).map(Some)
     }
 
     /// Returns the next completed artifact write without blocking.
@@ -520,25 +615,7 @@ pub fn decode_thumbnail_artifact(contents: &[u8]) -> Result<DecodedVideoFrame, M
 pub fn decode_waveform_artifact(
     contents: &[u8],
 ) -> Result<Vec<prism_audio::WaveformPoint>, MediaArtifactError> {
-    if contents.len() < 10 || &contents[..4] != b"PRWF" || contents[4] != 1 || contents[5] != 1 {
-        return Err(MediaArtifactError::InvalidWaveform(
-            "unsupported header, version, or channel count",
-        ));
-    }
-    let point_count = u32::from_be_bytes(
-        contents[6..10]
-            .try_into()
-            .map_err(|_| MediaArtifactError::InvalidWaveform("missing point count"))?,
-    ) as usize;
-    let expected = point_count
-        .checked_mul(12)
-        .and_then(|bytes| bytes.checked_add(10))
-        .ok_or(MediaArtifactError::InvalidWaveform("point count overflow"))?;
-    if contents.len() != expected {
-        return Err(MediaArtifactError::InvalidWaveform(
-            "payload length does not match point count",
-        ));
-    }
+    let point_count = waveform_header(contents, 1, 12)?;
     let mut points = Vec::with_capacity(point_count);
     for bytes in contents[10..].chunks_exact(12) {
         let min = f32::from_le_bytes(
@@ -556,14 +633,90 @@ pub fn decode_waveform_artifact(
                 .try_into()
                 .map_err(|_| MediaArtifactError::InvalidWaveform("missing RMS"))?,
         );
-        if !min.is_finite() || !max.is_finite() || !rms.is_finite() || min > max || rms < 0.0 {
-            return Err(MediaArtifactError::InvalidWaveform(
-                "waveform point contains invalid amplitudes",
-            ));
-        }
-        points.push(prism_audio::WaveformPoint { min, max, rms });
+        let point = prism_audio::WaveformPoint { min, max, rms };
+        validate_waveform_point(point)?;
+        points.push(point);
     }
     Ok(points)
+}
+
+/// Decodes versioned stereo waveform points after structural and numeric validation.
+///
+/// # Errors
+///
+/// Returns an error when the header, point count, payload, or amplitudes are invalid.
+pub fn decode_stereo_waveform_artifact(
+    contents: &[u8],
+) -> Result<Vec<prism_audio::StereoWaveformPoint>, MediaArtifactError> {
+    let point_count = waveform_header(contents, 2, 24)?;
+    let mut points = Vec::with_capacity(point_count);
+    for bytes in contents[10..].chunks_exact(24) {
+        let mut values = [0.0_f32; 6];
+        for (value, encoded) in values.iter_mut().zip(bytes.chunks_exact(4)) {
+            let mut raw = [0_u8; 4];
+            raw.copy_from_slice(encoded);
+            *value = f32::from_le_bytes(raw);
+        }
+        let left = prism_audio::WaveformPoint {
+            min: values[0],
+            max: values[1],
+            rms: values[2],
+        };
+        let right = prism_audio::WaveformPoint {
+            min: values[3],
+            max: values[4],
+            rms: values[5],
+        };
+        validate_waveform_point(left)?;
+        validate_waveform_point(right)?;
+        points.push(prism_audio::StereoWaveformPoint { left, right });
+    }
+    Ok(points)
+}
+
+fn waveform_header(
+    contents: &[u8],
+    channels: u8,
+    bytes_per_point: usize,
+) -> Result<usize, MediaArtifactError> {
+    if contents.len() < 10
+        || &contents[..4] != b"PRWF"
+        || contents[4] != 1
+        || contents[5] != channels
+    {
+        return Err(MediaArtifactError::InvalidWaveform(
+            "unsupported header, version, or channel count",
+        ));
+    }
+    let point_count = u32::from_be_bytes(
+        contents[6..10]
+            .try_into()
+            .map_err(|_| MediaArtifactError::InvalidWaveform("missing point count"))?,
+    ) as usize;
+    let expected = point_count
+        .checked_mul(bytes_per_point)
+        .and_then(|bytes| bytes.checked_add(10))
+        .ok_or(MediaArtifactError::InvalidWaveform("point count overflow"))?;
+    if contents.len() != expected {
+        return Err(MediaArtifactError::InvalidWaveform(
+            "payload length does not match point count",
+        ));
+    }
+    Ok(point_count)
+}
+
+fn validate_waveform_point(point: prism_audio::WaveformPoint) -> Result<(), MediaArtifactError> {
+    if !point.min.is_finite()
+        || !point.max.is_finite()
+        || !point.rms.is_finite()
+        || point.min > point.max
+        || point.rms < 0.0
+    {
+        return Err(MediaArtifactError::InvalidWaveform(
+            "waveform point contains invalid amplitudes",
+        ));
+    }
+    Ok(())
 }
 
 impl MediaArtifactKind {
@@ -1399,6 +1552,85 @@ impl FfmpegReferenceDecoder {
             rgba: output.stdout,
         })
     }
+
+    /// Decodes a bounded mono `f32` sample window from the start of an audio stream.
+    ///
+    /// `audio_ordinal` is zero-based among audio streams. `FFmpeg` resamples to the
+    /// requested rate and is given an exact duration ceiling derived from
+    /// `max_samples`; returned bytes are independently bounded and validated.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] for invalid bounds, process failure, excessive
+    /// output, or a partial `f32` sample.
+    pub fn decode_audio_mono_f32(
+        &self,
+        path: &Path,
+        audio_ordinal: u32,
+        sample_rate: u32,
+        max_samples: usize,
+    ) -> Result<Vec<f32>, MediaError> {
+        let max_samples_u32 = u32::try_from(max_samples).ok();
+        let maximum = max_samples.checked_mul(4);
+        if sample_rate == 0
+            || sample_rate > 384_000
+            || max_samples_u32.is_none()
+            || maximum.is_none_or(|bytes| bytes == 0 || bytes > MAX_REFERENCE_AUDIO_BYTES)
+        {
+            return Err(MediaError::InvalidAudioDecodeBounds {
+                sample_rate,
+                max_samples,
+            });
+        }
+        let maximum = maximum.ok_or(MediaError::InvalidAudioDecodeBounds {
+            sample_rate,
+            max_samples,
+        })?;
+        let duration = format!(
+            "{:.9}",
+            f64::from(max_samples_u32.unwrap_or_default()) / f64::from(sample_rate)
+        );
+        let selection = format!("0:a:{audio_ordinal}");
+        let sample_rate = sample_rate.to_string();
+        let output = Command::new(&self.executable)
+            .args(["-v", "error", "-i"])
+            .arg(path)
+            .args([
+                "-map",
+                &selection,
+                "-t",
+                &duration,
+                "-ac",
+                "1",
+                "-ar",
+                &sample_rate,
+                "-f",
+                "f32le",
+                "pipe:1",
+            ])
+            .output()?;
+        if !output.status.success() {
+            return Err(MediaError::Decoder {
+                status: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        if output.stdout.len() > maximum || !output.stdout.len().is_multiple_of(4) {
+            return Err(MediaError::InvalidAudioFrameLength {
+                maximum,
+                actual: output.stdout.len(),
+            });
+        }
+        Ok(output
+            .stdout
+            .chunks_exact(4)
+            .map(|bytes| {
+                let mut sample = [0_u8; 4];
+                sample.copy_from_slice(bytes);
+                f32::from_le_bytes(sample)
+            })
+            .collect())
+    }
 }
 
 fn checked_rgba_length(width: u32, height: u32) -> Result<usize, MediaError> {
@@ -1764,12 +1996,13 @@ fn parse_decimal_time(field: &'static str, value: &str) -> Result<RationalTime, 
 #[cfg(test)]
 mod tests {
     use super::{
-        DecodedVideoFrame, FfmpegProxyGenerator, FrameRateEvidence, MediaArtifactKind,
-        MediaArtifactWorker, MediaCatalog, MediaCatalogEntry, MediaError, MediaFingerprint,
-        MediaItemKind, MediaMetadata, MediaSourceSelection, PacketTimingEvidence, ProbeOutput,
-        ProbePacket, ProxyProfile, ProxyRequest, ProxyStatus, StreamKind, analyze_packet_timing,
-        checked_rgba_length, decode_thumbnail_artifact, decode_waveform_artifact, fingerprint,
-        format_seek_timestamp, parse_decimal_time, proxy_status, select_media_source,
+        DecodedVideoFrame, FfmpegProxyGenerator, FfmpegReferenceDecoder, FrameRateEvidence,
+        MediaArtifactKind, MediaArtifactWorker, MediaCatalog, MediaCatalogEntry, MediaError,
+        MediaFingerprint, MediaItemKind, MediaMetadata, MediaSourceSelection, PacketTimingEvidence,
+        ProbeOutput, ProbePacket, ProxyProfile, ProxyRequest, ProxyStatus, StreamKind,
+        analyze_packet_timing, checked_rgba_length, decode_stereo_waveform_artifact,
+        decode_thumbnail_artifact, decode_waveform_artifact, fingerprint, format_seek_timestamp,
+        parse_decimal_time, proxy_status, select_media_source,
     };
     use prism_timeline::RationalTime;
     use std::{fs, path::Path};
@@ -1934,6 +2167,7 @@ mod tests {
         invalid.extend_from_slice(&1.0_f32.to_le_bytes());
         invalid.extend_from_slice(&1.0_f32.to_le_bytes());
         assert!(decode_waveform_artifact(&invalid).is_err());
+        assert!(decode_stereo_waveform_artifact(&invalid).is_err());
     }
 
     #[test]
@@ -1957,9 +2191,14 @@ mod tests {
         assert_eq!(result.key, key);
         let path = result.result?;
         let bytes = fs::read(path)?;
-        assert_eq!(bytes.len(), 24);
-        assert_eq!(bytes[0..4], (-1.0_f32).to_le_bytes());
-        assert_eq!(bytes[12..16], 0.25_f32.to_le_bytes());
+        assert_eq!(&bytes[..6], b"PRWF\x01\x02");
+        assert_eq!(bytes.len(), 34);
+        let points = worker
+            .read_stereo_waveform(&entry, 2)?
+            .ok_or("stereo waveform cache miss")?;
+        assert_eq!(points.len(), 1);
+        assert!((points[0].left.min + 1.0).abs() < f32::EPSILON);
+        assert!((points[0].right.min - 0.25).abs() < f32::EPSILON);
         let _ = fs::remove_dir_all(root);
         Ok(())
     }
@@ -2030,6 +2269,23 @@ mod tests {
             Err(MediaError::NegativeDecodeTimestamp)
         ));
         Ok(())
+    }
+
+    #[test]
+    fn audio_decode_rejects_unbounded_requests_before_launching_process() {
+        let decoder = FfmpegReferenceDecoder::new("unavailable-ffmpeg");
+        for (sample_rate, max_samples) in [(0, 1), (48_000, 0), (384_001, 1), (48_000, usize::MAX)]
+        {
+            assert!(matches!(
+                decoder.decode_audio_mono_f32(
+                    Path::new("/unavailable/source.mov"),
+                    0,
+                    sample_rate,
+                    max_samples
+                ),
+                Err(MediaError::InvalidAudioDecodeBounds { .. })
+            ));
+        }
     }
 
     #[test]

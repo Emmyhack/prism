@@ -5,6 +5,7 @@
 // retains the workspace's strict lint policy.
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod native_ui;
+mod view_preferences;
 
 fn main() {
     let command = match prism_studio::parse(std::env::args().skip(1)) {

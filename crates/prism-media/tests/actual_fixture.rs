@@ -67,5 +67,9 @@ fn decodes_and_seeks_actual_video_frames() -> Result<(), Box<dyn std::error::Err
         later.sha256(),
         "425a3107ba67e8586bdb38737176a7a916f9994dbb4966497c2311abf24f6001"
     );
+    let audio = decoder.decode_audio_mono_f32(&fixture, 0, 48_000, 4_800)?;
+    assert!(!audio.is_empty());
+    assert!(audio.len() <= 4_800);
+    assert!(audio.iter().all(|sample| sample.is_finite()));
     Ok(())
 }

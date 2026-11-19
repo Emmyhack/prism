@@ -121,6 +121,8 @@ fn read_permissions(path: impl AsRef<Path>) -> Result<ScriptPermissionFile, CliE
 /// Successful CLI operation.
 #[derive(Debug)]
 pub enum CliOutcome {
+    /// Informational text requested without mutating state.
+    Information(String),
     /// A finalized media export.
     Exported(ExportReport),
     /// A finalized proxy artifact.
@@ -381,6 +383,13 @@ pub enum CliError {
 pub fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<CliOutcome, CliError> {
     let arguments = arguments.into_iter().collect::<Vec<_>>();
     match arguments.first().and_then(|argument| argument.to_str()) {
+        Some("--help" | "-h") if arguments.len() == 1 => {
+            Ok(CliOutcome::Information(CliError::Usage.to_string()))
+        }
+        Some("--version" | "-V") if arguments.len() == 1 => Ok(CliOutcome::Information(format!(
+            "prism-cli {}",
+            env!("CARGO_PKG_VERSION")
+        ))),
         Some("export-track") => run_export_track(arguments),
         Some("export-preset-track") => run_export_preset_track(arguments),
         Some("export-video-audio") => run_export_video_audio(arguments),
@@ -1823,28 +1832,32 @@ fn run_add_video_clip(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
         })
         .ok_or_else(|| CliError::Command("video track not found".to_owned()))?
         .id;
-    let media_id = MediaAssetId::new();
+    let source_path = media_path.to_string_lossy().into_owned();
+    let existing_media = project
+        .media
+        .values()
+        .find(|asset| asset.source_path == source_path)
+        .map(|asset| asset.id);
+    let media_id = existing_media.unwrap_or_else(MediaAssetId::new);
     let clip_id = ClipId::new();
-    CommandEngine::execute_transaction(
-        &mut project,
-        "Add video clip",
-        vec![
-            Command::ImportMedia {
-                id: media_id,
-                source_path: media_path.to_string_lossy().into_owned(),
-            },
-            Command::InsertClip {
-                sequence_id,
-                track_id,
-                id: clip_id,
-                media_id,
-                timeline_start,
-                source_start,
-                source_duration: duration,
-            },
-        ],
-    )
-    .map_err(|error| CliError::Command(error.to_string()))?;
+    let mut commands = Vec::with_capacity(2);
+    if existing_media.is_none() {
+        commands.push(Command::ImportMedia {
+            id: media_id,
+            source_path,
+        });
+    }
+    commands.push(Command::InsertClip {
+        sequence_id,
+        track_id,
+        id: clip_id,
+        media_id,
+        timeline_start,
+        source_start,
+        source_duration: duration,
+    });
+    CommandEngine::execute_transaction(&mut project, "Add video clip", commands)
+        .map_err(|error| CliError::Command(error.to_string()))?;
     save_atomic(&project, &project_path)?;
     Ok(CliOutcome::ClipAdded {
         path: project_path,
@@ -1919,28 +1932,32 @@ fn run_add_audio_clip(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
         })
         .ok_or_else(|| CliError::Command("audio track not found".to_owned()))?
         .id;
-    let media_id = MediaAssetId::new();
+    let source_path = media_path.to_string_lossy().into_owned();
+    let existing_media = project
+        .media
+        .values()
+        .find(|asset| asset.source_path == source_path)
+        .map(|asset| asset.id);
+    let media_id = existing_media.unwrap_or_else(MediaAssetId::new);
     let clip_id = ClipId::new();
-    CommandEngine::execute_transaction(
-        &mut project,
-        "Add audio clip",
-        vec![
-            Command::ImportMedia {
-                id: media_id,
-                source_path: media_path.to_string_lossy().into_owned(),
-            },
-            Command::InsertClip {
-                sequence_id,
-                track_id,
-                id: clip_id,
-                media_id,
-                timeline_start,
-                source_start,
-                source_duration: duration,
-            },
-        ],
-    )
-    .map_err(|error| CliError::Command(error.to_string()))?;
+    let mut commands = Vec::with_capacity(2);
+    if existing_media.is_none() {
+        commands.push(Command::ImportMedia {
+            id: media_id,
+            source_path,
+        });
+    }
+    commands.push(Command::InsertClip {
+        sequence_id,
+        track_id,
+        id: clip_id,
+        media_id,
+        timeline_start,
+        source_start,
+        source_duration: duration,
+    });
+    CommandEngine::execute_transaction(&mut project, "Add audio clip", commands)
+        .map_err(|error| CliError::Command(error.to_string()))?;
     save_atomic(&project, &project_path)?;
     Ok(CliOutcome::ClipAdded {
         path: project_path,
@@ -2671,6 +2688,20 @@ mod tests {
     use prism_timeline::RationalTime;
     use std::ffi::OsString;
     use uuid::Uuid;
+
+    #[test]
+    fn help_and_version_are_successful_informational_commands()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let CliOutcome::Information(help) = run([OsString::from("--help")])? else {
+            return Err("help did not return informational output".into());
+        };
+        assert!(help.starts_with("usage: prism-cli"));
+        let CliOutcome::Information(version) = run([OsString::from("--version")])? else {
+            return Err("version did not return informational output".into());
+        };
+        assert_eq!(version, format!("prism-cli {}", env!("CARGO_PKG_VERSION")));
+        Ok(())
+    }
 
     fn valid_arguments() -> Vec<OsString> {
         [

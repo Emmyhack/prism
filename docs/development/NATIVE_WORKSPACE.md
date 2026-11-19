@@ -1,7 +1,8 @@
 # Native editing workspace
 
 Launch with `cargo run -p prism-studio`, or pass `-- --open-project ./edit.prism`.
-FFmpeg and FFprobe must be on PATH for video import, previews, and export.
+The configured or packaged FFmpeg runtime is required for media import,
+previews, audio playback, and export.
 
 The interface interprets the supplied Premiere Pro references through four workspaces:
 Home for project entry, Import for footage selection, Edit for paired monitors and
@@ -10,10 +11,71 @@ retains its supplied ribbon logo, with graphite surfaces and violet selection cu
 The desktop minimum is 1100 × 720; drag the divider below the monitors to resize.
 Editing and Assembly presets change the source-monitor/media-bin allocation.
 Below 1250px, Source moves into the inspector and Program takes the available
-monitor width. The right rail opens Properties, History or Jobs; Inspector collapses
-that region, and Reset layout restores the session defaults.
+monitor width. The labeled right rail opens Properties, History or Jobs; Inspector collapses
+that region. Save layout remembers the preset, monitor height, panel tabs/visibility,
+snapping, safe guides and media sort order for the current project in a versioned
+`.workspace.json` sidecar. Opening the project restores it, with monitor height clamped
+to the current window. Reset layout returns to defaults; Save layout commits that reset.
+Invalid or future-version preferences fall back safely without overwriting the sidecar.
+Workspace changes do not enter project edit history.
+
+The media browser cycles between project order and ascending/descending file names.
+Filtering and sorting preserve source identity. Cards identify missing originals and
+show file size; Source properties report original-file availability and decoded preview
+size, with direct relinking when a preview cannot be loaded.
+Audio clips queue cache-first background waveform generation for their referenced source
+ranges. Jobs reports this work, every audio clip lane projects bounded real peak data,
+and selecting an audio clip renders a larger peak strip in Properties without blocking
+the interface.
 
 ## Supported interactions
+
+- Edit aligned A/V in Clip properties provides Split A/V, Delete A/V, Ripple delete A/V and an exact-time Move A/V together control. It requires
+  exactly one opposite-kind companion with the same media ID, sequence start, source
+  In and duration, and both tracks unlocked. Each edit is one atomic saved transaction
+  and one undo step. Splitting uses the playhead; deleting leaves both gaps. This is
+  explicit paired editing, not persisted Link/Unlink or automatic grouped gestures.
+  Moving validates both destination ranges atomically, preserves source trims, and
+  keeps the selected clip by its stable ID when track ordering changes.
+  Paired Source In and Duration fields apply the same source range to both clips
+  while keeping their sequence start fixed. The original media duration is inspected
+  before commit, and overlap on either track rejects the entire edit.
+
+- Save as… (Ctrl/Cmd+Shift+S) writes a new project file and makes it the active
+  edit destination, preserving undo/redo. Existing files are rejected. Media remains
+  referenced and project-scoped cache/autosave services restart for the copy.
+- Timeline audio preview follows source trims and clip boundaries, stops in gaps,
+  and starts the next audible clip. Preview currently plays one active audio clip;
+  full multitrack mixing and sample-accurate cut playback remain pending.
+
+- Match frame in Source (Shift+F) maps the selected timeline clip at the playhead
+  to its original source time, respecting trimmed source In. When the playhead is
+  outside that clip, it opens the clip’s source In instead. Locked clips can still
+  be inspected. Source scrubbing respects the selected original/proxy mode.
+
+- Up/Down jump to previous/next edit boundaries across visible video and unmuted audio
+  tracks, including gap edges. Home/End jump to sequence bounds. Jumps and playback
+  reveal the playhead when it leaves a zoomed view. Fit (F) restores the full timeline.
+
+- Source monitors show a highlighted In/Out range with boundary ticks and a distinct
+  playhead. Range duration is visible in wide and compact layouts; Full / Use full clip
+  clears source marks without changing timeline clips or project edit history. Audio-only
+  assets open as marked, appendable sources without requesting an invalid video frame.
+  Append writes every stream the source owns as one undoable operation, keeping paired
+  video/audio clips aligned at the complete sequence end.
+
+- Commands (Ctrl/Cmd+Shift+P) searches editing actions, panel navigation and tools.
+  Use Up/Down and Return, click a result, or press Escape to close. Unavailable actions
+  explain their requirements and eligibility is rechecked before execution.
+- Properties separates Clip and Source work. Clip timing and primary actions remain
+  visible; advanced precision controls expand on demand. Source puts range marking
+  and Append first, with relinking/proxies inside an expandable Media & proxies group.
+- Hover toolbar controls for contextual help in the status bar. Text fields retain
+  normal editing focus; closing Commands restores editor keyboard focus.
+- The Markers tab lists sequence markers with timecodes, click-to-seek, and rename/
+  delete controls. Renaming preserves marker identity and timing as one undoable edit.
+- Pointer move and edge-trim gestures keep matching imported video/audio clips aligned
+  and commit both changes in one undo step; locked or ambiguous pairs are refused.
 
 - Create/open a local project; save with the header button or Ctrl/Cmd+S.
 - When revision-scoped autosaves exist beside the current project, Home shows the
@@ -23,9 +85,11 @@ that region, and Reset layout restores the session defaults.
   background autosave worker. Bursts coalesce to the newest pending revision, the Jobs
   panel reports status. Jobs can enable/disable autosave and cycle retention through
   1, 5, 10, or 20 revisions; these preferences persist atomically beside the project.
-- Import one or more videos with native file dialogs (Ctrl/Cmd+I). Imports append
-  clips to the first unlocked video track, creating a sequence/track if required.
-  New projects prompt for a save destination. Cancellation leaves the project intact.
+- Import one or more video or audio files with native file dialogs (Ctrl/Cmd+I).
+  Video sources append synchronized video/audio clips when sound is present;
+  audio-only sources append to the first unlocked audio track. A sequence and
+  appropriate tracks are created when required. New projects prompt for a save
+  destination. Cancellation leaves the project intact.
 - Browse real background-generated thumbnails in Import and the project media bin.
   Filter filenames without changing source identities. Failed previews retain an
   explicit unavailable state. Jobs reports authoritative queued/running/completed and
@@ -106,20 +170,27 @@ that region, and Reset layout restores the session defaults.
   rather than a calibrated title-safe overlay on the media aspect rectangle.
 - Lock/unlock, show/hide, or mute/unmute the actual selected track row. Track headers
   and clips scroll together. Video preview follows the first visible video track.
-- Choose an output MP4 destination, export, cancel, retry failures, and clear a
-  terminal job. Export uses the existing YouTube 1080p single-video-track worker.
+- Choose an output MP4 destination and a typed 1080p/4K UHD preset. Export shows
+  selected-track video/audio summaries and blocks unequal audio/video end times.
+  Jobs can be cancelled, retried, or cleared. Retry retains the original project
+  snapshot and preset rather than silently applying new settings to a prior job.
+  Settings scroll in compact windows while Export stays anchored at the bottom.
 
 Timeline/track edits save a candidate project atomically before publishing the
 new state to the interface. Original media stays untouched. Undo/redo also persists before
 publishing the restored state, and a failed save restores the history entry. Frame requests run in background workers with bounded queues;
 new scrubs replace pending work and stale replies cannot overwrite newer frames.
 Decoder failures appear in the feedback bar instead of leaving a fake preview.
+Playback waits for each pending frame decode before requesting another and retains
+the last completed picture between frames. Explicit scrubs still supersede stale
+requests. This prevents timer ticks from starving video while independent audio plays;
+preview frame rate remains limited by the current per-frame FFmpeg decoder.
 
 ## Current limits
 
 This is a functional desktop foundation, not a completed production editor.
 Low-latency library-backed audiovisual playback, audio mixing, effects controls/rendering,
-arbitrary docking layouts, saved custom workspace layouts, and export preset selection are not provided
+arbitrary docking layouts are not provided
 by this interface. The UI deliberately omits simulated waveforms, meters, and
 unsupported workspace controls. Export uses synchronized video/audio when an
 unmuted audio track is present, falls back to video-only otherwise, and refuses
@@ -132,7 +203,9 @@ including locked-track rejection, saved split/delete/timing edits, undo/redo, fa
 history-save recovery, marked-source append, independent source/sequence playheads,
 exact timing parsing, filtered media identities, and software rendering at 1440 × 900
 and 1100 × 720. Rendering covers all four workflow screens plus History, Jobs,
-Assembly, collapsed-inspector, and zoomed variants.
+Assembly, collapsed-inspector, zoomed, Source, precision, Markers, Commands (with/without results), and 4K Export variants.
 Set `PRISM_TEST_FFMPEG=1` to additionally assert real source/program fixture decoding and thumbnail generation.
 Set `PRISM_UI_SNAPSHOTS=/tmp/prism-ui-snapshots` to export PPM render artifacts for
 visual inspection. This does not require a live desktop or screen capture permission.
+
+See [the production roadmap](PRODUCTION_ROADMAP.md) for delivery stages and acceptance evidence.

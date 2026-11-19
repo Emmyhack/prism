@@ -130,6 +130,10 @@ impl Default for AutosavePreferences {
 
 impl AutosavePreferences {
     /// Validates bounds before preferences affect background work.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid input when the retention count is outside 1–50.
     pub fn validate(self) -> Result<Self, io::Error> {
         if !(1..=50).contains(&self.retained_revisions) {
             return Err(io::Error::new(
@@ -155,6 +159,10 @@ impl AutosavePreferencesStore {
     }
 
     /// Loads validated preferences, returning defaults when no store exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or invalid-data error when stored preferences cannot be read.
     pub fn load(&self) -> Result<AutosavePreferences, io::Error> {
         if !self.path.is_file() {
             return Ok(AutosavePreferences::default());
@@ -166,6 +174,10 @@ impl AutosavePreferencesStore {
     }
 
     /// Atomically persists validated preferences.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid preferences or failed filesystem operations.
     pub fn save(&self, preferences: AutosavePreferences) -> Result<(), io::Error> {
         let preferences = preferences.validate()?;
         let bytes = serde_json::to_vec_pretty(&preferences)
@@ -578,6 +590,12 @@ impl ExportProgress {
 pub struct ExportWorker {
     cancellation: ExportCancellation,
     receiver: Receiver<ExportWorkerEvent>,
+}
+
+impl Drop for ExportWorker {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
 }
 
 impl ExportWorker {
@@ -1175,6 +1193,21 @@ mod tests {
             worker.next_timeout(std::time::Duration::from_secs(2))?,
             ExportWorkerEvent::Cancelled
         );
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_export_worker_requests_cancellation() -> Result<(), Box<dyn std::error::Error>> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = ExportWorker::spawn(move |cancellation, _progress| {
+            while !cancellation.is_cancelled() {
+                std::thread::yield_now();
+            }
+            sender.send(()).map_err(|error| error.to_string())?;
+            Ok(())
+        });
+        drop(worker);
+        receiver.recv_timeout(std::time::Duration::from_secs(2))?;
         Ok(())
     }
 

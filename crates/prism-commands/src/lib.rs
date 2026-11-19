@@ -1232,16 +1232,15 @@ fn set_media_proxy(
     if proxy_path.is_none() && source_fingerprint.is_some() {
         return Err(CommandError::InvalidProxyFingerprint);
     }
-    if let Some(fingerprint) = &source_fingerprint {
-        if fingerprint.byte_length == 0
+    if let Some(fingerprint) = &source_fingerprint
+        && (fingerprint.byte_length == 0
             || fingerprint.sha256.len() != 64
             || !fingerprint
                 .sha256
                 .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err(CommandError::InvalidProxyFingerprint);
-        }
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    {
+        return Err(CommandError::InvalidProxyFingerprint);
     }
     let asset = project
         .media

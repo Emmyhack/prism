@@ -37,8 +37,11 @@ Remaining acceptance work:
   reports finalized artifact count/bytes and pending write/eviction work; Studio now
   uses a project-scoped persistent cache root and projects its inventory, cleanup
   activity, results, and failures in Jobs. Decoded media thumbnails now write through
-  the bounded content-addressed artifact worker with visible pending state; cache-hit
-  thumbnail reads and waveform integration remain);
+  the bounded content-addressed artifact worker with visible pending state and reopen
+  through a cache-first path that self-heals invalid entries. Versioned mono/stereo
+  waveform artifacts, bounded FFmpeg sample extraction, cache-first background
+  waveform jobs, bounded selected-audio peak strips, and per-clip audio waveform
+  projection in timeline lanes are integrated);
 - expose crash-recovery candidates through the Studio workflow (`--list-autosaves`,
   the stable `AutosaveSummary` boundary, and native newest-candidate discovery plus
   no-clobber Recover As workflow are implemented and rendered on Home; successful
@@ -101,8 +104,11 @@ straight-alpha application. Shape rasterization, feathering, tracked-mask
 binding, render-graph integration, and GPU parity remain.
 Waveform and vectorscope accumulators now expose backend-neutral normalized
 presentation maps with peak-count metadata, coordinate access, and explicit
-linear or logarithmic density scaling. Graticules, legal-range overlays,
-color-space labels, and graphical scope rendering remain.
+linear or logarithmic density scaling. Studio now projects a bounded Rec.709
+luma histogram, horizontal luma waveform, and U/V vectorscope from each decoded
+Program frame without blocking decode. The compact switchable panel includes
+video-legal range guides and vectorscope center guides; richer graticules and
+explicit color-space labels remain.
 
 ## Phase 5 — extensibility
 

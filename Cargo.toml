@@ -21,6 +21,8 @@ members = [
     "crates/prism-render",
     "crates/prism-script",
     "crates/prism-testing",
+    "tools/license-inventory",
+    "tools/icns-packager",
 ]
 
 [workspace.package]
@@ -50,3 +52,8 @@ pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = "debuginfo"

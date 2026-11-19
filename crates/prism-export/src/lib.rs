@@ -16,7 +16,7 @@ use prism_media::{FfprobeInspector, MediaError, StreamKind};
 use prism_project::{Project, TrackKind};
 use prism_timeline::{RationalTime, RoundingMode, TimeError};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fmt::Write as _,
     fs,
@@ -519,6 +519,10 @@ pub enum ExportError {
     /// Track clips were overlapping, out of order, or otherwise invalid.
     #[error("export track layout is invalid")]
     InvalidTrackLayout,
+    /// The selected track contains transitions whose source handles cannot yet
+    /// be represented by the export plan.
+    #[error("transition rendering requires validated source handles")]
+    TransitionSourceHandlesRequired,
     /// A planned clip references media absent from the project.
     #[error("planned export clip references missing media")]
     MissingMedia,
@@ -596,6 +600,16 @@ pub fn plan_single_video_track(
     }
     if !track.visible {
         return Err(ExportError::TrackHidden);
+    }
+    let clip_ids = track
+        .clips
+        .iter()
+        .map(|clip| clip.id)
+        .collect::<BTreeSet<_>>();
+    if sequence.transitions.iter().any(|transition| {
+        clip_ids.contains(&transition.outgoing_clip) || clip_ids.contains(&transition.incoming_clip)
+    }) {
+        return Err(ExportError::TransitionSourceHandlesRequired);
     }
     let mut cursor = RationalTime::ZERO;
     let mut segments = Vec::with_capacity(track.clips.len().saturating_mul(2));
@@ -772,9 +786,13 @@ impl BasicMp4Exporter {
                 "-map",
                 "0:a:0?",
                 "-c:v",
-                "mpeg4",
-                "-q:v",
-                "4",
+                "libx264",
+                "-profile:v",
+                "high",
+                "-pix_fmt",
+                "yuv420p",
+                "-crf",
+                "18",
                 "-c:a",
                 "aac",
                 "-movflags",
@@ -891,7 +909,11 @@ impl BasicMp4Exporter {
                 request.frame_rate.timescale()
             )),
             OsString::from("-c:v"),
-            OsString::from("mpeg4"),
+            OsString::from("libx264"),
+            OsString::from("-profile:v"),
+            OsString::from("high"),
+            OsString::from("-pix_fmt"),
+            OsString::from("yuv420p"),
             OsString::from("-b:v"),
             OsString::from(format!("{}k", request.video_bitrate_kbps)),
             OsString::from("-movflags"),
@@ -1122,7 +1144,11 @@ fn build_video_audio_ffmpeg_arguments(
             request.frame_rate.timescale()
         )),
         OsString::from("-c:v"),
-        OsString::from("mpeg4"),
+        OsString::from("libx264"),
+        OsString::from("-profile:v"),
+        OsString::from("high"),
+        OsString::from("-pix_fmt"),
+        OsString::from("yuv420p"),
         OsString::from("-b:v"),
         OsString::from(format!("{}k", request.video_bitrate_kbps)),
         OsString::from("-c:a"),
@@ -1371,8 +1397,10 @@ mod tests {
         VideoAudioMp4ExportRequest, build_audio_concat_filter, build_video_audio_ffmpeg_arguments,
         format_timestamp, plan_single_audio_track, plan_single_video_track, validate_request,
     };
-    use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
-    use prism_project::{Clip, MediaAsset, Project, Sequence, Track, TrackKind};
+    use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId, TransitionId};
+    use prism_project::{
+        Clip, MediaAsset, Project, Sequence, Track, TrackKind, Transition, TransitionKind,
+    };
     use prism_timeline::RationalTime;
     use std::{fs, path::PathBuf};
 
@@ -1711,6 +1739,70 @@ mod tests {
     }
 
     #[test]
+    fn sequence_plan_refuses_to_silently_drop_transitions() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut project = Project::new("Transition export");
+        let media_id = MediaAssetId::new();
+        let sequence_id = SequenceId::new();
+        let track_id = TrackId::new();
+        let outgoing = ClipId::new();
+        let incoming = ClipId::new();
+        project.media.insert(
+            media_id,
+            MediaAsset {
+                id: media_id,
+                source_path: "source.mp4".to_owned(),
+                proxy_path: None,
+                proxy_source_fingerprint: None,
+            },
+        );
+        project.sequences.insert(
+            sequence_id,
+            Sequence {
+                id: sequence_id,
+                name: "Main".to_owned(),
+                markers: Vec::new(),
+                transitions: vec![Transition {
+                    id: TransitionId::new(),
+                    outgoing_clip: outgoing,
+                    incoming_clip: incoming,
+                    duration: RationalTime::new(1, 2)?,
+                    kind: TransitionKind::Dissolve,
+                }],
+                tracks: vec![Track {
+                    id: track_id,
+                    kind: TrackKind::Video,
+                    clips: vec![
+                        Clip {
+                            id: outgoing,
+                            media_id,
+                            timeline_start: RationalTime::ZERO,
+                            source_start: RationalTime::new(1, 1)?,
+                            source_duration: RationalTime::new(2, 1)?,
+                        },
+                        Clip {
+                            id: incoming,
+                            media_id,
+                            timeline_start: RationalTime::new(2, 1)?,
+                            source_start: RationalTime::new(4, 1)?,
+                            source_duration: RationalTime::new(2, 1)?,
+                        },
+                    ],
+                    locked: false,
+                    visible: true,
+                    muted: false,
+                }],
+            },
+        );
+        project.validate()?;
+        assert!(matches!(
+            plan_single_video_track(&project, sequence_id, track_id),
+            Err(ExportError::TransitionSourceHandlesRequired)
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn sequence_plan_rejects_audio_track() {
         let mut project = Project::new("Audio only");
         let sequence_id = SequenceId::new();
@@ -2034,6 +2126,9 @@ mod tests {
         assert!(joined.contains("[outa]"));
         assert!(joined.contains("-map [outv]"));
         assert!(joined.contains("-map [outa]"));
+        assert!(joined.contains("-c:v libx264"));
+        assert!(joined.contains("-profile:v high"));
+        assert!(joined.contains("-pix_fmt yuv420p"));
         assert!(joined.contains("-c:a aac"));
         assert!(joined.contains("-b:v 1000k"));
         assert!(joined.contains("-b:a 192k"));

@@ -1238,6 +1238,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn sqlite_round_trip_preserves_domain_state() -> Result<(), Box<dyn std::error::Error>> {
         let mut project = sample_project()?;
         let sequence_id = *project.sequences.keys().next().ok_or("missing sequence")?;

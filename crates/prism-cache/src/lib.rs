@@ -819,6 +819,9 @@ mod tests {
         assert_eq!(result.key, first);
         assert_eq!(result.result.as_ref().map(|path| path.is_file()), Ok(true));
         assert_eq!(std::fs::read(result.result?)?, b"first");
+        // A second request may have entered the bounded queue while the first
+        // write was completing. Join the worker before removing its cache root.
+        drop(worker);
         std::fs::remove_dir_all(root)?;
         Ok(())
     }

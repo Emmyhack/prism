@@ -116,19 +116,18 @@ impl Project {
                 }
                 .into());
             }
-            if let Some(fingerprint) = &asset.proxy_source_fingerprint {
-                if fingerprint.byte_length == 0
+            if let Some(fingerprint) = &asset.proxy_source_fingerprint
+                && (fingerprint.byte_length == 0
                     || fingerprint.sha256.len() != 64
                     || !fingerprint
                         .sha256
                         .bytes()
-                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                {
-                    return Err(ProjectValidationError::InvalidProxyFingerprint {
-                        media_id: asset.id.as_uuid().to_string(),
-                    }
-                    .into());
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+            {
+                return Err(ProjectValidationError::InvalidProxyFingerprint {
+                    media_id: asset.id.as_uuid().to_string(),
                 }
+                .into());
             }
         }
         for (sequence_key, sequence) in &self.sequences {

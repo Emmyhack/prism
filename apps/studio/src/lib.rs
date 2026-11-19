@@ -6,6 +6,8 @@
 
 /// Toolkit-neutral professional desktop workspace and design system.
 pub mod desktop;
+/// Bounded cache-first waveform generation for native and future UI adapters.
+pub mod waveform;
 
 use prism_commands::{CommandCategory, CommandRegistry, UndoStrategy};
 use prism_media::{FfprobeInspector, MediaArtifactKind, MediaCatalog, MediaItemKind};
@@ -735,6 +737,15 @@ where
     let arguments = arguments.into_iter().collect::<Vec<_>>();
     match arguments.as_slice() {
         [] => Ok(StudioCommand::Start),
+        [project]
+            if Path::new(project)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("prism")) =>
+        {
+            Ok(StudioCommand::Open {
+                project: PathBuf::from(project),
+            })
+        }
         [open_flag, project] if open_flag == "--open-project" => Ok(StudioCommand::Open {
             project: PathBuf::from(project),
         }),
@@ -911,6 +922,10 @@ mod tests {
         assert!(matches!(
             parse(vec!["--open-project".to_owned(), "edit.prism".to_owned()]),
             Ok(StudioCommand::Open { project }) if project == Path::new("edit.prism")
+        ));
+        assert!(matches!(
+            parse(vec!["/tmp/Edit.PRISM".to_owned()]),
+            Ok(StudioCommand::Open { project }) if project == Path::new("/tmp/Edit.PRISM")
         ));
         assert!(matches!(
             parse(vec!["--project".to_owned(), "edit.prism".to_owned()]),

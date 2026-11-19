@@ -5,6 +5,10 @@ use std::process::ExitCode;
 #[allow(clippy::too_many_lines)]
 fn main() -> ExitCode {
     match prism_cli::run(std::env::args_os().skip(1)) {
+        Ok(prism_cli::CliOutcome::Information(text)) => {
+            println!("{text}");
+            ExitCode::SUCCESS
+        }
         Ok(prism_cli::CliOutcome::Exported(report)) => {
             println!(
                 "Exported {} bytes to {} (duration {}/{})",

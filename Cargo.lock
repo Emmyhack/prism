@@ -3698,6 +3698,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-icns-packager"
+version = "0.1.0"
+
+[[package]]
+name = "prism-license-inventory"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "prism-media"
 version = "0.1.0"
 dependencies = [
@@ -3788,6 +3800,7 @@ dependencies = [
 name = "prism-studio"
 version = "0.1.0"
 dependencies = [
+ "prism-audio",
  "prism-cache",
  "prism-commands",
  "prism-core",

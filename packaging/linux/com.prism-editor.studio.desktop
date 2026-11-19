@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Prism Studio
+Comment=Non-linear video editor
+Exec=prism-studio %f
+Icon=com.prism-editor.studio
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=application/x-prism-project;
+StartupNotify=true

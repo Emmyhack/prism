@@ -16,6 +16,6 @@ a native Studio scripting surface. These feed transactions through the same
 host and command engine rather than bypassing visual editing semantics.
 Recipe and plugin manifest validation now provide the declarative safety boundary;
 runtime loading and distribution remain later milestones.
-Content-addressed cache keys and bounded age/size eviction now provide the
-storage boundary for future thumbnails, waveforms, and proxies; cache workers
-and derived-media generation remain pending.
+Content-addressed cache keys, bounded age/size eviction, background workers,
+cache-first thumbnails, and audio waveforms now provide the derived-media
+storage boundary. Broader derived-media reuse remains pending.

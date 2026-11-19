@@ -348,14 +348,12 @@ cargo run -p prism-cli -- export-track \
 The synchronized `export-video-audio` command accepts the same video bitrate
 option plus `--audio-bitrate-kbps` for explicit AAC bitrate control.
 
-This path currently emits video only. It does not yet provide audio mixing,
-effects, progress, cancellation, overwrite, or a production codec bundle.
-Audio-track timing plans are validated separately (including trims and explicit
-silence gaps). The export library also provides a synchronized single-video /
-single-audio AAC muxing path with duration validation; multitrack mixing,
-effects, progress, cancellation, overwrite, and a production codec bundle
-remain later milestones. The CLI command above intentionally remains the
-video-only compatibility path until its audio options are finalized.
+`export-track` emits H.264 High Profile video in an MP4 container. It does not
+mix audio. The synchronized `export-video-audio` command below emits the same
+H.264 video with one AAC audio track, preserving trims and explicit silence
+gaps after duration validation. Multitrack mixing, effects, overwrite, and a
+reviewed production codec bundle remain later milestones. Studio runs these
+exports in a cancellable background job; the headless CLI runs synchronously.
 
 For a synchronized single video track and audio track, use the combined CLI
 command (both tracks must have the same validated timeline duration):
@@ -386,6 +384,12 @@ cargo test --workspace --all-targets
 
 See [the implementation plan](docs/IMPLEMENTATION_PLAN.md) and
 [feature status](docs/FEATURE_STATUS.md). No current feature is production ready.
+
+Release qualification and portable packaging are documented in
+[`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md). Platform archives are
+built with `scripts/package-macos.sh`, `scripts/package-linux.sh`, and
+`scripts/package-windows.ps1`; unsigned artifacts are not equivalent to an
+approved public release.
 Sequence timeline markers are supported by the core command API, SQLite project format, headless inspection, and the Python, JavaScript, and TypeScript protocol SDKs.
 Validated proxy profiles, content-addressed proxy cache identities, and an
 explicit cancellable FFmpeg proxy generator are now available. The cache also
