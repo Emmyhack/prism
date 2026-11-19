@@ -28,6 +28,22 @@ Copy-Item "LICENSE" (Join-Path $PackageRoot "licenses/Apache-2.0.txt")
 if ($LASTEXITCODE -ne 0) { throw "package-windows: license inventory failed" }
 & $CargoBin metadata --locked --format-version 1 | Set-Content -Encoding utf8 (Join-Path $PackageRoot "licenses/dependency-metadata.json")
 if ($LASTEXITCODE -ne 0) { throw "package-windows: dependency inventory failed" }
+$SourceRevision = (& git rev-parse HEAD 2>$null)
+if ($LASTEXITCODE -ne 0) { $SourceRevision = "unknown" }
+$SourceDirty = "false"
+$SourceStatus = (& git status --porcelain --untracked-files=normal 2>$null)
+if ($LASTEXITCODE -ne 0 -or $SourceStatus) { $SourceDirty = "true" }
+$RustcCommand = if ($env:RUSTC) { $env:RUSTC } else { "rustc" }
+$RustcVersion = (& $RustcCommand --version)
+if ($LASTEXITCODE -ne 0) { throw "package-windows: compiler provenance failed" }
+@(
+    "product=Prism Studio"
+    "version=$Version"
+    "source_revision=$SourceRevision"
+    "source_dirty=$SourceDirty"
+    "rustc=$RustcVersion"
+    "target=Windows-x86_64"
+) | Set-Content -Encoding ascii (Join-Path $PackageRoot "RELEASE_BUILD.txt")
 
 if ($env:PRISM_CODEC_DIR) {
     foreach ($Tool in @("ffmpeg.exe", "ffprobe.exe", "ffplay.exe")) {

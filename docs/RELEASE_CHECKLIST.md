@@ -15,6 +15,9 @@ release evidence.
   listing that platform as supported.
 - Archive the CI run URL, source revision, dependency metadata, and compiler
   version with the release record.
+- Require the embedded `RELEASE_BUILD.txt` to identify the exact revision,
+  compiler and target and to report `source_dirty=false`. Local preview packages
+  may report a dirty tree, but must never be promoted as release artifacts.
 
 ## Distribution qualification
 

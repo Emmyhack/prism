@@ -20,6 +20,7 @@ if [ -n "${PRISM_FFMPEG:-}" ] && [ -n "${PRISM_FFPROBE:-}" ]; then
     grep -Eq " mp4 |,mp4" "$media_check/muxers.txt"
     "$PRISM_FFPROBE" -version >/dev/null
     "${PRISM_FFPLAY:-ffplay}" -version >/dev/null
+    ./scripts/playback-acceptance.sh
     PRISM_TEST_FFMPEG=1 "$cargo_bin" test --workspace --all-targets --all-features --locked -- --ignored
 else
     echo "release-check: real-media tests skipped; set PRISM_FFMPEG and PRISM_FFPROBE" >&2

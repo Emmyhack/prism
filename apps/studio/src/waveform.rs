@@ -2,13 +2,14 @@
 
 use prism_media::{
     FfmpegReferenceDecoder, MediaArtifactError, MediaArtifactKind, MediaArtifactWorker,
-    MediaCatalogEntry, MediaFingerprint, MediaItemKind, fingerprint,
+    MediaCatalogEntry, MediaFingerprint, MediaItemKind, MediaProcessControl,
+    fingerprint_with_control,
 };
 use std::{
     path::PathBuf,
     sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread,
@@ -44,26 +45,41 @@ pub struct WaveformResult {
 }
 
 /// Bounded off-thread cache-first waveform worker.
+/// Dropping the worker cancels active decoding and prevents queued work publication.
 pub struct WaveformWorker {
-    requests: SyncSender<WaveformRequest>,
-    results: Receiver<Result<WaveformResult, String>>,
+    requests: SyncSender<QueuedWaveformRequest>,
+    results: Receiver<(Arc<AtomicBool>, Result<WaveformResult, String>)>,
     pending: Arc<AtomicUsize>,
+    cancellation: Mutex<Arc<AtomicBool>>,
+}
+
+struct QueuedWaveformRequest {
+    request: WaveformRequest,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl Drop for WaveformWorker {
+    fn drop(&mut self) {
+        self.cancel();
+    }
 }
 
 impl WaveformWorker {
     /// Starts a worker using an explicit `FFmpeg` executable.
     #[must_use]
     pub fn spawn(ffmpeg: impl Into<PathBuf>, capacity: usize) -> Self {
-        let (request_tx, request_rx) = mpsc::sync_channel(capacity.max(1));
+        let (request_tx, request_rx) = mpsc::sync_channel::<QueuedWaveformRequest>(capacity.max(1));
         let (result_tx, result_rx) = mpsc::sync_channel(capacity.max(1));
         let pending = Arc::new(AtomicUsize::new(0));
         let worker_pending = Arc::clone(&pending);
         let decoder = FfmpegReferenceDecoder::new(ffmpeg);
         thread::spawn(move || {
             while let Ok(request) = request_rx.recv() {
-                let result = process_request(&decoder, &request);
+                let result = process_request(&decoder, &request.request, &request.cancelled);
                 worker_pending.fetch_sub(1, Ordering::Release);
-                if result_tx.send(result).is_err() {
+                if !request.cancelled.load(Ordering::Acquire)
+                    && result_tx.send((request.cancelled, result)).is_err()
+                {
                     break;
                 }
             }
@@ -72,6 +88,7 @@ impl WaveformWorker {
             requests: request_tx,
             results: result_rx,
             pending,
+            cancellation: Mutex::new(Arc::new(AtomicBool::new(false))),
         }
     }
 
@@ -84,12 +101,34 @@ impl WaveformWorker {
         &self,
         request: WaveformRequest,
     ) -> Result<(), TrySendError<WaveformRequest>> {
+        let cancelled = self
+            .cancellation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         self.pending.fetch_add(1, Ordering::Relaxed);
-        if let Err(error) = self.requests.try_send(request) {
+        if let Err(error) = self
+            .requests
+            .try_send(QueuedWaveformRequest { request, cancelled })
+        {
             self.pending.fetch_sub(1, Ordering::Relaxed);
-            return Err(error);
+            return Err(match error {
+                TrySendError::Full(request) => TrySendError::Full(request.request),
+                TrySendError::Disconnected(request) => TrySendError::Disconnected(request.request),
+            });
         }
         Ok(())
+    }
+
+    /// Cancels executing and queued requests from the current generation.
+    /// New submissions receive a fresh cancellation token.
+    pub fn cancel(&self) {
+        let mut cancellation = self
+            .cancellation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cancellation.store(true, Ordering::Release);
+        *cancellation = Arc::new(AtomicBool::new(false));
     }
 
     /// Polls one completed request without blocking.
@@ -98,7 +137,12 @@ impl WaveformWorker {
     ///
     /// Returns empty or disconnected channel state when no result is available.
     pub fn try_result(&self) -> Result<Result<WaveformResult, String>, TryRecvError> {
-        self.results.try_recv()
+        loop {
+            let (cancelled, result) = self.results.try_recv()?;
+            if !cancelled.load(Ordering::Acquire) {
+                return Ok(result);
+            }
+        }
     }
 
     /// Number of requests queued or executing.
@@ -111,8 +155,24 @@ impl WaveformWorker {
 fn process_request(
     decoder: &FfmpegReferenceDecoder,
     request: &WaveformRequest,
+    cancelled: &AtomicBool,
 ) -> Result<WaveformResult, String> {
-    let fingerprint = fingerprint(&request.path).map_err(|error| error.to_string())?;
+    let check = || -> Result<(), String> {
+        if cancelled.load(Ordering::Acquire) {
+            Err("Audio waveform request cancelled".to_owned())
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    let fingerprint = fingerprint_with_control(
+        &request.path,
+        MediaProcessControl {
+            timeout: Duration::from_secs(30),
+            cancelled,
+        },
+    )
+    .map_err(|error| error.to_string())?;
     let entry = MediaCatalogEntry {
         path: request.path.clone(),
         kind: MediaItemKind::Audio,
@@ -128,6 +188,7 @@ fn process_request(
     );
     match artifacts.read_waveform_variant(&entry, request.samples_per_point, &variant) {
         Ok(Some(points)) => {
+            check()?;
             return Ok(WaveformResult {
                 path: request.path.clone(),
                 fingerprint,
@@ -149,8 +210,18 @@ fn process_request(
         Err(error) => return Err(error.to_string()),
     }
     let samples = decoder
-        .decode_audio_mono_f32(&request.path, 0, request.sample_rate, request.max_samples)
+        .decode_audio_mono_f32_with_control(
+            &request.path,
+            0,
+            request.sample_rate,
+            request.max_samples,
+            MediaProcessControl {
+                timeout: Duration::from_secs(30),
+                cancelled,
+            },
+        )
         .map_err(|error| error.to_string())?;
+    check()?;
     let key = artifacts
         .schedule_waveform_variant(&entry, &samples, request.samples_per_point, &variant)
         .map_err(|error| error.to_string())?;
@@ -165,6 +236,7 @@ fn process_request(
         .read_waveform_variant(&entry, request.samples_per_point, &variant)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "waveform cache write completed without an artifact".to_owned())?;
+    check()?;
     Ok(WaveformResult {
         path: request.path.clone(),
         fingerprint,
@@ -184,6 +256,69 @@ mod tests {
         path::PathBuf,
         time::{Duration, Instant},
     };
+
+    #[cfg(unix)]
+    #[test]
+    fn dropping_worker_cancels_active_decode_and_abandons_queued_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "prism-waveform-cancel-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root)?;
+        let tool = root.join("ffmpeg.sh");
+        std::fs::write(
+            &tool,
+            b"#!/bin/sh\nprintf '%s' $$ > \"$0.pid\"\nexec /bin/sleep 30\n",
+        )?;
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))?;
+        let source = root.join("source.wav");
+        std::fs::write(&source, b"source identity for supervised fake decoder")?;
+        let request = WaveformRequest {
+            path: source,
+            cache_root: root.join("cache"),
+            sample_rate: 48_000,
+            max_samples: 48_000,
+            samples_per_point: 1024,
+        };
+        let worker = WaveformWorker::spawn(tool.clone(), 1);
+        worker.try_submit(request.clone())?;
+        let pid_path = tool.with_extension("sh.pid");
+        let started = Instant::now();
+        while !pid_path.exists() && started.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let pid = std::fs::read_to_string(&pid_path)?;
+        worker.try_submit(request)?;
+        drop(worker);
+        let exited = Instant::now();
+        loop {
+            let alive = std::process::Command::new("/bin/kill")
+                .args(["-0", pid.trim()])
+                .stderr(std::process::Stdio::null())
+                .status()?
+                .success();
+            if !alive {
+                break;
+            }
+            if exited.elapsed() > Duration::from_secs(2) {
+                return Err("Waveform decoder survived worker drop".into());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(
+            std::fs::read_to_string(&pid_path)?,
+            pid,
+            "Cancelled queued work started another decoder"
+        );
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
 
     #[test]
     fn valid_cache_hit_bypasses_decoder() -> Result<(), Box<dyn std::error::Error>> {

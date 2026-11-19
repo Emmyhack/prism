@@ -41,8 +41,16 @@ jobs:
         env:
           PRISM_FFMPEG: ffmpeg
           PRISM_FFPROBE: ffprobe
+          PRISM_FFPLAY: ffplay
           PRISM_TEST_FFMPEG: "1"
         run: cargo test --workspace --all-targets --all-features --locked -- --ignored
+      - name: Playback acceptance
+        shell: bash
+        env:
+          PRISM_FFMPEG: ffmpeg
+          PRISM_FFPROBE: ffprobe
+          PRISM_FFPLAY: ffplay
+        run: ./scripts/playback-acceptance.sh
       - name: Release build
         run: cargo build --release --locked -p prism-studio -p prism-cli
 
@@ -63,6 +71,8 @@ jobs:
           unzip -t dist/Prism-Studio-*-macos.zip
           (cd dist && shasum -a 256 -c Prism-Studio-*-macos.zip.sha256)
           "dist/Prism Studio.app/Contents/Resources/bin/prism-cli" --help
+          test -s "dist/Prism Studio.app/Contents/Resources/RELEASE_BUILD.txt"
+          grep -q '^source_dirty=false$' "dist/Prism Studio.app/Contents/Resources/RELEASE_BUILD.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: prism-studio-macos-unsigned
@@ -88,6 +98,8 @@ jobs:
           (cd dist && sha256sum -c Prism-Studio-*-linux-*.tar.gz.sha256)
           dist/Prism-Studio-*-linux-*/bin/prism-cli --help
           test -s dist/Prism-Studio-*-linux-*/share/licenses/prism-studio/THIRD_PARTY_NOTICES.txt
+          test -s dist/Prism-Studio-*-linux-*/RELEASE_BUILD.txt
+          grep -q '^source_dirty=false$' dist/Prism-Studio-*-linux-*/RELEASE_BUILD.txt
       - uses: actions/upload-artifact@v4
         with:
           name: prism-studio-linux-unsigned
@@ -119,6 +131,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Packaged CLI smoke test failed" }
           $Notices = Get-ChildItem dist/Prism-Studio-*-windows-*/licenses/THIRD_PARTY_NOTICES.txt | Select-Object -First 1
           if (-not $Notices -or $Notices.Length -eq 0) { throw "Third-party notices missing" }
+          $Build = Get-ChildItem dist/Prism-Studio-*-windows-*/RELEASE_BUILD.txt | Select-Object -First 1
+          if (-not $Build -or $Build.Length -eq 0) { throw "Release build provenance missing" }
+          if (-not (Select-String -Path $Build.FullName -Pattern '^source_dirty=false$')) { throw "Package was built from a dirty source tree" }
       - uses: actions/upload-artifact@v4
         with:
           name: prism-studio-windows-unsigned

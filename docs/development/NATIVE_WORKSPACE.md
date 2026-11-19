@@ -30,6 +30,49 @@ the interface.
 
 ## Supported interactions
 
+- Editing toolbars use monochrome vector icons for selection, razor, trim, slip,
+  slide and rolling edits, plus transport/frame steps, In/Out, marker, snapping,
+  lock, visibility, guides and zoom controls. Active tools keep Prism’s violet
+  state. Hover/context help, accessible labels, focus and existing shortcuts remain
+  available. See `../../assets/icons/README.md` for icon conventions and references.
+
+- Project resets cancel obsolete waveform decoding and use a fresh work queue and
+  result receiver. Fingerprint and decode stages are deadline-bounded, with cooperative
+  cancellation during hashing and supervised audio-process cleanup. Existing cache
+  writes may finish without publishing a late waveform into the replacement project.
+
+- A new preview seek cancels the previous metadata/frame operation. Each request
+  retains its own cancellation token, so later requests cannot reactivate it. Probe
+  and RGBA subprocess capture is output-bounded and kills/reaps the direct child on
+  cancellation or deadline; app-wide process-tree/blocked-I/O qualification is pending.
+
+- Playback failure handling checks audio-clock progress, not merely incoming status
+  lines, and stops transport if a Program frame request stays pending for five seconds.
+  It drains completed frames before checking the video deadline. These checks stop
+  audio alongside the picture; metadata and RGBA preview stages also use per-request subprocess cancellation
+  and five-second deadlines. Other tool paths still need equivalent coverage.
+
+- Audio-backed playback follows the current FFplay audio clock instead of a separate
+  elapsed timer. Program displays Buffering audio until the first usable report;
+  missing startup reports or stalled clock telemetry stop playback. EOF completes
+  the transport rather than leaving it stuck at the final reported timestamp.
+  Video-only playback uses the wall clock. The reported clock is coarse and does
+  not establish sample-accurate device sync or physical output-latency calibration.
+
+- Project media views cycle through All, In sequence, Unused and Offline and combine
+  with name search/sorting. Usage counts include clip references on all tracks of the
+  active sequence, including muted/hidden tracks. Find in timeline cycles through the
+  selected source’s occurrences by stable media identity, selects the clip and seeks
+  its start without editing the project. The media view saves with the workspace;
+  Clear filters restores All and clears search when a view has no results.
+
+- Scopes in the inspector rail opens dedicated histogram, luma waveform and chroma
+  vectorscope views of the last decoded Program frame. Controls select the view and
+  toggle an optional monitor overlay. Panel/view/overlay choices save with the
+  workspace. The waveform shows sampled column ranges and 16/235 code guides; the
+  vectorscope uses coarse normalized chroma density. Analysis uses sampled 8-bit
+  preview pixels and is not calibrated HDR/broadcast compliance monitoring or grading.
+
 - Edit aligned A/V in Clip properties provides Split A/V, Delete A/V, Ripple delete A/V and an exact-time Move A/V together control. It requires
   exactly one opposite-kind companion with the same media ID, sequence start, source
   In and duration, and both tracks unlocked. Each edit is one atomic saved transaction
@@ -44,9 +87,13 @@ the interface.
 - Save as… (Ctrl/Cmd+Shift+S) writes a new project file and makes it the active
   edit destination, preserving undo/redo. Existing files are rejected. Media remains
   referenced and project-scoped cache/autosave services restart for the copy.
-- Timeline audio preview follows source trims and clip boundaries, stops in gaps,
-  and starts the next audible clip. Preview currently plays one active audio clip;
-  full multitrack mixing and sample-accurate cut playback remain pending.
+- Timeline audio preview uses one FFmpeg-to-FFplay session for the remaining audio
+  track, including exact source trims, finite silence gaps and trailing sequence
+  silence. It does not restart the player at clip boundaries. Pause/seek/shutdown
+  stop both processes, and edits or undo/redo affecting future audio stop stale
+  playback. One unmuted track and at most 128 segments are supported; larger/multiple
+  track sessions report an error. Full mixing, native device I/O and sample-accurate shared device
+  timing remain pending.
 
 - Match frame in Source (Shift+F) maps the selected timeline clip at the playhead
   to its original source time, respecting trimmed source In. When the playhead is
@@ -75,7 +122,18 @@ the interface.
 - The Markers tab lists sequence markers with timecodes, click-to-seek, and rename/
   delete controls. Renaming preserves marker identity and timing as one undoable edit.
 - Pointer move and edge-trim gestures keep matching imported video/audio clips aligned
-  and commit both changes in one undo step; locked or ambiguous pairs are refused.
+  and commit both changes in one undo step; both clips receive linked-selection
+  highlighting, while locked or ambiguous pairs are refused.
+- Primary Split, Delete, and Ripple Delete actions—including their keyboard shortcuts—
+  automatically operate on both uniquely aligned clips; unpaired media retains normal
+  single-clip behavior.
+- Inspector Apply timing and one-frame move/trim controls follow the same linked-pair
+  rule, so precision controls cannot silently separate synchronized A/V.
+- Duplicate to track end copies both members of a unique A/V pair to the complete
+  sequence end in one undoable transaction; unpaired clips still duplicate alone.
+- Slip gestures and one-frame Slip controls change source timing for both members of
+  a unique pair atomically. Roll and Slide remain track-local because they depend on
+  each track's neighboring edit points.
 
 - Create/open a local project; save with the header button or Ctrl/Cmd+S.
 - When revision-scoped autosaves exist beside the current project, Home shows the
@@ -184,7 +242,12 @@ Decoder failures appear in the feedback bar instead of leaving a fake preview.
 Playback waits for each pending frame decode before requesting another and retains
 the last completed picture between frames. Explicit scrubs still supersede stale
 requests. This prevents timer ticks from starving video while independent audio plays;
-preview frame rate remains limited by the current per-frame FFmpeg decoder.
+continuous Program playback now reuses a bounded FFmpeg raw-video session, capped
+at 960×540 and 30 fps for preview. Normal source/still scrubbing continues to use the
+reference frame decoder. Decoder sessions reopen for changed sources, backward
+seeks or larger jumps and are killed on transport stop and worker teardown. This
+reduces repeated process startup; it does not complete native frame-rate handling,
+a shared audio/video clock or native audio-device integration.
 
 ## Current limits
 
@@ -209,3 +272,5 @@ Set `PRISM_UI_SNAPSHOTS=/tmp/prism-ui-snapshots` to export PPM render artifacts 
 visual inspection. This does not require a live desktop or screen capture permission.
 
 See [the production roadmap](PRODUCTION_ROADMAP.md) for delivery stages and acceptance evidence.
+
+Stage 1 qualification details: [playback acceptance evidence](PLAYBACK_ACCEPTANCE.md).

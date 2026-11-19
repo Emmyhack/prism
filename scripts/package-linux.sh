@@ -44,6 +44,22 @@ cp LICENSE "$package_root/share/licenses/prism-studio/Apache-2.0.txt"
     "$package_root/share/licenses/prism-studio/THIRD_PARTY_NOTICES.txt"
 "$cargo_bin" metadata --locked --format-version 1 \
     > "$package_root/share/licenses/prism-studio/dependency-metadata.json"
+source_revision=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+source_dirty=false
+if [ -n "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]; then
+    source_dirty=true
+fi
+rustc_bin=${RUSTC:-"$(dirname "$cargo_bin")/rustc"}
+if [ ! -x "$rustc_bin" ]; then rustc_bin=rustc; fi
+rustc_version=$($rustc_bin --version)
+{
+    echo "product=Prism Studio"
+    echo "version=$version"
+    echo "source_revision=$source_revision"
+    echo "source_dirty=$source_dirty"
+    echo "rustc=$rustc_version"
+    echo "target=$(uname -s)-$architecture"
+} > "$package_root/RELEASE_BUILD.txt"
 
 if [ -n "${PRISM_CODEC_DIR:-}" ]; then
     for tool in ffmpeg ffprobe ffplay; do

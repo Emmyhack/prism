@@ -3,6 +3,9 @@
 //! The initial adapter invokes `ffprobe` as a reference implementation. Decode,
 //! playback, and export will use a separate library-backed worker architecture.
 
+mod supervised_process;
+pub use supervised_process::MediaProcessControl;
+
 use prism_cache::{
     CacheError, CacheLayout, CacheSubmitError, CacheWorker, CacheWriteRequest, CacheWriteResult,
 };
@@ -24,6 +27,20 @@ use thiserror::Error;
 /// Failures while discovering or inspecting media capabilities.
 #[derive(Debug, Error)]
 pub enum MediaError {
+    /// A caller cancelled a supervised media subprocess.
+    #[error("media operation cancelled")]
+    OperationCancelled,
+    /// A supervised media subprocess exceeded its deadline.
+    #[error("media operation timed out")]
+    OperationTimedOut,
+    /// A supervised tool produced more output than the caller permits.
+    #[error("media {stream} exceeded its {maximum}-byte output limit")]
+    ProcessOutputLimit {
+        /// Output stream that exceeded its limit.
+        stream: &'static str,
+        /// Maximum permitted capture size.
+        maximum: usize,
+    },
     /// The configured inspector process could not start.
     #[error("failed to start media inspector: {0}")]
     Process(#[from] std::io::Error),
@@ -1450,11 +1467,46 @@ impl MediaFingerprint {
 ///
 /// Returns [`MediaError::Process`] when the file cannot be opened or read.
 pub fn fingerprint(path: &Path) -> Result<MediaFingerprint, MediaError> {
+    fingerprint_impl(path, None)
+}
+
+/// Computes a fingerprint with cooperative deadline and cancellation checks.
+///
+/// Checks run before opening and between bounded file reads. OS-blocked file I/O
+/// still requires platform qualification.
+///
+/// # Errors
+/// Returns [`MediaError`] for file I/O failure, cancellation or deadline expiry.
+pub fn fingerprint_with_control(
+    path: &Path,
+    control: MediaProcessControl<'_>,
+) -> Result<MediaFingerprint, MediaError> {
+    fingerprint_impl(path, Some(control))
+}
+
+fn fingerprint_impl(
+    path: &Path,
+    control: Option<MediaProcessControl<'_>>,
+) -> Result<MediaFingerprint, MediaError> {
+    let started = std::time::Instant::now();
+    let check = || -> Result<(), MediaError> {
+        if let Some(control) = control {
+            if control.cancelled.load(Ordering::Acquire) {
+                return Err(MediaError::OperationCancelled);
+            }
+            if started.elapsed() >= control.timeout {
+                return Err(MediaError::OperationTimedOut);
+            }
+        }
+        Ok(())
+    };
+    check()?;
     let mut file = File::open(path)?;
     let mut digest = Sha256::new();
     let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
     let mut byte_length = 0_u64;
     loop {
+        check()?;
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -1468,6 +1520,7 @@ pub fn fingerprint(path: &Path) -> Result<MediaFingerprint, MediaError> {
             )
             .ok_or_else(|| MediaError::Process(std::io::Error::other("file length overflow")))?;
     }
+    check()?;
     Ok(MediaFingerprint {
         sha256: format!("{:x}", digest.finalize()),
         byte_length,
@@ -1516,10 +1569,39 @@ impl FfmpegReferenceDecoder {
         width: u32,
         height: u32,
     ) -> Result<DecodedVideoFrame, MediaError> {
+        self.decode_video_frame_rgba_with_control(
+            path,
+            video_ordinal,
+            timestamp,
+            width,
+            height,
+            MediaProcessControl {
+                timeout: Duration::from_secs(30),
+                cancelled: &AtomicBool::new(false),
+            },
+        )
+    }
+
+    /// Decodes one reference frame with bounded capture, a deadline and cancellation.
+    ///
+    /// # Errors
+    /// Returns [`MediaError`] for invalid bounds, cancellation, timeout, excessive
+    /// output, decoder failure or malformed pixels. The tool is killed and reaped.
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_video_frame_rgba_with_control(
+        &self,
+        path: &Path,
+        video_ordinal: u32,
+        timestamp: RationalTime,
+        width: u32,
+        height: u32,
+        control: MediaProcessControl<'_>,
+    ) -> Result<DecodedVideoFrame, MediaError> {
         let expected = checked_rgba_length(width, height)?;
         let seek = format_seek_timestamp(timestamp)?;
         let selection = format!("0:v:{video_ordinal}");
-        let output = Command::new(&self.executable)
+        let mut command = Command::new(&self.executable);
+        command
             .args(["-v", "error", "-ss", &seek, "-i"])
             .arg(path)
             .args([
@@ -1532,8 +1614,8 @@ impl FfmpegReferenceDecoder {
                 "-pix_fmt",
                 "rgba",
                 "pipe:1",
-            ])
-            .output()?;
+            ]);
+        let output = supervised_process::capture(&mut command, expected, 65_536, control)?;
         if !output.status.success() {
             return Err(MediaError::Decoder {
                 status: output.status.code().unwrap_or(-1),
@@ -1570,6 +1652,31 @@ impl FfmpegReferenceDecoder {
         sample_rate: u32,
         max_samples: usize,
     ) -> Result<Vec<f32>, MediaError> {
+        self.decode_audio_mono_f32_with_control(
+            path,
+            audio_ordinal,
+            sample_rate,
+            max_samples,
+            MediaProcessControl {
+                timeout: Duration::from_secs(30),
+                cancelled: &AtomicBool::new(false),
+            },
+        )
+    }
+
+    /// Decodes bounded mono samples with a deadline and caller cancellation.
+    ///
+    /// # Errors
+    /// Returns [`MediaError`] for invalid bounds, cancellation, timeout, excessive
+    /// output, decoder failure, or a partial `f32` sample.
+    pub fn decode_audio_mono_f32_with_control(
+        &self,
+        path: &Path,
+        audio_ordinal: u32,
+        sample_rate: u32,
+        max_samples: usize,
+        control: MediaProcessControl<'_>,
+    ) -> Result<Vec<f32>, MediaError> {
         let max_samples_u32 = u32::try_from(max_samples).ok();
         let maximum = max_samples.checked_mul(4);
         if sample_rate == 0
@@ -1592,23 +1699,21 @@ impl FfmpegReferenceDecoder {
         );
         let selection = format!("0:a:{audio_ordinal}");
         let sample_rate = sample_rate.to_string();
-        let output = Command::new(&self.executable)
-            .args(["-v", "error", "-i"])
-            .arg(path)
-            .args([
-                "-map",
-                &selection,
-                "-t",
-                &duration,
-                "-ac",
-                "1",
-                "-ar",
-                &sample_rate,
-                "-f",
-                "f32le",
-                "pipe:1",
-            ])
-            .output()?;
+        let mut command = Command::new(&self.executable);
+        command.args(["-v", "error", "-i"]).arg(path).args([
+            "-map",
+            &selection,
+            "-t",
+            &duration,
+            "-ac",
+            "1",
+            "-ar",
+            &sample_rate,
+            "-f",
+            "f32le",
+            "pipe:1",
+        ]);
+        let output = supervised_process::capture(&mut command, maximum, 65_536, control)?;
         if !output.status.success() {
             return Err(MediaError::Decoder {
                 status: output.status.code().unwrap_or(-1),
@@ -1694,7 +1799,27 @@ impl FfprobeInspector {
     ///
     /// Returns [`MediaError`] for process, input, JSON, or exact-time failures.
     pub fn inspect(&self, path: &Path) -> Result<MediaMetadata, MediaError> {
-        let output = Command::new(&self.executable)
+        self.inspect_with_control(
+            path,
+            MediaProcessControl {
+                timeout: Duration::from_secs(30),
+                cancelled: &AtomicBool::new(false),
+            },
+        )
+    }
+
+    /// Inspects metadata with bounded output, a deadline and caller cancellation.
+    ///
+    /// # Errors
+    /// Returns [`MediaError`] for cancellation, timeout, excessive output, process
+    /// failure or invalid metadata. The inspector is killed and reaped on failure.
+    pub fn inspect_with_control(
+        &self,
+        path: &Path,
+        control: MediaProcessControl<'_>,
+    ) -> Result<MediaMetadata, MediaError> {
+        let mut command = Command::new(&self.executable);
+        command
             .args([
                 "-v",
                 "error",
@@ -1704,7 +1829,8 @@ impl FfprobeInspector {
                 "json",
             ])
             .arg(path)
-            .output()?;
+            ;
+        let output = supervised_process::capture(&mut command, 4 * 1024 * 1024, 65_536, control)?;
         ensure_success(&output)?;
         let raw: ProbeOutput = serde_json::from_slice(&output.stdout)?;
         raw.try_into()
@@ -1720,8 +1846,30 @@ impl FfprobeInspector {
         path: &Path,
         video_ordinal: u32,
     ) -> Result<PacketTimingReport, MediaError> {
+        self.inspect_video_packet_timing_with_control(
+            path,
+            video_ordinal,
+            MediaProcessControl {
+                timeout: Duration::from_secs(30),
+                cancelled: &AtomicBool::new(false),
+            },
+        )
+    }
+
+    /// Inspects packet timestamps with bounded output, a deadline and cancellation.
+    ///
+    /// # Errors
+    /// Returns [`MediaError`] for cancellation, timeout, excessive output, process
+    /// failure, invalid JSON, or invalid exact-time values.
+    pub fn inspect_video_packet_timing_with_control(
+        &self,
+        path: &Path,
+        video_ordinal: u32,
+        control: MediaProcessControl<'_>,
+    ) -> Result<PacketTimingReport, MediaError> {
         let selection = format!("v:{video_ordinal}");
-        let output = Command::new(&self.executable)
+        let mut command = Command::new(&self.executable);
+        command
             .args([
                 "-v",
                 "error",
@@ -1732,8 +1880,8 @@ impl FfprobeInspector {
                 "-of",
                 "json",
             ])
-            .arg(path)
-            .output()?;
+            .arg(path);
+        let output = supervised_process::capture(&mut command, 32 * 1024 * 1024, 65_536, control)?;
         ensure_success(&output)?;
         let raw: PacketOutput = serde_json::from_slice(&output.stdout)?;
         Ok(analyze_packet_timing(&raw.packets))
@@ -2006,6 +2154,77 @@ mod tests {
     };
     use prism_timeline::RationalTime;
     use std::{fs, path::Path};
+
+    #[test]
+    fn fingerprint_control_checks_cancellation_and_deadline_before_io() {
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let control = super::MediaProcessControl {
+            timeout: std::time::Duration::from_secs(1),
+            cancelled: &cancelled,
+        };
+        assert!(matches!(
+            super::fingerprint_with_control(Path::new("/nonexistent/source.mov"), control),
+            Err(MediaError::OperationCancelled)
+        ));
+        let active = std::sync::atomic::AtomicBool::new(false);
+        assert!(matches!(
+            super::fingerprint_with_control(
+                Path::new("/nonexistent/source.mov"),
+                super::MediaProcessControl {
+                    timeout: std::time::Duration::ZERO,
+                    cancelled: &active
+                }
+            ),
+            Err(MediaError::OperationTimedOut)
+        ));
+        assert!(matches!(
+            FfmpegReferenceDecoder::new("/nonexistent/media-tool")
+                .decode_audio_mono_f32_with_control(Path::new("source.wav"), 0, 48_000, 1, control),
+            Err(MediaError::OperationCancelled)
+        ));
+    }
+
+    #[test]
+    fn supervised_preview_interfaces_honor_pre_cancelled_requests() {
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let control = super::MediaProcessControl {
+            timeout: std::time::Duration::from_secs(1),
+            cancelled: &cancelled,
+        };
+        assert!(matches!(
+            super::FfprobeInspector::new("/nonexistent/media-tool")
+                .inspect_with_control(Path::new("source.mp4"), control),
+            Err(MediaError::OperationCancelled)
+        ));
+        assert!(matches!(
+            FfmpegReferenceDecoder::new("/nonexistent/media-tool")
+                .decode_video_frame_rgba_with_control(
+                    Path::new("source.mp4"),
+                    0,
+                    RationalTime::ZERO,
+                    1,
+                    1,
+                    control
+                ),
+            Err(MediaError::OperationCancelled)
+        ));
+        assert!(matches!(
+            FfmpegReferenceDecoder::new("/nonexistent/media-tool")
+                .decode_audio_mono_f32_with_control(
+                    Path::new("source.mp4"),
+                    0,
+                    48_000,
+                    1_024,
+                    control
+                ),
+            Err(MediaError::OperationCancelled)
+        ));
+        assert!(matches!(
+            super::FfprobeInspector::new("/nonexistent/media-tool")
+                .inspect_video_packet_timing_with_control(Path::new("source.mp4"), 0, control),
+            Err(MediaError::OperationCancelled)
+        ));
+    }
 
     #[test]
     fn media_catalog_sorts_and_filters_real_project_entries() {

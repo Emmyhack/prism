@@ -10,6 +10,7 @@ use std::{
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct ViewPreferences {
     pub version: u32,
     pub layout: String,
@@ -21,6 +22,9 @@ pub(crate) struct ViewPreferences {
     pub snapping: bool,
     pub guides: bool,
     pub media_sort: i32,
+    pub media_filter: i32,
+    pub scope_mode: i32,
+    pub monitor_scope: bool,
 }
 
 impl Default for ViewPreferences {
@@ -36,6 +40,9 @@ impl Default for ViewPreferences {
             snapping: true,
             guides: false,
             media_sort: 0,
+            media_filter: 0,
+            scope_mode: 0,
+            monitor_scope: false,
         }
     }
 }
@@ -44,12 +51,14 @@ impl ViewPreferences {
     pub fn validate(&self) -> Result<(), io::Error> {
         if self.version != 1
             || !["Editing", "Assembly"].contains(&self.layout.as_str())
-            || !["Properties", "History", "Jobs"].contains(&self.inspector_tab.as_str())
+            || !["Properties", "History", "Jobs", "Scopes"].contains(&self.inspector_tab.as_str())
             || !["Clip", "Source"].contains(&self.inspector_section.as_str())
             || !["Media", "Markers", "Info"].contains(&self.browser_tab.as_str())
             || !self.monitor_height.is_finite()
             || !(220.0..=4096.0).contains(&self.monitor_height)
             || !(0..=2).contains(&self.media_sort)
+            || !(0..=3).contains(&self.media_filter)
+            || !(0..=2).contains(&self.scope_mode)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -115,6 +124,9 @@ mod tests {
             std::env::temp_dir().join(format!("prism-view-{}-{nonce}.json", std::process::id()));
         assert!(ViewPreferences::load(&path)?.is_none());
         let settings = ViewPreferences {
+            inspector_tab: "Scopes".into(),
+            scope_mode: 2,
+            monitor_scope: true,
             layout: "Assembly".into(),
             inspector_open: false,
             media_sort: 2,
@@ -122,6 +134,18 @@ mod tests {
         };
         settings.save(&path)?;
         assert_eq!(ViewPreferences::load(&path)?, Some(settings));
+        fs::write(&path, br#"{"layout":"Editing"}"#)?;
+        let legacy = ViewPreferences::load(&path)?.ok_or("legacy preferences were not loaded")?;
+        assert_eq!(legacy.scope_mode, 0);
+        assert!(!legacy.monitor_scope);
+        assert!(
+            ViewPreferences {
+                scope_mode: 3,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
         let future = br#"{"version":999}"#;
         fs::write(&path, future)?;
         assert!(ViewPreferences::load(&path).is_err());

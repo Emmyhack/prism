@@ -8,10 +8,51 @@ export struct TimelineMarkerItem { label: string, ratio: float, timecode: string
 export struct CommandItem { id: string, label: string, detail: string, shortcut: string, enabled: bool }
 export global ContextHelp { in-out property <string> text; }
 export struct TimelineTransitionItem { ratio: float, width-ratio: float, row: int }
-export struct MediaCard { index: int, name: string, frame: image, has-frame: bool, status: string, offline: bool, file-size: string }
+export struct MediaCard { index: int, name: string, frame: image, has-frame: bool, status: string, offline: bool, file-size: string, uses: int }
 export struct HistoryItem { label: string, applied: bool }
 export struct TrackItem { name: string, audio: bool, locked: bool, muted: bool, visible: bool }
 export struct LumaScopeColumn { low: float, high: float }
+
+component ScopePlot inherits Rectangle {
+    in property <int> mode;
+    in property <[float]> histogram;
+    in property <[LumaScopeColumn]> waveform;
+    in property <[float]> chroma;
+    background: #101319;
+    clip: true;
+                                                    if root.mode == 0 : Rectangle { background: transparent;
+                                                        for value[index] in root.histogram : Rectangle {
+                                                            x: index * parent.width / root.histogram.length;
+                                                            y: parent.height - self.height;
+                                                            width: Math.max(1px, parent.width / root.histogram.length - 1px);
+                                                            height: Math.max(1px, value * parent.height);
+                                                            background: index < 2 || index >= root.histogram.length - 2 ? #d98989cc : #9ac8b5cc;
+                                                        }
+                                                    }
+                                                    if root.mode == 1 : Rectangle { background: transparent;
+                                                        for column[index] in root.waveform : Rectangle {
+                                                            x: index * parent.width / root.waveform.length;
+                                                            y: parent.height * (1 - column.high);
+                                                            width: Math.max(1px, parent.width / root.waveform.length);
+                                                            height: Math.max(1px, parent.height * (column.high - column.low));
+                                                            background: #9ac8b5aa;
+                                                        }
+                                                    }
+                                                    if root.mode == 2 : Rectangle { background: transparent;
+                                                        for density[index] in root.chroma : Rectangle {
+                                                            x: Math.mod(index, 16) * parent.width / 16;
+                                                            y: Math.floor(index / 16) * parent.height / 16;
+                                                            width: Math.max(1px, parent.width / 16);
+                                                            height: Math.max(1px, parent.height / 16);
+                                                            background: #78d7c4;
+                                                            opacity: density;
+                                                        }
+                                                        Rectangle { x: parent.width / 2; width: 1px; height: parent.height; background: #8b91a044; }
+                                                        Rectangle { y: parent.height / 2; width: parent.width; height: 1px; background: #8b91a044; }
+                                                    }
+                                                    if root.mode == 1 : Rectangle { y: parent.height * (1 - 235 / 255); width: parent.width; height: 1px; background: #d9898955; }
+                                                    if root.mode == 1 : Rectangle { y: parent.height * (1 - 16 / 255); width: parent.width; height: 1px; background: #d9898955; }
+}
 
 component SourceRangeBar inherits Rectangle {
     in property <float> position;
@@ -31,6 +72,8 @@ component SourceRangeBar inherits Rectangle {
 
 component Action inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
+    in property <bool> icon-only: false;
     in property <string> hint: "";
     in property <bool> quiet: false;
     in property <bool> primary: false;
@@ -40,7 +83,8 @@ component Action inherits Rectangle {
     height: 32px; min-width: 32px; border-radius: 4px;
     background: !enabled ? #26262c : primary ? (hit.has-hover ? #a59bff : #9285f5) : active ? #383343 : hit.has-hover ? #35353d : root.quiet ? transparent : #29292f;
     border-width: 1px; border-color: active ? #9285f5 : primary ? #a89cff : root.quiet ? transparent : #3b3b43;
-    Text { text: root.label; color: !root.enabled ? #656570 : root.primary ? #17141f : root.active ? #c6bdff : #d8d8e0; font-size: 12px; font-weight: root.primary ? 600 : 400; horizontal-alignment: center; vertical-alignment: center; }
+    Image { visible: root.icon-only; source: root.icon; x: (parent.width - 18px) / 2; y: (parent.height - 18px) / 2; width: 18px; height: 18px; image-fit: contain; colorize: !root.enabled ? #656570 : root.primary ? #17141f : root.active ? #c6bdff : #d8d8e0; }
+    Text { visible: !root.icon-only; text: root.label; color: !root.enabled ? #656570 : root.primary ? #17141f : root.active ? #c6bdff : #d8d8e0; font-size: 12px; font-weight: root.primary ? 600 : 400; horizontal-alignment: center; vertical-alignment: center; }
     hit := TouchArea { changed has-hover => { ContextHelp.text = self.has-hover ? root.hint : ""; } enabled: root.enabled; clicked => { button-focus.focus(); root.clicked(); } }
     forward-focus: button-focus;
     button-focus := FocusScope { x: 0px; y: 0px; width: 0px; height: 0px; enabled: root.enabled;
@@ -52,6 +96,7 @@ component Action inherits Rectangle {
 component Field inherits Rectangle {
     in-out property <string> text;
     in property <string> placeholder-text;
+    in property <bool> search-field: false;
     in property <bool> enabled: true;
     callback edited();
     callback accepted();
@@ -59,8 +104,9 @@ component Field inherits Rectangle {
     forward-focus: input;
     height: 32px; background: #19191f; border-radius: 4px; border-width: 1px;
     border-color: input.has-focus ? #a397ff : #41414c;
-    Text { x: 10px; y: 0px; width: parent.width - 20px; height: parent.height; visible: root.text == ""; text: root.placeholder-text; color: #777785; font-size: 12px; vertical-alignment: center; }
-    input := TextInput { x: 10px; y: 0px; width: parent.width - 20px; height: parent.height; text <=> root.text; color: root.enabled ? #d8d8e2 : #72727e; font-size: 12px; single-line: true; enabled: root.enabled; vertical-alignment: center; selection-background-color: #66568f; selection-foreground-color: #ffffff; edited => { root.edited(); } accepted => { root.accepted(); } key-pressed(event) => { if event.text == Key.UpArrow { root.navigate(-1); return accept; } if event.text == Key.DownArrow { root.navigate(1); return accept; } return reject; } }
+    Text { x: root.search-field ? 28px : 10px; y: 0px; width: parent.width - (root.search-field ? 38px : 20px); height: parent.height; overflow: elide; visible: root.text == ""; text: root.placeholder-text; color: #777785; font-size: 12px; vertical-alignment: center; }
+    Image { visible: root.search-field; x: 8px; y: (parent.height - 14px) / 2; width: 14px; height: 14px; source: @image-url("../../../assets/icons/search.svg"); colorize: #96929f; }
+    input := TextInput { x: root.search-field ? 28px : 10px; y: 0px; width: parent.width - (root.search-field ? 38px : 20px); height: parent.height; text <=> root.text; color: root.enabled ? #d8d8e2 : #72727e; font-size: 12px; single-line: true; enabled: root.enabled; vertical-alignment: center; selection-background-color: #66568f; selection-foreground-color: #ffffff; edited => { root.edited(); } accepted => { root.accepted(); } key-pressed(event) => { if event.text == Key.UpArrow { root.navigate(-1); return accept; } if event.text == Key.DownArrow { root.navigate(1); return accept; } return reject; } }
 }
 
 component PanelBar inherits Rectangle {
@@ -119,9 +165,12 @@ export component PrismStudio inherits Window {
     in-out property <string> selected-media: "";
     in-out property <int> selected-media-index: -1;
     in-out property <int> selected-clip-index: -1;
+    in property <int> selected-companion-index: -1;
     in property <int> selected-track-index: -1;
     in-out property <string> search: "";
     in-out property <int> media-sort: 0;
+    in-out property <int> media-filter: 0;
+    in property <int> selected-media-uses: 0;
     in property <string> workspace-status: "Not saved";
     in property <string> source-preview-size: "";
     in property <string> source-file-status: "";
@@ -131,12 +180,14 @@ export component PrismStudio inherits Window {
     in property <[LumaScopeColumn]> program-luma-waveform;
     in property <[float]> program-vectorscope;
     in-out property <int> program-scope-mode: 0;
+    in-out property <bool> show-monitor-scope: false;
     in property <image> source-frame;
     in property <bool> has-source-frame: false;
     in property <string> source-detail: "Select footage in the media browser";
     in property <string> preview-status: "No sequence loaded";
     in-out property <float> playhead-ratio: 0;
     in-out property <bool> playing: false;
+    in property <bool> playback-buffering: false;
     in property <string> timecode: "00:00:00:00";
     in property <string> duration-label: "00:00:00:00";
     in property <[string]> ruler-labels;
@@ -277,7 +328,8 @@ export component PrismStudio inherits Window {
                 if !root.compact-mode : Rectangle { width: 1px; height: 22px; background: #42424b; }
                 for workspace in ["HOME", "IMPORT", "EDIT", "EXPORT"] : Rectangle {
                     width: root.compact-mode ? 58px : 66px; height: 32px;
-                    Text { text: workspace; color: root.active-workspace == workspace ? #ded8ff : #92929f; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                    Image { visible: workspace == "HOME"; width: 20px; height: 20px; x: (parent.width - 20px) / 2; y: 5px; source: @image-url("../../../assets/icons/home.svg"); colorize: root.active-workspace == workspace ? #ded8ff : #92929f; }
+                    Text { visible: workspace != "HOME"; text: workspace; color: root.active-workspace == workspace ? #ded8ff : #92929f; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                     Rectangle { x: 8px; y: parent.height - 3px; width: parent.width - 16px; height: 2px; background: root.active-workspace == workspace ? #a397ff : transparent; }
                     forward-focus: tab-focus;
                     tab-focus := FocusScope { x: 0px; y: 0px; width: 0px; height: 0px;
@@ -346,7 +398,7 @@ export component PrismStudio inherits Window {
                 }
                 Rectangle { horizontal-stretch: 1; background: #1c1c21;
                     VerticalLayout { padding: 24px; spacing: 18px;
-                        HorizontalLayout { height: 34px; spacing: 12px; Text { text: "Project / Footage"; color: #e2e2eb; font-size: 16px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Action { width: 100px; label: root.media-sort == 0 ? "Project order" : root.media-sort == 1 ? "Name A–Z" : "Name Z–A"; quiet: true; clicked => { root.media-sort = Math.mod(root.media-sort + 1, 3); root.filter-changed(); } } Field { width: 190px; placeholder-text: "Filter imported media"; text <=> root.search; edited => { root.filter-changed(); } } }
+                        HorizontalLayout { height: 34px; spacing: 12px; Text { text: "Project / Footage"; color: #e2e2eb; font-size: 16px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Action { width: 100px; label: root.media-sort == 0 ? "Project order" : root.media-sort == 1 ? "Name A–Z" : "Name Z–A"; quiet: true; clicked => { root.media-sort = Math.mod(root.media-sort + 1, 3); root.filter-changed(); } } Action { width: 100px; label: root.media-filter == 0 ? "All media" : root.media-filter == 1 ? "In sequence" : root.media-filter == 2 ? "Unused" : "Offline"; quiet: true; clicked => { root.media-filter = Math.mod(root.media-filter + 1, 4); root.filter-changed(); } } Field { width: 190px; search-field: true; placeholder-text: "Filter imported media"; text <=> root.search; edited => { root.filter-changed(); } } }
                         if root.media-count == 0 : EmptyState { heading: "Every story starts with a frame"; detail: "Browse your computer to import video or audio. Your media will appear here and be added to the sequence."; }
                         if root.media-count > 0 : ScrollView {
                             Rectangle { property <int> columns: Math.max(2, Math.floor(self.width / 230px));
@@ -362,7 +414,7 @@ export component PrismStudio inherits Window {
                                         Text { visible: !item.has-frame; text: item.status; color: #6d657c; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; }
                                     }
                                     Text { x: 12px; y: 138px; width: parent.width - 24px; text: item.name; color: #d9cfdf; font-size: 11px; overflow: elide; }
-                                    Text { x: 12px; y: 158px; text: item.offline ? "OFFLINE / RELINK SOURCE" : "VIDEO / " + item.file-size; color: item.offline ? #d3a577 : #87798f; font-size: 8px; }
+                                    Text { x: 12px; y: 158px; text: item.offline ? "OFFLINE / RELINK SOURCE" : item.file-size + " · " + item.uses + " uses"; color: item.offline ? #d3a577 : #87798f; font-size: 8px; }
                                     TouchArea { clicked => { root.selected-media-index = item.index; root.selected-media = item.name; root.media-selected(item.index); } }
                                 }
                                 if root.media-cards.length == 0 : Text { y: 40px; width: parent.width; text: "No matching footage"; color: #8a8096; horizontal-alignment: center; }
@@ -394,8 +446,8 @@ export component PrismStudio inherits Window {
                         Text { text: "WORKSPACE"; color: #6f6f81; font-size: 9px; vertical-alignment: center; }
                         for preset in ["Editing", "Assembly"] : Action { width: 76px; height: 27px; label: preset; quiet: true; active: root.layout-preset == preset; clicked => { root.layout-preset = preset; } }
                         Rectangle { horizontal-stretch: 1; }
-                        Action { width: 64px; height: 27px; label: "Undo"; hint: "Undo · Ctrl / Cmd Z"; enabled: root.can-undo; quiet: true; clicked => { root.command-invoked("edit.undo"); } }
-                        Action { width: 64px; height: 27px; label: "Redo"; hint: "Redo · Ctrl / Cmd Shift Z"; enabled: root.can-redo; quiet: true; clicked => { root.command-invoked("edit.redo"); } }
+                        Action { width: 32px; height: 27px; icon-only: true; icon: @image-url("../../../assets/icons/undo.svg"); label: "Undo"; hint: "Undo · Ctrl / Cmd Z"; enabled: root.can-undo; quiet: true; clicked => { root.command-invoked("edit.undo"); } }
+                        Action { width: 32px; height: 27px; icon-only: true; icon: @image-url("../../../assets/icons/redo.svg"); label: "Redo"; hint: "Redo · Ctrl / Cmd Shift Z"; enabled: root.can-redo; quiet: true; clicked => { root.command-invoked("edit.redo"); } }
                         Action { width: 80px; height: 27px; label: "Save layout"; hint: "Remember this workspace for the current project"; enabled: root.has-project; quiet: true; clicked => { root.command-invoked("view.save_layout"); } }
                         Action { width: 80px; height: 27px; label: "Reset layout"; hint: "Reset this view; Save layout keeps it for next time"; quiet: true; clicked => { root.command-invoked("view.reset"); } }
                         Action { width: 72px; height: 27px; label: "Inspector"; active: root.inspector-open; quiet: true; clicked => { root.inspector-open = !root.inspector-open; } }
@@ -418,8 +470,8 @@ export component PrismStudio inherits Window {
                                         HorizontalLayout { height: 34px; padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
                                             Text { text: root.source-timecode; color: #aca0eb; font-family: "monospace"; font-size: 10px; vertical-alignment: center; }
                                             Rectangle { horizontal-stretch: 1; }
-                                            Action { width: 28px; height: 25px; label: "I"; hint: "Mark source In"; quiet: true; enabled: root.source-ready; clicked => { root.command-invoked("source.mark_in"); } }
-                                            Action { width: 28px; height: 25px; label: "O"; hint: "Mark source Out"; quiet: true; enabled: root.source-ready; clicked => { root.command-invoked("source.mark_out"); } }
+                                            Action { width: 28px; height: 25px; icon-only: true; icon: @image-url("../../../assets/icons/mark-in.svg"); label: "Mark In"; hint: "Mark In"; quiet: true; enabled: root.source-ready; clicked => { root.command-invoked("source.mark_in"); } }
+                                            Action { width: 28px; height: 25px; icon-only: true; icon: @image-url("../../../assets/icons/mark-out.svg"); label: "Mark Out"; hint: "Mark Out"; quiet: true; enabled: root.source-ready; clicked => { root.command-invoked("source.mark_out"); } }
                                             Action { width: 44px; height: 25px; label: "Full"; hint: "Clear In/Out marks and use the full source clip"; quiet: true; enabled: root.source-ready; clicked => { root.command-invoked("source.clear_marks"); } }
                                             Action { width: 70px; height: 25px; label: "Append"; hint: "Append marked source range to the sequence"; enabled: root.source-ready; clicked => { root.command-invoked("source.append"); } }
                                         }
@@ -428,60 +480,27 @@ export component PrismStudio inherits Window {
                                 Rectangle { horizontal-stretch: 1.35; background: #111115;
                                     VerticalLayout { spacing: 0px;
                                         PanelBar { title: "Program"; detail: root.clip-count > 0 ? root.sequence-name : "NO SEQUENCE"; }
-                                        Rectangle { height: 28px; background: #1d1d23; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.sequence-name; color: #aaaab9; font-size: 11px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.clip-count == 0 ? "NO SEQUENCE" : root.playing ? "PLAYING" : "PAUSED"; color: #767689; font-size: 8px; vertical-alignment: center; } } }
+                                        Rectangle { height: 28px; background: #1d1d23; HorizontalLayout { padding-left: 12px; padding-right: 12px; Text { text: root.sequence-name; color: #aaaab9; font-size: 11px; vertical-alignment: center; } Rectangle { horizontal-stretch: 1; } Text { text: root.clip-count == 0 ? "NO SEQUENCE" : root.playing ? (root.playback-buffering ? "BUFFERING AUDIO" : "PLAYING") : "PAUSED"; color: #767689; font-size: 8px; vertical-alignment: center; } } }
                                         Rectangle { vertical-stretch: 1; background: #0b0b0f;
                                             Image { visible: root.has-program-frame; source: root.program-frame; width: parent.width; height: parent.height; image-fit: contain; }
                                             Text { visible: !root.has-program-frame; text: root.preview-status; color: #818192; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
                                             if root.show-safe-guides : Rectangle { x: parent.width * 0.1; y: parent.height * 0.1; width: parent.width * 0.8; height: parent.height * 0.8; border-width: 1px; border-color: #bcb6d480; background: transparent; }
-                                            if root.program-luma-scope.length > 0 : Rectangle { x: parent.width - 150px; y: parent.height - 74px; width: 142px; height: 66px; background: #090b0ddd; border-width: 1px; border-color: #454955; border-radius: 3px;
+                                            if root.show-monitor-scope && root.has-program-frame && root.program-luma-scope.length > 0 : Rectangle { x: parent.width - 150px; y: parent.height - 74px; width: 142px; height: 66px; background: #090b0ddd; border-width: 1px; border-color: #454955; border-radius: 3px;
                                                 Text { x: 5px; y: 3px; text: root.program-scope-mode == 0 ? "LUMA HIST · CLICK" : root.program-scope-mode == 1 ? "LUMA WAVE · CLICK" : "VECTORSCOPE · CLICK"; color: #9da4b3; font-size: 7px; }
-                                                Rectangle { x: 5px; y: 14px; width: parent.width - 10px; height: parent.height - 19px; background: #101319;
-                                                    if root.program-scope-mode == 0 : Rectangle { background: transparent;
-                                                        for value[index] in root.program-luma-scope : Rectangle {
-                                                            x: index * parent.width / root.program-luma-scope.length;
-                                                            y: parent.height - self.height;
-                                                            width: Math.max(1px, parent.width / root.program-luma-scope.length - 1px);
-                                                            height: Math.max(1px, value * parent.height);
-                                                            background: index < 2 || index >= root.program-luma-scope.length - 2 ? #d98989cc : #9ac8b5cc;
-                                                        }
-                                                    }
-                                                    if root.program-scope-mode == 1 : Rectangle { background: transparent;
-                                                        for column[index] in root.program-luma-waveform : Rectangle {
-                                                            x: index * parent.width / root.program-luma-waveform.length;
-                                                            y: parent.height * (1 - column.high);
-                                                            width: Math.max(1px, parent.width / root.program-luma-waveform.length);
-                                                            height: Math.max(1px, parent.height * (column.high - column.low));
-                                                            background: #9ac8b5aa;
-                                                        }
-                                                    }
-                                                    if root.program-scope-mode == 2 : Rectangle { background: transparent;
-                                                        for density[index] in root.program-vectorscope : Rectangle {
-                                                            x: Math.mod(index, 16) * parent.width / 16;
-                                                            y: Math.floor(index / 16) * parent.height / 16;
-                                                            width: Math.max(1px, parent.width / 16);
-                                                            height: Math.max(1px, parent.height / 16);
-                                                            background: #78d7c4;
-                                                            opacity: density;
-                                                        }
-                                                        Rectangle { x: parent.width / 2; width: 1px; height: parent.height; background: #8b91a044; }
-                                                        Rectangle { y: parent.height / 2; width: parent.width; height: 1px; background: #8b91a044; }
-                                                    }
-                                                    if root.program-scope-mode != 2 : Rectangle { y: parent.height * (1 - 235 / 255); width: parent.width; height: 1px; background: #d9898955; }
-                                                    if root.program-scope-mode != 2 : Rectangle { y: parent.height * (1 - 16 / 255); width: parent.width; height: 1px; background: #d9898955; }
-                                                }
+                                                ScopePlot { x: 5px; y: 14px; width: parent.width - 10px; height: parent.height - 19px; mode: root.program-scope-mode; histogram: root.program-luma-scope; waveform: root.program-luma-waveform; chroma: root.program-vectorscope; }
                                                 TouchArea { clicked => { root.program-scope-mode = Math.mod(root.program-scope-mode + 1, 3); } }
                                             }
                                         }
                                         HorizontalLayout { height: 39px; padding-left: 12px; padding-right: 10px; padding-top: 6px; padding-bottom: 6px; spacing: 6px;
                                             Text { text: root.timecode; color: #b9acff; font-family: "monospace"; font-size: 11px; vertical-alignment: center; }
                                             Rectangle { horizontal-stretch: 1; }
-                                            Action { width: 28px; height: 26px; label: "|‹"; hint: "Previous edit · ↑"; quiet: true; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.previous_edit"); } }
-                                            Action { width: 28px; height: 26px; label: "‹"; hint: "Previous frame"; quiet: true; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.step_backward"); } }
-                                            Action { width: 34px; height: 26px; label: root.playing ? "■" : "▶"; hint: "Play / Pause · Space"; active: root.playing; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.play_pause"); } }
-                                            Action { width: 28px; height: 26px; label: "›"; hint: "Next frame"; quiet: true; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.step_forward"); } }
-                                            Action { width: 28px; height: 26px; label: "›|"; hint: "Next edit · ↓"; quiet: true; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.next_edit"); } }
+                                            Action { width: 28px; height: 26px; icon-only: true; icon: @image-url("../../../assets/icons/previous-edit.svg"); label: "Previous edit"; hint: "Previous edit · ↑"; quiet: true; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.previous_edit"); } }
+                                            Action { width: 28px; height: 26px; icon-only: true; icon: @image-url("../../../assets/icons/previous-frame.svg"); label: "Previous frame"; hint: "Previous frame"; quiet: true; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.step_backward"); } }
+                                            Action { width: 34px; height: 26px; icon-only: true; icon: root.playing ? @image-url("../../../assets/icons/stop.svg") : @image-url("../../../assets/icons/play.svg"); label: root.playing ? "Stop playback" : "Play"; hint: "Play / Pause · Space"; active: root.playing; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.play_pause"); } }
+                                            Action { width: 28px; height: 26px; icon-only: true; icon: @image-url("../../../assets/icons/next-frame.svg"); label: "Next frame"; hint: "Next frame"; quiet: true; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.step_forward"); } }
+                                            Action { width: 28px; height: 26px; icon-only: true; icon: @image-url("../../../assets/icons/next-edit.svg"); label: "Next edit"; hint: "Next edit · ↓"; quiet: true; enabled: root.clip-count > 0; clicked => { root.command-invoked("playback.next_edit"); } }
                                             Rectangle { horizontal-stretch: 1; }
-                                            Action { width: 42px; height: 26px; label: "Safe"; hint: "Toggle inset framing guides"; active: root.show-safe-guides; quiet: true; clicked => { root.show-safe-guides = !root.show-safe-guides; } }
+                                            Action { width: 42px; height: 26px; icon-only: true; icon: @image-url("../../../assets/icons/safe-guides.svg"); label: "Safe guides"; hint: "Toggle inset framing guides"; active: root.show-safe-guides; quiet: true; clicked => { root.show-safe-guides = !root.show-safe-guides; } }
                                             Text { text: root.duration-label; color: #7f7f91; font-family: "monospace"; font-size: 10px; vertical-alignment: center; }
                                         }
                                     }
@@ -496,24 +515,29 @@ export component PrismStudio inherits Window {
                                         HorizontalLayout { height: 34px; padding-left: 8px; padding-right: 8px; spacing: 4px; padding-top: 3px; padding-bottom: 3px;
                                             for tab in ["Media", "Markers", "Info"] : Action { height: 27px; width: tab == "Info" ? 40px : 64px; label: tab; quiet: true; active: root.browser-tab == tab; clicked => { root.browser-tab = tab; } }
                                             Rectangle { horizontal-stretch: 1; }
-                                            Text { visible: root.browser-tab == "Media"; text: root.media-count + " FILES"; color: #717184; font-size: 8px; vertical-alignment: center; }
+                                            Text { visible: root.browser-tab == "Media"; text: root.media-cards.length + "/" + root.media-count; color: #717184; font-size: 8px; vertical-alignment: center; }
                                         }
                                         if root.browser-tab == "Media" : Rectangle {
                                             VerticalLayout { padding: 8px; spacing: 7px;
-                                                Field { placeholder-text: "Search project media"; text <=> root.search; edited => { root.filter-changed(); } }
+                                                Action { height: 25px; label: root.media-filter == 0 ? "All media" : root.media-filter == 1 ? "In sequence" : root.media-filter == 2 ? "Unused media" : "Offline media"; hint: "Cycle project media views: All, In sequence, Unused, Offline"; quiet: true; clicked => { root.media-filter = Math.mod(root.media-filter + 1, 4); root.filter-changed(); } }
+                                                Field { search-field: true; placeholder-text: "Search project media"; text <=> root.search; edited => { root.filter-changed(); } }
                                                 Rectangle { height: 20px; Text { x: 5px; text: "NAME"; color: #69697e; font-size: 8px; vertical-alignment: center; } Action { x: parent.width - 78px; y: 0px; width: 76px; height: 20px; label: root.media-sort == 0 ? "Project order" : root.media-sort == 1 ? "Name A–Z" : "Name Z–A"; hint: "Cycle media sorting without changing source identities"; quiet: true; clicked => { root.media-sort = Math.mod(root.media-sort + 1, 3); root.filter-changed(); } } }
-                                                ScrollView { VerticalLayout { spacing: 2px;
+                                                ScrollView { min-height: 0px; vertical-stretch: 1; VerticalLayout { spacing: 2px;
                                                     if root.media-count == 0 : EmptyState { height: 130px; heading: "A place for your footage"; detail: "Import video to start your sequence."; }
                                                     for item in root.media-cards : Rectangle { height: 42px; background: root.selected-media-index == item.index ? #363047 : media-hit.has-hover ? #2d2d37 : #25252d; border-radius: 3px;
                                                         Rectangle { x: 0px; y: 0px; width: 2px; height: parent.height; background: root.selected-media-index == item.index ? #a598ed : transparent; }
-                                                        Rectangle { x: 7px; y: 7px; width: 42px; height: 28px; background: #141218; Image { visible: item.has-frame; source: item.frame; width: parent.width; height: parent.height; image-fit: contain; } Text { visible: !item.has-frame; text: "V"; color: #8c799f; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; } }
+                                                        Rectangle { x: 7px; y: 7px; width: 42px; height: 28px; background: #141218; Image { visible: item.has-frame; source: item.frame; width: parent.width; height: parent.height; image-fit: contain; } Image { visible: !item.has-frame; source: @image-url("../../../assets/icons/file.svg"); width: 18px; height: 18px; x: (parent.width - 18px) / 2; y: (parent.height - 18px) / 2; colorize: #8c799f; } }
                                                         Text { x: 56px; width: parent.width - 87px; text: item.name; color: #d0cddd; overflow: elide; font-size: 10px; vertical-alignment: center; }
-                                                        Text { x: parent.width - 27px; text: item.offline ? "!" : "VID"; color: item.offline ? #d3a577 : #717185; font-size: 7px; vertical-alignment: center; }
+                                                        Text { x: parent.width - 27px; text: item.offline ? "!" : item.uses + "×"; color: item.offline ? #d3a577 : #717185; font-size: 7px; vertical-alignment: center; }
                                                         media-hit := TouchArea { clicked => { root.selected-media-index = item.index; root.selected-media = item.name; root.media-selected(item.index); } }
                                                     }
                                                     if root.media-count > 0 && root.media-cards.length == 0 : Text { height: 40px; text: "No matches"; color: #81758f; horizontal-alignment: center; }
                                                 } }
-                                                Action { label: "+  Import footage"; height: 29px; clicked => { root.command-invoked("project.import_media"); } }
+                                                if root.media-count > 0 && root.media-cards.length == 0 : Action { height: 25px; label: "Clear filters"; clicked => { root.search = ""; root.media-filter = 0; root.filter-changed(); } }
+                                                HorizontalLayout { height: 29px; spacing: 6px;
+                                                    if root.selected-media-index >= 0 : Action { height: 29px; label: "Find in timeline"; hint: "Cycle this source's " + root.selected-media-uses + " clip references"; enabled: root.selected-media-uses > 0; clicked => { root.command-invoked("media.find_timeline"); } }
+                                                    Action { label: "+ Import"; height: 29px; clicked => { root.command-invoked("project.import_media"); } }
+                                                }
                                             }
                                         }
                                         if root.browser-tab == "Markers" : Rectangle {
@@ -550,12 +574,12 @@ export component PrismStudio inherits Window {
                                 }
                                 Rectangle { width: 38px; background: #24242c;
                                     VerticalLayout { padding: 4px; spacing: 6px;
-                                        Action { label: "V"; hint: "Selection and scrub tool"; active: root.active-tool == "V"; height: 28px; clicked => { root.active-tool = "V"; } }
-                                        Action { label: "C"; hint: "Razor: split a clip at the clicked frame"; active: root.active-tool == "C"; height: 28px; clicked => { root.active-tool = "C"; } }
-                                        Action { label: "T"; hint: "Trim the nearest clip edge"; active: root.active-tool == "T"; height: 28px; clicked => { root.active-tool = "T"; } }
-                                        Action { label: "Y"; hint: "Slip source beneath the clip"; active: root.active-tool == "Y"; height: 28px; clicked => { root.active-tool = "Y"; } }
-                                        Action { label: "U"; hint: "Slide clip between both neighbors"; active: root.active-tool == "U"; height: 28px; clicked => { root.active-tool = "U"; } }
-                                        Action { label: "R"; hint: "Roll the nearest edit boundary"; active: root.active-tool == "R"; height: 28px; clicked => { root.active-tool = "R"; } }
+                                        Action { icon-only: true; icon: @image-url("../../../assets/icons/selection.svg"); label: "Selection tool"; hint: "Selection tool · V"; active: root.active-tool == "V"; height: 28px; clicked => { root.active-tool = "V"; } }
+                                        Action { icon-only: true; icon: @image-url("../../../assets/icons/razor.svg"); label: "Razor tool"; hint: "Razor tool · C · Split a clip at the clicked frame"; active: root.active-tool == "C"; height: 28px; clicked => { root.active-tool = "C"; } }
+                                        Action { icon-only: true; icon: @image-url("../../../assets/icons/trim.svg"); label: "Trim tool"; hint: "Trim tool · T · Adjust the nearest edge"; active: root.active-tool == "T"; height: 28px; clicked => { root.active-tool = "T"; } }
+                                        Action { icon-only: true; icon: @image-url("../../../assets/icons/slip.svg"); label: "Slip tool"; hint: "Slip tool · Y · Adjust source timing"; active: root.active-tool == "Y"; height: 28px; clicked => { root.active-tool = "Y"; } }
+                                        Action { icon-only: true; icon: @image-url("../../../assets/icons/slide.svg"); label: "Slide tool"; hint: "Slide tool · U · Adjust the neighboring edges"; active: root.active-tool == "U"; height: 28px; clicked => { root.active-tool = "U"; } }
+                                        Action { icon-only: true; icon: @image-url("../../../assets/icons/rolling.svg"); label: "Rolling edit tool"; hint: "Rolling edit tool · R · Adjust the shared boundary"; active: root.active-tool == "R"; height: 28px; clicked => { root.active-tool = "R"; } }
                                         Rectangle { vertical-stretch: 1; }
                                     }
                                 }
@@ -566,12 +590,12 @@ export component PrismStudio inherits Window {
                                             Text { text: root.timecode; color: #b5a9f4; font-size: 11px; font-family: "monospace"; vertical-alignment: center; }
                                             Text { text: root.active-tool + "  /  SNAP " + (root.snap-enabled ? "ON" : "OFF"); color: root.snap-enabled ? #7fb99b : #777384; font-size: 9px; vertical-alignment: center; }
                                             Rectangle { horizontal-stretch: 1; }
-                                            Action { width: 28px; height: 26px; label: "M"; hint: "Add marker · M"; quiet: true; clicked => { root.command-invoked("timeline.add_marker"); } }
-                                            Action { width: 38px; height: 26px; label: "Snap"; hint: "Toggle snapping · S"; active: root.snap-enabled; quiet: true; clicked => { root.command-invoked("timeline.toggle_snap"); } }
-                                            Action { width: 42px; height: 26px; label: "Split"; quiet: true; enabled: root.selected-clip-index >= 0 && !root.inspector-locked; clicked => { root.command-invoked("timeline.split"); } }
-                                            Action { width: 28px; height: 26px; label: "−"; hint: "Zoom timeline out"; quiet: true; enabled: root.timeline-zoom > 1; clicked => { root.timeline-zoom = Math.max(1, root.timeline-zoom / 2); root.timeline-offset = Math.min(root.timeline-offset, 1 - 1 / root.timeline-zoom); root.view-changed(); } }
-                                            Action { width: 30px; height: 26px; label: "Fit"; hint: "Fit the full sequence · F"; quiet: true; enabled: root.timeline-zoom > 1; clicked => { root.command-invoked("timeline.fit"); } }
-                                            Action { width: 28px; height: 26px; label: "+"; hint: "Zoom timeline in"; quiet: true; enabled: root.timeline-zoom < 8; clicked => { root.timeline-zoom = Math.min(8, root.timeline-zoom * 2); root.view-changed(); } }
+                                            Action { width: 28px; height: 26px; icon-only: true; icon: @image-url("../../../assets/icons/marker.svg"); label: "Add marker"; hint: "Add marker · M"; quiet: true; clicked => { root.command-invoked("timeline.add_marker"); } }
+                                            Action { width: 38px; height: 26px; icon-only: true; icon: @image-url("../../../assets/icons/magnet.svg"); label: "Snapping"; hint: "Toggle snapping · S"; active: root.snap-enabled; quiet: true; clicked => { root.command-invoked("timeline.toggle_snap"); } }
+                                            Action { width: 42px; height: 26px; icon-only: true; icon: @image-url("../../../assets/icons/razor.svg"); label: "Split"; hint: "Split selected clip at playhead · Ctrl / Cmd K"; quiet: true; enabled: root.selected-clip-index >= 0 && !root.inspector-locked; clicked => { root.command-invoked("timeline.split"); } }
+                                            Action { width: 28px; height: 26px; icon-only: true; icon: @image-url("../../../assets/icons/zoom-out.svg"); label: "Zoom out"; hint: "Zoom timeline out"; quiet: true; enabled: root.timeline-zoom > 1; clicked => { root.timeline-zoom = Math.max(1, root.timeline-zoom / 2); root.timeline-offset = Math.min(root.timeline-offset, 1 - 1 / root.timeline-zoom); root.view-changed(); } }
+                                            Action { width: 30px; height: 26px; icon-only: true; icon: @image-url("../../../assets/icons/fit.svg"); label: "Fit timeline"; hint: "Fit the full sequence · F"; quiet: true; enabled: root.timeline-zoom > 1; clicked => { root.command-invoked("timeline.fit"); } }
+                                            Action { width: 28px; height: 26px; icon-only: true; icon: @image-url("../../../assets/icons/zoom-in.svg"); label: "Zoom in"; hint: "Zoom timeline in"; quiet: true; enabled: root.timeline-zoom < 8; clicked => { root.timeline-zoom = Math.min(8, root.timeline-zoom * 2); root.view-changed(); } }
                                         }
                                         ScrollView { vertical-stretch: 1;
                                             HorizontalLayout { spacing: 0px; min-height: Math.max(180px, root.tracks.length * 60px + 28px);
@@ -580,8 +604,8 @@ export component PrismStudio inherits Window {
                                                         Rectangle { height: 28px; background: #292931; Text { text: "TRACKS"; color: #69697e; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; } }
                                                         for track[index] in root.tracks : Rectangle { height: 59px; background: #27272f;
                                                             Text { x: 8px; y: 7px; text: track.name; color: track.audio ? #81bdac : #b6a9e5; font-size: 11px; }
-                                                            Action { x: 7px; y: 29px; width: 32px; height: 23px; label: track.locked ? "L" : "U"; hint: track.locked ? "Unlock track" : "Lock track"; active: track.locked; quiet: true; clicked => { root.track-action(index, "lock"); } }
-                                                            Action { x: 43px; y: 29px; width: 32px; height: 23px; label: track.audio ? "M" : "V"; hint: track.audio ? "Mute track" : "Toggle video output"; active: track.audio ? track.muted : !track.visible; quiet: true; clicked => { root.track-action(index, track.audio ? "mute" : "visible"); } }
+                                                            Action { x: 7px; y: 29px; width: 32px; height: 23px; icon-only: true; icon: track.locked ? @image-url("../../../assets/icons/lock.svg") : @image-url("../../../assets/icons/unlock.svg"); label: "Track lock"; hint: track.locked ? "Unlock track" : "Lock track"; active: track.locked; quiet: true; clicked => { root.track-action(index, "lock"); } }
+                                                            Action { x: 43px; y: 29px; width: 32px; height: 23px; icon-only: !track.audio; icon: track.visible ? @image-url("../../../assets/icons/eye.svg") : @image-url("../../../assets/icons/eye-off.svg"); label: track.audio ? "M" : "Video output"; hint: track.audio ? "Mute track" : "Toggle video output"; active: track.audio ? track.muted : !track.visible; quiet: true; clicked => { root.track-action(index, track.audio ? "mute" : "visible"); } }
                                                         }
                                                         Rectangle { vertical-stretch: 1; }
                                                     }
@@ -601,8 +625,8 @@ export component PrismStudio inherits Window {
                                                     for clip[index] in root.timeline-clips : Rectangle {
                                                         x: parent.width * (clip.start-ratio - root.timeline-offset) * root.timeline-zoom; y: 32px + clip.row * 60px;
                                                         width: Math.max(3px, parent.width * clip.width-ratio * root.timeline-zoom - 2px); height: 51px; clip: true; border-radius: 3px;
-                                                        background: clip.audio ? #315e53 : root.selected-clip-index == index ? #756099 : #4f436a;
-                                                        border-width: 1px; border-color: root.selected-clip-index == index ? #decef6 : clip.audio ? #539a85 : #8d73ad;
+                                                        background: root.selected-clip-index == index || root.selected-companion-index == index ? (clip.audio ? #477d70 : #756099) : clip.audio ? #315e53 : #4f436a;
+                                                        border-width: 1px; border-color: root.selected-clip-index == index || root.selected-companion-index == index ? #decef6 : clip.audio ? #539a85 : #8d73ad;
                                                         Rectangle { x: 0px; y: 0px; width: parent.width; height: 17px; background: #ffffff0a; }
                                                         Text { x: 6px; y: 5px; width: parent.width - 12px; text: clip.name; color: #e8dff3; font-size: 9px; overflow: elide; }
                                                         if clip.audio : Rectangle { x: 4px; y: 20px; width: parent.width - 8px; height: 27px; background: #14262255;
@@ -689,6 +713,7 @@ export component PrismStudio inherits Window {
                                 if root.selected-clip-index >= 0 : Action { label: root.precision-open ? "▾  Precision edits" : "▸  Precision edits"; quiet: true; clicked => { root.precision-open = !root.precision-open; } }
                                 if root.precision-open : VerticalLayout { spacing: 8px;
                                 if root.selected-clip-index >= 0 : Text { text: "PRECISION EDITS"; color: #a69ac1; font-size: 9px; height: 18px; }
+                                if root.selected-clip-index >= 0 : Text { text: root.selected-companion-index >= 0 ? "Slip edits aligned A/V · Roll and Slide edit this track" : "Precision edits affect the selected track"; color: #777386; font-size: 9px; height: 20px; wrap: word-wrap; }
                                 if root.selected-clip-index >= 0 : HorizontalLayout { height: 28px; spacing: 6px; Action { label: "Slip −1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.slip_left"); } } Action { label: "Slip +1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.slip_right"); } } }
                                 if root.selected-clip-index >= 0 : HorizontalLayout { height: 28px; spacing: 6px; Action { label: "Roll In −1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.roll_in_left"); } } Action { label: "Roll In +1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.roll_in_right"); } } }
                                 if root.selected-clip-index >= 0 : HorizontalLayout { height: 28px; spacing: 6px; Action { label: "Roll Out −1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.roll_out_left"); } } Action { label: "Roll Out +1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.roll_out_right"); } } }
@@ -706,8 +731,8 @@ export component PrismStudio inherits Window {
                                  HorizontalLayout { height: 27px; spacing: 6px;
                                     Text { text: root.source-timecode; color: #a79cb9; font-family: "monospace"; font-size: 10px; vertical-alignment: center; }
                                     Rectangle { horizontal-stretch: 1; }
-                                    Action { label: "In"; width: 36px; height: 26px; enabled: root.source-ready; clicked => { root.command-invoked("source.mark_in"); } }
-                                    Action { label: "Out"; width: 36px; height: 26px; enabled: root.source-ready; clicked => { root.command-invoked("source.mark_out"); } }
+                                    Action { icon-only: true; icon: @image-url("../../../assets/icons/mark-in.svg"); label: "Mark In"; hint: "Mark In"; width: 36px; height: 26px; enabled: root.source-ready; clicked => { root.command-invoked("source.mark_in"); } }
+                                    Action { icon-only: true; icon: @image-url("../../../assets/icons/mark-out.svg"); label: "Mark Out"; hint: "Mark Out"; width: 36px; height: 26px; enabled: root.source-ready; clicked => { root.command-invoked("source.mark_out"); } }
                                 }
                                 Text { text: "In    " + root.source-in-label + "\nOut  " + root.source-out-label; color: #9891ac; font-size: 10px; font-family: "monospace"; height: 32px; }
                                 Text { text: "RANGE  " + root.source-range-label; color: #bdacd4; font-size: 10px; font-family: "monospace"; height: 18px; }
@@ -727,6 +752,22 @@ export component PrismStudio inherits Window {
                                 if root.selected-media-index >= 0 : Action { label: root.proxy-active ? "Using proxy" : "Use original"; active: root.proxy-active; enabled: root.proxy-status == "AVAILABLE"; clicked => { root.command-invoked("media.toggle_proxy"); } }
                                 }
                                 }
+                            } }
+                            if root.inspector-tab == "Scopes" : ScrollView { VerticalLayout { padding: 14px; spacing: 12px;
+                                Text { text: "Program analysis"; color: #e5deed; font-size: 16px; }
+                                Text { text: root.has-program-frame ? "Decoded preview · " + (root.playing ? "Playback sampling" : "Paused frame") : "No decoded Program frame"; color: #aaa2b4; font-size: 10px; wrap: word-wrap; }
+                                HorizontalLayout { height: 29px; spacing: 4px;
+                                    for label[index] in ["Hist", "Wave", "Vector"] : Action { label: label; height: 28px; active: root.program-scope-mode == index; hint: index == 0 ? "Luma histogram" : index == 1 ? "Luma waveform" : "Chroma vectorscope"; clicked => { root.program-scope-mode = index; } }
+                                }
+                                Text { text: root.program-scope-mode == 0 ? "LUMA HISTOGRAM" : root.program-scope-mode == 1 ? "LUMA WAVEFORM" : "CHROMA VECTORSCOPE"; color: #b3a6c7; font-size: 10px; }
+                                Rectangle { height: 230px; background: #101319; border-width: 1px; border-color: #45414f;
+                                    if root.has-program-frame : ScopePlot { x: 8px; y: 8px; width: parent.width - 16px; height: parent.height - 16px; mode: root.program-scope-mode; histogram: root.program-luma-scope; waveform: root.program-luma-waveform; chroma: root.program-vectorscope; }
+                                    if !root.has-program-frame : Text { text: "Play or scrub a video clip\nto inspect its decoded image"; color: #888493; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap; }
+                                }
+                                Text { text: root.program-scope-mode == 0 ? "0 · Shadows          Midtones          Highlights · 255" : root.program-scope-mode == 1 ? "Left → right: image position\nBottom → top: luma code 0 → 255" : "Center: neutral color\nHorizontal: Cb · Vertical: Cr"; color: #9c94a9; font-size: 10px; wrap: word-wrap; }
+                                Text { text: root.program-scope-mode == 0 ? "Bar height shows relative sample count. Red edge bins flag samples near black or white." : root.program-scope-mode == 1 ? "Each column shows its sampled luma range. Red guides mark code values 16 and 235." : "Brighter cells contain more sampled chroma values. This is a coarse preview of color distribution."; color: #aaa2b4; font-size: 11px; wrap: word-wrap; }
+                                Action { label: root.show-monitor-scope ? "Hide monitor overlay" : "Show monitor overlay"; active: root.show-monitor-scope; clicked => { root.show-monitor-scope = !root.show-monitor-scope; } }
+                                Text { text: "Analyzes sampled 8-bit preview pixels. These guides are not a calibrated broadcast or HDR compliance check. No color correction is applied."; color: #8a8497; font-size: 10px; wrap: word-wrap; }
                             } }
                             if root.inspector-tab == "History" : Rectangle { VerticalLayout { padding: 14px; spacing: 12px;
                                 Text { text: "Every decision. Reversible."; color: #c9bfdd; font-size: 12px; height: 28px; }
@@ -764,6 +805,7 @@ export component PrismStudio inherits Window {
                     Rectangle { width: 56px; background: #24242c;
                         VerticalLayout { padding: 4px; spacing: 7px;
                             Action { label: "Props"; hint: "Clip and source properties"; active: root.inspector-open && root.inspector-tab == "Properties"; quiet: true; clicked => { root.inspector-tab = "Properties"; root.inspector-open = true; } }
+                            Action { label: "Scopes"; hint: "Inspect Program brightness and chroma"; active: root.inspector-open && root.inspector-tab == "Scopes"; quiet: true; clicked => { root.command-invoked("view.scopes"); } }
                             Action { label: "History"; hint: "Edit history"; active: root.inspector-open && root.inspector-tab == "History"; quiet: true; clicked => { root.inspector-tab = "History"; root.inspector-open = true; } }
                             Action { label: "Jobs"; hint: "Autosave, media preparation, cache and exports"; active: root.inspector-open && root.inspector-tab == "Jobs"; quiet: true; clicked => { root.inspector-tab = "Jobs"; root.inspector-open = true; } }
                             Rectangle { vertical-stretch: 1; }

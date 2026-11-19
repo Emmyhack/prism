@@ -3,8 +3,11 @@
 // Slint's generated item tree uses internal unwraps and invariant panics. Keep
 // these exceptions scoped to generated adapter code; hand-written Studio code
 // retains the workspace's strict lint policy.
+mod audio_clock;
+mod audio_preview;
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod native_ui;
+mod stream_preview;
 mod view_preferences;
 
 fn main() {

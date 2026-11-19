@@ -1,5 +1,6 @@
 //! Native Slint adapter for the Prism desktop workspace.
 
+use crate::stream_preview::{StreamControl, StreamPreview};
 use crate::view_preferences::ViewPreferences;
 use prism_cache::{CacheError, CacheEvictionPolicy, CacheEvictionWorker, CacheLayout};
 use prism_commands::{Command, CommandEngine, UndoRecord};
@@ -494,6 +495,137 @@ fn aligned_av_commands(
         .collect()
 }
 
+fn aligned_av_companion_index(project: &Project, index: i32) -> Option<usize> {
+    let sequence = project.sequences.values().next()?;
+    let selected = usize::try_from(index).ok()?;
+    let (track, clip) = sequence
+        .tracks
+        .iter()
+        .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
+        .nth(selected)?;
+    let matches = sequence
+        .tracks
+        .iter()
+        .flat_map(|other| other.clips.iter().map(move |candidate| (other, candidate)))
+        .enumerate()
+        .filter(|(_, (other, candidate))| {
+            other.kind != track.kind
+                && candidate.media_id == clip.media_id
+                && candidate.timeline_start == clip.timeline_start
+                && candidate.source_start == clip.source_start
+                && candidate.source_duration == clip.source_duration
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then(|| matches[0])
+}
+
+fn move_selected_commands(
+    project: &Project,
+    index: i32,
+    timeline_start: RationalTime,
+) -> Result<Vec<Command>, String> {
+    if aligned_av_companion_index(project, index).is_some() {
+        return aligned_av_commands(project, index, "timeline.move_av", timeline_start);
+    }
+    let sequence = project
+        .sequences
+        .values()
+        .next()
+        .ok_or_else(|| "No sequence available".to_owned())?;
+    let (track, clip) = sequence
+        .tracks
+        .iter()
+        .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
+        .nth(usize::try_from(index).map_err(|_| "Select a clip first".to_owned())?)
+        .ok_or_else(|| "Selected clip unavailable".to_owned())?;
+    Ok(vec![Command::MoveClip {
+        sequence_id: sequence.id,
+        track_id: track.id,
+        clip_id: clip.id,
+        timeline_start,
+    }])
+}
+
+fn duplicate_selected_commands(project: &Project, index: i32) -> Result<Vec<Command>, String> {
+    let sequence = project
+        .sequences
+        .values()
+        .next()
+        .ok_or_else(|| "No sequence available".to_owned())?;
+    let selected = usize::try_from(index).map_err(|_| "Select a clip first".to_owned())?;
+    let clips = sequence
+        .tracks
+        .iter()
+        .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
+        .collect::<Vec<_>>();
+    let (track, clip) = clips
+        .get(selected)
+        .copied()
+        .ok_or_else(|| "Selected clip is unavailable".to_owned())?;
+    let companion = aligned_av_companion_index(project, index);
+    let timeline_start = if companion.is_some() {
+        sequence.duration().map_err(|error| error.to_string())?
+    } else {
+        track
+            .clips
+            .iter()
+            .filter_map(|clip| clip.timeline_start.checked_add(clip.source_duration).ok())
+            .max()
+            .unwrap_or(RationalTime::ZERO)
+    };
+    let mut targets = vec![(track, clip)];
+    if let Some(companion) = companion {
+        targets.push(clips[companion]);
+    }
+    Ok(targets
+        .into_iter()
+        .map(|(track, clip)| Command::DuplicateClip {
+            sequence_id: sequence.id,
+            track_id: track.id,
+            clip_id: clip.id,
+            new_clip_id: ClipId::new(),
+            timeline_start,
+        })
+        .collect())
+}
+
+fn slip_selected_commands(
+    project: &Project,
+    index: i32,
+    source_delta: RationalTime,
+) -> Result<Vec<Command>, String> {
+    let sequence = project
+        .sequences
+        .values()
+        .next()
+        .ok_or_else(|| "No sequence available".to_owned())?;
+    let selected = usize::try_from(index).map_err(|_| "Select a clip first".to_owned())?;
+    let clips = sequence
+        .tracks
+        .iter()
+        .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
+        .collect::<Vec<_>>();
+    let (track, clip) = clips
+        .get(selected)
+        .copied()
+        .ok_or_else(|| "Selected clip unavailable".to_owned())?;
+    let mut targets = vec![(track.id, clip.id)];
+    if let Some(companion) = aligned_av_companion_index(project, index) {
+        let (track, clip) = clips[companion];
+        targets.push((track.id, clip.id));
+    }
+    Ok(targets
+        .into_iter()
+        .map(|(track_id, clip_id)| Command::SlipClip {
+            sequence_id: sequence.id,
+            track_id,
+            clip_id,
+            source_delta,
+        })
+        .collect())
+}
+
 fn append_source_commands(
     project: &Project,
     media_id: MediaAssetId,
@@ -544,6 +676,16 @@ fn append_source_commands(
         });
     }
     Ok(commands)
+}
+
+fn media_usage(project: &Project) -> BTreeMap<MediaAssetId, usize> {
+    let mut counts = BTreeMap::new();
+    if let Some(sequence) = project.sequences.values().next() {
+        for clip in sequence.tracks.iter().flat_map(|track| &track.clips) {
+            *counts.entry(clip.media_id).or_default() += 1;
+        }
+    }
+    counts
 }
 
 fn media_stream_summary(
@@ -771,6 +913,9 @@ fn capture_view(ui: &PrismStudio) -> ViewPreferences {
         snapping: ui.get_snap_enabled(),
         guides: ui.get_show_safe_guides(),
         media_sort: ui.get_media_sort(),
+        media_filter: ui.get_media_filter(),
+        scope_mode: ui.get_program_scope_mode(),
+        monitor_scope: ui.get_show_monitor_scope(),
         ..Default::default()
     }
 }
@@ -793,6 +938,9 @@ fn apply_view(ui: &PrismStudio, view: &ViewPreferences) {
     ui.set_snap_enabled(view.snapping);
     ui.set_show_safe_guides(view.guides);
     ui.set_media_sort(view.media_sort);
+    ui.set_media_filter(view.media_filter);
+    ui.set_program_scope_mode(view.scope_mode);
+    ui.set_show_monitor_scope(view.monitor_scope);
     ui.set_precision_open(false);
     ui.set_media_tools_open(false);
     ui.set_timeline_zoom(1.0);
@@ -995,6 +1143,13 @@ fn launcher_actions(ui: &PrismStudio) -> Vec<CommandItem> {
             ui.get_source_ready(),
         ),
         (
+            "media.find_timeline",
+            "Find source in timeline",
+            "Cycle through clips that use the selected source",
+            "",
+            ui.get_selected_media_uses() > 0,
+        ),
+        (
             "media.relink_source",
             "Relink selected source…",
             "Repair the location of source media",
@@ -1019,6 +1174,13 @@ fn launcher_actions(ui: &PrismStudio) -> Vec<CommandItem> {
             "view.history",
             "Show edit history",
             "Inspect undoable session actions",
+            "",
+            true,
+        ),
+        (
+            "view.scopes",
+            "Show color scopes",
+            "Inspect the decoded Program frame histogram, waveform and chroma",
             "",
             true,
         ),
@@ -1210,6 +1372,8 @@ struct PreviewRequest {
     path: PathBuf,
     time: RationalTime,
     cache_root: Option<PathBuf>,
+    playback: bool,
+    cancelled: Arc<AtomicBool>,
 }
 
 type PreviewPayload = (
@@ -1227,6 +1391,8 @@ struct PreviewWorker {
     pending: RefCell<Option<PreviewRequest>>,
     generation: Cell<u64>,
     busy: Cell<bool>,
+    requested_at: Cell<Option<Instant>>,
+    stream_control: StreamControl,
 }
 
 #[derive(Debug)]
@@ -1237,18 +1403,34 @@ struct ProxyGeneration {
     source_fingerprint: ProxySourceFingerprint,
 }
 
+impl Drop for PreviewWorker {
+    fn drop(&mut self) {
+        self.stream_control.stop();
+    }
+}
+
 impl PreviewWorker {
     fn new() -> Self {
         Self::with_thumbnails(false)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn with_thumbnails(thumbnails: bool) -> Self {
         let (sender, requests) = mpsc::sync_channel::<PreviewRequest>(1);
         let (replies, receiver) = mpsc::sync_channel(1);
+        let stream_control = StreamControl::default();
+        let decode_control = stream_control.clone();
         std::thread::spawn(move || {
+            let mut stream: Option<StreamPreview> = None;
             while let Ok(mut request) = requests.recv() {
                 while let Ok(newer) = requests.try_recv() {
                     request = newer;
+                }
+                if request.cancelled.load(Ordering::Acquire) {
+                    continue;
+                }
+                if !request.playback {
+                    stream.take();
                 }
                 let source_fingerprint = thumbnails
                     .then(|| fingerprint(&request.path).ok())
@@ -1286,25 +1468,55 @@ impl PreviewWorker {
                 };
                 let result = if let Some(frame) = cached {
                     Ok((frame, RationalTime::ZERO, source_fingerprint, true))
-                } else {
-                    decode_preview(&request.path, request.time).and_then(|(frame, duration)| {
-                        if thumbnails {
-                            let longest = u64::from(frame.width.max(frame.height)).max(1);
-                            let width = u32::try_from(u64::from(frame.width) * 160 / longest)
-                                .unwrap_or(1)
-                                .max(1);
-                            let height = u32::try_from(u64::from(frame.height) * 160 / longest)
-                                .unwrap_or(1)
-                                .max(1);
-                            frame
-                                .thumbnail(width, height)
-                                .map(|frame| (frame, duration, source_fingerprint, false))
-                                .map_err(|e| e.to_string())
-                        } else {
-                            Ok((frame, duration, None, false))
+                } else if request.playback {
+                    (|| {
+                        if !decode_control.active() {
+                            return Err("Video playback stopped".to_owned());
                         }
-                    })
+                        if !stream
+                            .as_ref()
+                            .is_some_and(|stream| stream.reusable(&request.path, request.time))
+                        {
+                            stream.take();
+                            stream = Some(StreamPreview::open(
+                                &request.path,
+                                request.time,
+                                &media_tool("ffmpeg"),
+                                &media_tool("ffprobe"),
+                                decode_control.clone(),
+                                &request.cancelled,
+                            )?);
+                        }
+                        let (frame, duration) = stream
+                            .as_mut()
+                            .ok_or("Video decoder unavailable")?
+                            .frame(request.time)?;
+                        Ok((frame, duration, None, false))
+                    })()
+                } else {
+                    decode_preview(&request.path, request.time, &request.cancelled).and_then(
+                        |(frame, duration)| {
+                            if thumbnails {
+                                let longest = u64::from(frame.width.max(frame.height)).max(1);
+                                let width = u32::try_from(u64::from(frame.width) * 160 / longest)
+                                    .unwrap_or(1)
+                                    .max(1);
+                                let height = u32::try_from(u64::from(frame.height) * 160 / longest)
+                                    .unwrap_or(1)
+                                    .max(1);
+                                frame
+                                    .thumbnail(width, height)
+                                    .map(|frame| (frame, duration, source_fingerprint, false))
+                                    .map_err(|e| e.to_string())
+                            } else {
+                                Ok((frame, duration, None, false))
+                            }
+                        },
+                    )
                 };
+                if request.playback && result.is_err() {
+                    stream.take();
+                }
                 if replies.send((request.generation, result)).is_err() {
                     break;
                 }
@@ -1316,11 +1528,15 @@ impl PreviewWorker {
             pending: RefCell::new(None),
             generation: Cell::new(0),
             busy: Cell::new(false),
+            requested_at: Cell::new(None),
+            stream_control,
         }
     }
 
     fn invalidate(&self) {
+        self.stream_control.stop();
         self.busy.set(false);
+        self.requested_at.set(None);
         self.generation.set(self.generation.get().wrapping_add(1));
         *self.pending.borrow_mut() = None;
     }
@@ -1328,11 +1544,14 @@ impl PreviewWorker {
     fn request(&self, path: PathBuf, time: RationalTime) {
         self.invalidate();
         self.busy.set(true);
+        self.requested_at.set(Some(Instant::now()));
         *self.pending.borrow_mut() = Some(PreviewRequest {
             generation: self.generation.get(),
             path,
             time,
             cache_root: None,
+            playback: false,
+            cancelled: self.stream_control.request_token(),
         });
         self.flush();
     }
@@ -1340,18 +1559,33 @@ impl PreviewWorker {
     // Playback must let the active decode finish. Scrubbing still supersedes it.
     fn request_playback(&self, path: PathBuf, time: RationalTime) {
         if !self.busy.get() {
-            self.request(path, time);
+            self.stream_control.activate();
+            self.generation.set(self.generation.get().wrapping_add(1));
+            self.busy.set(true);
+            self.requested_at.set(Some(Instant::now()));
+            *self.pending.borrow_mut() = Some(PreviewRequest {
+                generation: self.generation.get(),
+                path,
+                time,
+                cache_root: None,
+                playback: true,
+                cancelled: self.stream_control.request_token(),
+            });
+            self.flush();
         }
     }
 
     fn request_thumbnail(&self, path: PathBuf, cache_root: Option<PathBuf>) {
         self.invalidate();
         self.busy.set(true);
+        self.requested_at.set(Some(Instant::now()));
         *self.pending.borrow_mut() = Some(PreviewRequest {
             generation: self.generation.get(),
             path,
             time: RationalTime::ZERO,
             cache_root,
+            playback: false,
+            cancelled: self.stream_control.request_token(),
         });
         self.flush();
     }
@@ -1363,6 +1597,14 @@ impl PreviewWorker {
         {
             *self.pending.borrow_mut() = Some(request);
         }
+    }
+
+    fn timed_out(&self, deadline: Duration) -> bool {
+        self.busy.get()
+            && self
+                .requested_at
+                .get()
+                .is_some_and(|started| started.elapsed() > deadline)
     }
 
     fn poll(&self) -> Option<Result<(slint::Image, RationalTime), String>> {
@@ -1384,6 +1626,7 @@ impl PreviewWorker {
         while let Ok((generation, frame)) = self.receiver.try_recv() {
             if generation == self.generation.get() {
                 self.busy.set(false);
+                self.requested_at.set(None);
                 result = Some(frame);
             }
         }
@@ -1394,9 +1637,16 @@ impl PreviewWorker {
 fn decode_preview(
     path: &Path,
     time: RationalTime,
+    cancelled: &AtomicBool,
 ) -> Result<(prism_media::DecodedVideoFrame, RationalTime), String> {
     let metadata = FfprobeInspector::new(media_tool("ffprobe"))
-        .inspect(path)
+        .inspect_with_control(
+            path,
+            prism_media::MediaProcessControl {
+                timeout: Duration::from_secs(5),
+                cancelled,
+            },
+        )
         .map_err(|e| e.to_string())?;
     let video = metadata
         .streams
@@ -1410,7 +1660,17 @@ fn decode_preview(
         return Err("Video dimensions unavailable".to_owned());
     };
     let frame = FfmpegReferenceDecoder::new(media_tool("ffmpeg"))
-        .decode_video_frame_rgba(path, 0, time, width, height)
+        .decode_video_frame_rgba_with_control(
+            path,
+            0,
+            time,
+            width,
+            height,
+            prism_media::MediaProcessControl {
+                timeout: Duration::from_secs(5),
+                cancelled,
+            },
+        )
         .map_err(|e| e.to_string())?;
     Ok((frame, metadata.duration.unwrap_or(RationalTime::ZERO)))
 }
@@ -1490,6 +1750,9 @@ struct NativeExportRuntime {
     playback_started: Cell<Option<Instant>>,
     playback_origin: Cell<RationalTime>,
     audio_process: RefCell<Option<Child>>,
+    audio_decoder: RefCell<Option<Child>>,
+    audio_end: Cell<RationalTime>,
+    audio_clock: RefCell<Option<crate::audio_clock::AudioClock>>,
     audio_clip: Cell<Option<ClipId>>,
     source_position: Cell<RationalTime>,
     source_duration: Cell<RationalTime>,
@@ -1503,7 +1766,7 @@ struct NativeExportRuntime {
     thumbnail_total: Cell<usize>,
     thumbnail_completed: Cell<usize>,
     thumbnail_failed: Cell<usize>,
-    waveform_worker: WaveformWorker,
+    waveform_worker: RefCell<WaveformWorker>,
     waveform_total: Cell<usize>,
     waveform_completed: Cell<usize>,
     waveform_failed: Cell<usize>,
@@ -1522,6 +1785,7 @@ struct NativeExportRuntime {
 
 impl Drop for NativeExportRuntime {
     fn drop(&mut self) {
+        self.waveform_worker.borrow().cancel();
         if let Some(worker) = self.worker.get_mut().as_ref() {
             worker.cancel();
         }
@@ -1529,6 +1793,10 @@ impl Drop for NativeExportRuntime {
             generation.cancelled.store(true, Ordering::Release);
         }
         if let Some(mut child) = self.audio_process.get_mut().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(mut child) = self.audio_decoder.get_mut().take() {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -1550,6 +1818,9 @@ impl NativeExportRuntime {
             playback_started: Cell::new(None),
             playback_origin: Cell::new(RationalTime::ZERO),
             audio_process: RefCell::new(None),
+            audio_decoder: RefCell::new(None),
+            audio_end: Cell::new(RationalTime::ZERO),
+            audio_clock: RefCell::new(None),
             audio_clip: Cell::new(None),
             source_position: Cell::new(RationalTime::ZERO),
             source_duration: Cell::new(RationalTime::ZERO),
@@ -1563,7 +1834,7 @@ impl NativeExportRuntime {
             thumbnail_total: Cell::new(0),
             thumbnail_completed: Cell::new(0),
             thumbnail_failed: Cell::new(0),
-            waveform_worker: WaveformWorker::spawn(media_tool("ffmpeg"), 64),
+            waveform_worker: RefCell::new(WaveformWorker::spawn(media_tool("ffmpeg"), 64)),
             waveform_total: Cell::new(0),
             waveform_completed: Cell::new(0),
             waveform_failed: Cell::new(0),
@@ -1589,13 +1860,14 @@ impl NativeExportRuntime {
                 ui.set_browser_tab("Markers".into());
                 Ok(())
             }
-            "view.properties" | "view.source" | "view.history" | "view.jobs" => {
+            "view.properties" | "view.source" | "view.history" | "view.jobs" | "view.scopes" => {
                 ui.set_active_workspace("EDIT".into());
                 ui.set_inspector_open(true);
                 ui.set_inspector_tab(
                     match command {
                         "view.history" => "History",
                         "view.jobs" => "Jobs",
+                        "view.scopes" => "Scopes",
                         _ => "Properties",
                     }
                     .into(),
@@ -1631,6 +1903,7 @@ impl NativeExportRuntime {
             }
             "timeline.rename_marker" => self.rename_marker(ui),
             "project.new" => self.new_project(ui),
+            "media.find_timeline" => self.find_media_in_timeline(ui),
             "project.save" => self.save(ui),
             "project.save_as" => self.save_as(ui),
             "edit.undo" | "edit.redo" => self.apply_history(ui, command == "edit.redo"),
@@ -1712,7 +1985,7 @@ impl NativeExportRuntime {
             | "timeline.move_av"
             | "timeline.trim_av" => self.edit_aligned_av(command, ui),
             "timeline.split" | "timeline.delete" | "timeline.ripple_delete" => {
-                self.edit_clip(command, ui)
+                self.edit_clip_or_aligned(command, ui)
             }
             "timeline.add_marker" => self.add_marker(ui),
             "timeline.delete_marker" => self.delete_marker(ui),
@@ -1740,10 +2013,17 @@ impl NativeExportRuntime {
                     self.playback_origin.set(self.playhead.get());
                     self.playback_started.set(Some(Instant::now()));
                     if let Err(error) = self.start_audio_playback() {
+                        self.stop_playback(ui);
                         ui.set_feedback(error.into());
                     }
+                    ui.set_playback_buffering(
+                        self.playing.get() && self.audio_clock.borrow().is_some(),
+                    );
                 } else {
+                    let retain_picture = ui.get_has_program_frame();
                     self.stop_playback(ui);
+                    self.seek_time(ui, self.playhead.get());
+                    ui.set_has_program_frame(retain_picture);
                 }
                 Ok(())
             }
@@ -2418,6 +2698,53 @@ impl NativeExportRuntime {
         Ok(())
     }
 
+    fn find_media_in_timeline(&self, ui: &PrismStudio) -> Result<(), String> {
+        let target = {
+            let project = self.project.borrow();
+            let project = project.as_ref().ok_or("Open a project first")?;
+            let media_id = project
+                .media
+                .keys()
+                .nth(
+                    usize::try_from(ui.get_selected_media_index())
+                        .map_err(|_| "Select source footage first")?,
+                )
+                .ok_or("Selected media is no longer available")?;
+            let sequence = project
+                .sequences
+                .values()
+                .next()
+                .ok_or("No sequence available")?;
+            let uses = sequence
+                .tracks
+                .iter()
+                .flat_map(|track| &track.clips)
+                .enumerate()
+                .filter(|(_, clip)| clip.media_id == *media_id)
+                .map(|(index, clip)| (index, clip.timeline_start))
+                .collect::<Vec<_>>();
+            uses.iter()
+                .find(|(index, _)| {
+                    i32::try_from(*index).is_ok_and(|index| index > ui.get_selected_clip_index())
+                })
+                .or_else(|| uses.first())
+                .copied()
+                .ok_or("This source is not used in the active sequence")?
+        };
+        self.stop_playback(ui);
+        self.select_clip(
+            ui,
+            i32::try_from(target.0).map_err(|error| error.to_string())?,
+        );
+        self.seek_time(ui, target.1);
+        ui.set_active_workspace("EDIT".into());
+        ui.set_inspector_open(true);
+        ui.set_inspector_tab("Properties".into());
+        ui.set_inspector_section("Clip".into());
+        ui.set_feedback("Located source usage · choose Find again for the next occurrence".into());
+        Ok(())
+    }
+
     fn select_media(&self, ui: &PrismStudio, index: i32) {
         let project = self.project.borrow();
         let Some(project) = project.as_ref() else {
@@ -2431,6 +2758,9 @@ impl NativeExportRuntime {
         };
         self.proxy_availability.borrow_mut().remove(&asset.id);
         ui.set_selected_media_index(index);
+        ui.set_selected_media_uses(
+            i32::try_from(*media_usage(project).get(&asset.id).unwrap_or(&0)).unwrap_or(i32::MAX),
+        );
         ui.set_selected_media(
             Path::new(&asset.source_path)
                 .file_name()
@@ -2522,24 +2852,42 @@ impl NativeExportRuntime {
         let index = i32::try_from(media_index).map_err(|error| error.to_string())?;
         self.stop_playback(ui);
         self.select_media(ui, index);
-        let asset = self
+        let source = self
             .project
             .borrow()
             .as_ref()
-            .and_then(|project| project.media.values().nth(media_index).cloned())
+            .and_then(|project| {
+                let asset = project.media.values().nth(media_index).cloned()?;
+                let (has_video, _, _) = media_stream_summary(project, asset.id);
+                Some((asset, has_video))
+            })
             .ok_or_else(|| "Selected source is no longer available".to_owned())?;
-        let path = if self.use_proxy.get() && self.proxy_is_available(&asset) {
-            asset.proxy_path.as_deref().unwrap_or(&asset.source_path)
-        } else {
-            &asset.source_path
-        };
+        let (asset, has_video) = source;
         self.source_position.set(time);
         self.update_source_labels(ui);
-        self.source_preview.request(PathBuf::from(path), time);
+        if has_video {
+            let path = if self.use_proxy.get() && self.proxy_is_available(&asset) {
+                asset.proxy_path.as_deref().unwrap_or(&asset.source_path)
+            } else {
+                &asset.source_path
+            };
+            self.source_preview.request(PathBuf::from(path), time);
+        }
         ui.set_inspector_open(true);
         ui.set_inspector_tab("Properties".into());
         ui.set_inspector_section("Source".into());
-        ui.set_feedback(format!("Matched source frame at {}", display_timecode(time)).into());
+        ui.set_feedback(
+            format!(
+                "Matched {} at {}",
+                if has_video {
+                    "source frame"
+                } else {
+                    "audio source"
+                },
+                display_timecode(time)
+            )
+            .into(),
+        );
         Ok(())
     }
 
@@ -2675,54 +3023,79 @@ impl NativeExportRuntime {
             let _ = child.kill();
             let _ = child.wait();
         }
+        if let Some(mut child) = self.audio_decoder.borrow_mut().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.audio_end.set(RationalTime::ZERO);
+        self.audio_clock.borrow_mut().take();
     }
 
     fn stop_playback(&self, ui: &PrismStudio) {
+        self.program_preview.invalidate();
         self.playing.set(false);
         self.playback_started.set(None);
         self.stop_audio_preview();
         ui.set_playing(false);
+        ui.set_playback_buffering(false);
     }
 
     fn start_audio_playback(&self) -> Result<(), String> {
         self.stop_audio_preview();
-        let segment = self
+        let plan = self
             .project
             .borrow()
             .as_ref()
-            .and_then(|project| audio_preview_segment(project, self.playhead.get()));
-        let Some(segment) = segment else {
+            .map(|project| crate::audio_preview::plan(project, self.playhead.get()))
+            .transpose()?
+            .flatten();
+        let Some(plan) = plan else {
             return Ok(());
         };
-        // Remember failed segments too, so a missing player does not spawn every tick.
-        self.audio_clip.set(Some(segment.clip_id));
-        let child = ProcessCommand::new(media_tool("ffplay"))
-            .args(["-nodisp", "-autoexit", "-loglevel", "quiet", "-ss"])
-            .arg(format!("{:.6}", segment.source_time.as_seconds_f64()))
-            .arg("-t")
-            .arg(format!("{:.6}", segment.remaining.as_seconds_f64()))
-            .arg("-i")
-            .arg(segment.path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("Audio preview unavailable: {error}"))?;
-        *self.audio_process.borrow_mut() = Some(child);
+        let end = self
+            .playhead
+            .get()
+            .checked_add(plan.duration)
+            .map_err(|error| error.to_string())?;
+        let (decoder, player, clock) =
+            crate::audio_preview::start(&plan, &media_tool("ffmpeg"), &media_tool("ffplay"))?;
+        self.audio_end.set(end);
+        *self.audio_clock.borrow_mut() = Some(clock);
+        *self.audio_decoder.borrow_mut() = Some(decoder);
+        *self.audio_process.borrow_mut() = Some(player);
         Ok(())
     }
 
     fn follow_audio_timeline(&self, ui: &PrismStudio) {
-        let desired = self
-            .project
-            .borrow()
-            .as_ref()
-            .and_then(|project| audio_preview_segment(project, self.playhead.get()))
-            .map(|segment| segment.clip_id);
-        if desired != self.audio_clip.get()
-            && let Err(error) = self.start_audio_playback()
-        {
-            ui.set_feedback(error.into());
+        // The decoder/player pair stays alive across cuts and silence gaps.
+        self.audio_clip.set(
+            self.project
+                .borrow()
+                .as_ref()
+                .and_then(|project| audio_preview_segment(project, self.playhead.get()))
+                .map(|segment| segment.clip_id),
+        );
+        let exited = self
+            .audio_process
+            .borrow_mut()
+            .as_mut()
+            .and_then(|child| child.try_wait().ok().flatten());
+        let remaining = self
+            .audio_end
+            .get()
+            .checked_sub(self.playhead.get())
+            .unwrap_or(RationalTime::ZERO);
+        if let Some(status) = exited {
+            let completed = status.success() && remaining.as_seconds_f64() <= 0.25;
+            let end = self.audio_end.get();
+            self.stop_playback(ui);
+            if completed {
+                self.seek_time(ui, end);
+            } else {
+                ui.set_feedback(
+                    "Audio preview stopped early · check source audio and playback device".into(),
+                );
+            }
         }
     }
 
@@ -2976,18 +3349,20 @@ impl NativeExportRuntime {
             .ok_or_else(|| "Save a project first".to_owned())?;
         // Publish to the UI only after the validated edit has been saved successfully.
         prism_persistence::save_atomic(&updated, &path).map_err(|e| e.to_string())?;
-        let audio_changed = self
-            .project
-            .borrow()
-            .as_ref()
-            .and_then(|project| audio_preview_segment(project, self.playhead.get()))
-            != audio_preview_segment(&updated, self.playhead.get());
+        let audio_changed = self.project.borrow().as_ref().and_then(|project| {
+            crate::audio_preview::plan(project, self.playhead.get())
+                .ok()
+                .flatten()
+        }) != crate::audio_preview::plan(&updated, self.playhead.get())
+            .ok()
+            .flatten();
         if self.playing.get() && audio_changed {
             self.stop_playback(ui);
         }
         apply_project_summary(ui, &updated, &path);
         self.refresh_timeline_waveforms(ui);
         *self.project.borrow_mut() = Some(updated);
+        self.filter_cards(ui);
         if let Some(project) = self.project.borrow().as_ref() {
             self.queue_autosave(ui, project);
         }
@@ -3163,6 +3538,22 @@ impl NativeExportRuntime {
         Ok(())
     }
 
+    fn edit_clip_or_aligned(&self, command: &str, ui: &PrismStudio) -> Result<(), String> {
+        let paired = self.project.borrow().as_ref().is_some_and(|project| {
+            aligned_av_companion_index(project, ui.get_selected_clip_index()).is_some()
+        });
+        if paired {
+            let aligned = match command {
+                "timeline.split" => "timeline.split_av",
+                "timeline.ripple_delete" => "timeline.ripple_delete_av",
+                _ => "timeline.delete_av",
+            };
+            self.edit_aligned_av(aligned, ui)
+        } else {
+            self.edit_clip(command, ui)
+        }
+    }
+
     fn add_marker(&self, ui: &PrismStudio) -> Result<(), String> {
         let (sequence_id, marker_number) = self
             .project
@@ -3305,35 +3696,14 @@ impl NativeExportRuntime {
     }
 
     fn duplicate_clip(&self, ui: &PrismStudio) -> Result<(), String> {
-        let selected = usize::try_from(ui.get_selected_clip_index())
-            .map_err(|_| "Select a clip first".to_owned())?;
-        let operation = {
+        let operations = {
             let project = self.project.borrow();
-            let sequence = project
+            let project = project
                 .as_ref()
-                .and_then(|project| project.sequences.values().next())
-                .ok_or_else(|| "No sequence available".to_owned())?;
-            let (track, clip) = sequence
-                .tracks
-                .iter()
-                .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
-                .nth(selected)
-                .ok_or_else(|| "Selected clip is unavailable".to_owned())?;
-            let timeline_start = track
-                .clips
-                .iter()
-                .filter_map(|clip| clip.timeline_start.checked_add(clip.source_duration).ok())
-                .max()
-                .unwrap_or(RationalTime::ZERO);
-            Command::DuplicateClip {
-                sequence_id: sequence.id,
-                track_id: track.id,
-                clip_id: clip.id,
-                new_clip_id: ClipId::new(),
-                timeline_start,
-            }
+                .ok_or_else(|| "Open a project first".to_owned())?;
+            duplicate_selected_commands(project, ui.get_selected_clip_index())?
         };
-        self.commit(ui, operation, "Duplicate clip to track end")
+        self.commit_commands(ui, operations, "Duplicate clip to track end")
     }
 
     fn change_track(&self, ui: &PrismStudio, index: i32, action: &str) -> Result<(), String> {
@@ -3442,6 +3812,7 @@ impl NativeExportRuntime {
                     .ok()
                     .filter(std::fs::Metadata::is_file);
                 MediaCard {
+                    uses: 0,
                     offline: metadata.is_none(),
                     file_size: metadata
                         .as_ref()
@@ -3484,12 +3855,63 @@ impl NativeExportRuntime {
 
     fn filter_cards(&self, ui: &PrismStudio) {
         let query = ui.get_search().to_lowercase();
+        let usage = self
+            .project
+            .borrow()
+            .as_ref()
+            .map(|project| {
+                let counts = media_usage(project);
+                project
+                    .media
+                    .keys()
+                    .enumerate()
+                    .map(|(index, id)| {
+                        (
+                            i32::try_from(index).unwrap_or(i32::MAX),
+                            i32::try_from(*counts.get(id).unwrap_or(&0)).unwrap_or(i32::MAX),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let paths = self
+            .project
+            .borrow()
+            .as_ref()
+            .map(|project| {
+                project
+                    .media
+                    .values()
+                    .enumerate()
+                    .map(|(index, asset)| {
+                        (
+                            i32::try_from(index).unwrap_or(i32::MAX),
+                            asset.source_path.clone(),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            })
+            .unwrap_or_default();
+        ui.set_selected_media_uses(*usage.get(&ui.get_selected_media_index()).unwrap_or(&0));
         let mut cards = self
             .cards
             .borrow()
             .iter()
             .filter(|item| item.name.to_lowercase().contains(&query))
             .cloned()
+            .map(|mut item| {
+                item.uses = *usage.get(&item.index).unwrap_or(&0);
+                if let Some(path) = paths.get(&item.index) {
+                    item.offline = !Path::new(path).is_file();
+                }
+                item
+            })
+            .filter(|item| match ui.get_media_filter() {
+                1 => item.uses > 0,
+                2 => item.uses == 0,
+                3 => item.offline,
+                _ => true,
+            })
             .collect::<Vec<_>>();
         if ui.get_media_sort() != 0 {
             cards.sort_by_cached_key(|item| (item.name.to_lowercase(), item.index));
@@ -3510,7 +3932,7 @@ impl NativeExportRuntime {
             .borrow()
             .as_ref()
             .map_or(0, MediaArtifactWorker::pending_writes);
-        let pending_waveforms = self.waveform_worker.pending();
+        let pending_waveforms = self.waveform_worker.borrow().pending();
         let pending = pending_decode
             .saturating_add(pending_writes)
             .saturating_add(pending_waveforms);
@@ -3568,6 +3990,8 @@ impl NativeExportRuntime {
     }
 
     fn reset_waveforms(&self, ui: &PrismStudio) {
+        self.waveform_worker
+            .replace(WaveformWorker::spawn(media_tool("ffmpeg"), 64));
         self.waveform_total.set(0);
         self.waveform_completed.set(0);
         self.waveform_failed.set(0);
@@ -3619,7 +4043,7 @@ impl NativeExportRuntime {
             .unwrap_or_default();
         self.waveform_total.set(requests.len());
         for request in requests {
-            if let Err(error) = self.waveform_worker.try_submit(request) {
+            if let Err(error) = self.waveform_worker.borrow().try_submit(request) {
                 self.waveform_failed
                     .set(self.waveform_failed.get().saturating_add(1));
                 ui.set_feedback(format!("Could not queue audio waveform: {error}").into());
@@ -3697,9 +4121,20 @@ impl NativeExportRuntime {
             return Err(error.to_string());
         }
         to.borrow_mut().push(inverse);
+        let audio_changed = self.project.borrow().as_ref().and_then(|project| {
+            crate::audio_preview::plan(project, self.playhead.get())
+                .ok()
+                .flatten()
+        }) != crate::audio_preview::plan(&updated, self.playhead.get())
+            .ok()
+            .flatten();
+        if self.playing.get() && audio_changed {
+            self.stop_playback(ui);
+        }
         apply_project_summary(ui, &updated, &path);
         self.refresh_timeline_waveforms(ui);
         *self.project.borrow_mut() = Some(updated);
+        self.filter_cards(ui);
         if let Some(project) = self.project.borrow().as_ref() {
             self.queue_autosave(ui, project);
         }
@@ -3724,8 +4159,20 @@ impl NativeExportRuntime {
         Ok(())
     }
 
+    fn update_companion_selection(ui: &PrismStudio, project: Option<&Project>) {
+        ui.set_selected_companion_index(
+            project
+                .and_then(|project| {
+                    aligned_av_companion_index(project, ui.get_selected_clip_index())
+                })
+                .and_then(|index| i32::try_from(index).ok())
+                .unwrap_or(-1),
+        );
+    }
+
     fn update_inspector(&self, ui: &PrismStudio) {
         let project = self.project.borrow();
+        Self::update_companion_selection(ui, project.as_ref());
         let pair = project
             .as_ref()
             .ok_or_else(|| "Select a timeline clip".to_owned())
@@ -3830,7 +4277,7 @@ impl NativeExportRuntime {
         if !duration.is_positive() {
             return Err("Duration must be greater than zero".to_owned());
         }
-        let command = {
+        let commands = {
             let project = self.project.borrow();
             let project = project
                 .as_ref()
@@ -3866,16 +4313,27 @@ impl NativeExportRuntime {
             {
                 return Err("The requested trim exceeds the source duration".to_owned());
             }
-            Command::TrimClip {
-                sequence_id: sequence.id,
-                track_id: track.id,
-                clip_id: clip.id,
-                timeline_start: start,
-                source_start,
-                source_duration: duration,
+            if aligned_av_companion_index(project, ui.get_selected_clip_index()).is_some() {
+                aligned_av_range_commands(
+                    project,
+                    ui.get_selected_clip_index(),
+                    start,
+                    source_start,
+                    duration,
+                    available,
+                )?
+            } else {
+                vec![Command::TrimClip {
+                    sequence_id: sequence.id,
+                    track_id: track.id,
+                    clip_id: clip.id,
+                    timeline_start: start,
+                    source_start,
+                    source_duration: duration,
+                }]
             }
         };
-        self.commit(ui, command, "Change clip timing")
+        self.commit_commands(ui, commands, "Change clip timing")
     }
 
     fn adjust_clip_frame(&self, ui: &PrismStudio, operation: &str) -> Result<(), String> {
@@ -3894,29 +4352,14 @@ impl NativeExportRuntime {
             if timeline_start.is_negative() {
                 return Err("A clip cannot move before sequence start".to_owned());
             }
-            let command = {
+            let commands = {
                 let project = self.project.borrow();
-                let sequence = project
+                let project = project
                     .as_ref()
-                    .and_then(|project| project.sequences.values().next())
-                    .ok_or_else(|| "No sequence available".to_owned())?;
-                let (track, clip) = sequence
-                    .tracks
-                    .iter()
-                    .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
-                    .nth(
-                        usize::try_from(ui.get_selected_clip_index())
-                            .map_err(|_| "Select a clip first".to_owned())?,
-                    )
-                    .ok_or_else(|| "Selected clip unavailable".to_owned())?;
-                Command::MoveClip {
-                    sequence_id: sequence.id,
-                    track_id: track.id,
-                    clip_id: clip.id,
-                    timeline_start,
-                }
+                    .ok_or_else(|| "No project available".to_owned())?;
+                move_selected_commands(project, ui.get_selected_clip_index(), timeline_start)?
             };
-            return self.commit(ui, command, "Move clip one frame");
+            return self.commit_commands(ui, commands, "Move clip one frame");
         }
 
         let original_start = ui.get_clip_start();
@@ -4005,11 +4448,15 @@ impl NativeExportRuntime {
         operation: &str,
         delta: RationalTime,
     ) -> Result<(), String> {
-        let command = {
+        let commands = {
             let project = self.project.borrow();
-            let sequence = project
+            let project = project
                 .as_ref()
-                .and_then(|project| project.sequences.values().next())
+                .ok_or_else(|| "Open a project first".to_owned())?;
+            let sequence = project
+                .sequences
+                .values()
+                .next()
                 .ok_or_else(|| "No sequence available".to_owned())?;
             let selected = usize::try_from(ui.get_selected_clip_index())
                 .map_err(|_| "Select a clip first".to_owned())?;
@@ -4021,12 +4468,7 @@ impl NativeExportRuntime {
                 .ok_or_else(|| "Selected clip unavailable".to_owned())?;
             let clip = &track.clips[clip_index];
             match operation {
-                "slip" => Command::SlipClip {
-                    sequence_id: sequence.id,
-                    track_id: track.id,
-                    clip_id: clip.id,
-                    source_delta: delta,
-                },
+                "slip" => slip_selected_commands(project, ui.get_selected_clip_index(), delta)?,
                 "roll_in" => {
                     let previous = clip_index
                         .checked_sub(1)
@@ -4034,25 +4476,25 @@ impl NativeExportRuntime {
                         .ok_or_else(|| {
                             "Roll In requires an adjacent clip before this clip".to_owned()
                         })?;
-                    Command::RollEdit {
+                    vec![Command::RollEdit {
                         sequence_id: sequence.id,
                         track_id: track.id,
                         left_clip_id: previous.id,
                         right_clip_id: clip.id,
                         delta,
-                    }
+                    }]
                 }
                 "roll_out" => {
                     let next = track.clips.get(clip_index + 1).ok_or_else(|| {
                         "Roll Out requires an adjacent clip after this clip".to_owned()
                     })?;
-                    Command::RollEdit {
+                    vec![Command::RollEdit {
                         sequence_id: sequence.id,
                         track_id: track.id,
                         left_clip_id: clip.id,
                         right_clip_id: next.id,
                         delta,
-                    }
+                    }]
                 }
                 "slide" => {
                     let previous = clip_index
@@ -4063,14 +4505,14 @@ impl NativeExportRuntime {
                         .clips
                         .get(clip_index + 1)
                         .ok_or_else(|| "Slide requires clips on both sides".to_owned())?;
-                    Command::SlideEdit {
+                    vec![Command::SlideEdit {
                         sequence_id: sequence.id,
                         track_id: track.id,
                         previous_clip_id: previous.id,
                         clip_id: clip.id,
                         next_clip_id: next.id,
                         delta,
-                    }
+                    }]
                 }
                 _ => return Err("Unknown precision edit".to_owned()),
             }
@@ -4082,7 +4524,7 @@ impl NativeExportRuntime {
         } else {
             "Slide clip"
         };
-        self.commit(ui, command, label)
+        self.commit_commands(ui, commands, label)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -4455,17 +4897,41 @@ impl NativeExportRuntime {
         }
         if self.playing.get() {
             if let Some(started) = self.playback_started.get() {
-                let elapsed = started.elapsed();
-                let milliseconds = i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX);
-                if let Ok(delta) = RationalTime::new(milliseconds, 1_000) {
+                let observed = self
+                    .audio_clock
+                    .borrow()
+                    .as_ref()
+                    .map(crate::audio_clock::AudioClock::position);
+                ui.set_playback_buffering(observed == Some(None));
+                let delta = match observed {
+                    Some(position) => position,
+                    None => RationalTime::new(
+                        i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX),
+                        1000,
+                    )
+                    .ok(),
+                };
+                if let Some(delta) = delta {
                     if let Ok(target) = self.playback_origin.get().checked_add(delta) {
                         self.seek_time(ui, target);
                         if ui.get_playhead_ratio() >= 1.0 {
                             self.stop_playback(ui);
-                        } else {
-                            self.follow_audio_timeline(ui);
                         }
                     }
+                } else if started.elapsed() > Duration::from_secs(5) {
+                    self.stop_playback(ui);
+                    ui.set_feedback("Audio playback clock unavailable · playback stopped".into());
+                }
+                let stalled = self
+                    .audio_clock
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(crate::audio_clock::AudioClock::stalled);
+                if self.playing.get() && stalled {
+                    self.stop_playback(ui);
+                    ui.set_feedback("Audio playback clock stalled · playback stopped".into());
+                } else if self.playing.get() {
+                    self.follow_audio_timeline(ui);
                 }
             }
         }
@@ -4493,7 +4959,7 @@ impl NativeExportRuntime {
         }
         let mut waveform_changed = false;
         loop {
-            match self.waveform_worker.try_result() {
+            match self.waveform_worker.borrow().try_result() {
                 Ok(Ok(result)) => {
                     waveform_changed = true;
                     self.waveforms.borrow_mut().insert(
@@ -4513,7 +4979,7 @@ impl NativeExportRuntime {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    if self.waveform_worker.pending() > 0 {
+                    if self.waveform_worker.borrow().pending() > 0 {
                         ui.set_feedback("Audio waveform worker stopped unexpectedly".into());
                     }
                     break;
@@ -4607,6 +5073,7 @@ impl NativeExportRuntime {
                     ui.set_preview_status("Frame ready".into());
                 }
                 Err(error) => {
+                    self.stop_playback(ui);
                     ui.set_has_program_frame(false);
                     ui.set_program_luma_scope(slint::ModelRc::new(slint::VecModel::from(
                         Vec::<f32>::new(),
@@ -4624,6 +5091,13 @@ impl NativeExportRuntime {
                     ui.set_feedback(error.into());
                 }
             }
+        }
+        if self.playing.get() && self.program_preview.timed_out(Duration::from_secs(5)) {
+            self.stop_playback(ui);
+            ui.set_preview_status("Video decoder timed out · playback stopped".into());
+            ui.set_feedback(
+                "Video decoder did not produce a frame within 5 seconds · playback stopped".into(),
+            );
         }
         if let Some(frame) = self.source_preview.poll() {
             match frame {
@@ -5238,6 +5712,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    #[ignore = "requires PRISM_FFMPEG, PRISM_FFPROBE, and the generated media fixture"]
     fn real_video_frames_complete_under_repeated_playback_ticks()
     -> Result<(), Box<dyn std::error::Error>> {
         if std::env::var_os("PRISM_TEST_FFMPEG").is_none() {
@@ -5278,6 +5753,8 @@ mod tests {
             pending: RefCell::new(None),
             generation: Cell::new(0),
             busy: Cell::new(false),
+            requested_at: Cell::new(None),
+            stream_control: super::StreamControl::default(),
         };
         let path = PathBuf::from("slow-video.mp4");
         worker.request_playback(path.clone(), RationalTime::ZERO);
@@ -5300,8 +5777,15 @@ mod tests {
                 false,
             ))
         };
+        worker.requested_at.set(Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(6))
+                .unwrap(),
+        ));
+        assert!(worker.timed_out(std::time::Duration::from_secs(5)));
         replies.send((first.generation, frame())).unwrap();
         assert!(worker.poll_decoded().unwrap().is_ok());
+        assert!(!worker.timed_out(std::time::Duration::ZERO));
         assert!(!worker.busy.get());
         worker.request_playback(path.clone(), RationalTime::new(1, 1).unwrap());
         let second = requests.recv().unwrap();
@@ -5426,6 +5910,8 @@ mod tests {
             RationalTime::new(2, 1)?,
             true,
         )?;
+        assert_eq!(super::aligned_av_companion_index(&project, 0), Some(1));
+        assert_eq!(super::aligned_av_companion_index(&project, 1), Some(0));
         let commands =
             super::aligned_av_commands(&project, 0, "timeline.split_av", RationalTime::new(1, 1)?)?;
         assert_eq!(commands.len(), 2);
@@ -5658,7 +6144,17 @@ mod tests {
         let child = std::process::Command::new("/bin/sleep").arg("30").spawn()?;
         let pid = child.id();
         *runtime.audio_process.borrow_mut() = Some(child);
+        let decoder = std::process::Command::new("/bin/sleep").arg("30").spawn()?;
+        let decoder_pid = decoder.id();
+        *runtime.audio_decoder.borrow_mut() = Some(decoder);
         drop(runtime);
+        assert!(
+            !std::process::Command::new("/bin/kill")
+                .args(["-0", &decoder_pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status()?
+                .success()
+        );
         assert!(
             !std::process::Command::new("/bin/kill")
                 .args(["-0", &pid.to_string()])
@@ -5706,6 +6202,29 @@ mod tests {
             None
         );
         assert_eq!(super::matched_source(&project, 5, RationalTime::ZERO), None);
+        Ok(())
+    }
+
+    #[test]
+    fn matched_audio_source_preserves_time_without_video_classification()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Match audio");
+        super::insert_stream_media_into_project(
+            &mut project,
+            std::path::Path::new("dialogue.wav"),
+            RationalTime::new(3, 1)?,
+            false,
+            true,
+        )?;
+        let media_id = *project.media.keys().next().ok_or("missing media")?;
+        assert_eq!(
+            super::media_stream_summary(&project, media_id),
+            (false, true, Some(RationalTime::new(3, 1)?))
+        );
+        assert_eq!(
+            super::matched_source(&project, 0, RationalTime::new(3, 2)?),
+            Some((0, RationalTime::new(3, 2)?))
+        );
         Ok(())
     }
 
@@ -6026,6 +6545,89 @@ mod tests {
                 .tracks
                 .iter()
                 .all(|track| track.clips.len() == 1)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_selected_av_pair_uses_one_aligned_transaction()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Duplicate pair");
+        insert_media_into_project(
+            &mut project,
+            std::path::Path::new("take.mp4"),
+            RationalTime::new(2, 1)?,
+            true,
+        )?;
+        let commands = super::duplicate_selected_commands(&project, 0)?;
+        assert_eq!(commands.len(), 2);
+        let outcome = prism_commands::CommandEngine::execute_transaction(
+            &mut project,
+            "Duplicate aligned A/V",
+            commands,
+        )?;
+        for track in &project
+            .sequences
+            .values()
+            .next()
+            .ok_or("missing sequence")?
+            .tracks
+        {
+            assert_eq!(track.clips.len(), 2);
+            assert_eq!(track.clips[1].timeline_start, RationalTime::new(2, 1)?);
+        }
+        outcome.undo.apply(&mut project)?;
+        assert!(
+            project
+                .sequences
+                .values()
+                .next()
+                .ok_or("missing sequence")?
+                .tracks
+                .iter()
+                .all(|track| track.clips.len() == 1)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn slip_selected_av_pair_changes_both_sources_and_undoes_atomically()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Slip pair");
+        insert_media_into_project(
+            &mut project,
+            std::path::Path::new("take.mp4"),
+            RationalTime::new(2, 1)?,
+            true,
+        )?;
+        let commands = super::slip_selected_commands(&project, 0, RationalTime::new(1, 2)?)?;
+        assert_eq!(commands.len(), 2);
+        let outcome = prism_commands::CommandEngine::execute_transaction(
+            &mut project,
+            "Slip aligned A/V",
+            commands,
+        )?;
+        let slipped = RationalTime::new(1, 2)?;
+        assert!(
+            project
+                .sequences
+                .values()
+                .next()
+                .ok_or("missing sequence")?
+                .tracks
+                .iter()
+                .all(|track| track.clips[0].source_start == slipped)
+        );
+        outcome.undo.apply(&mut project)?;
+        assert!(
+            project
+                .sequences
+                .values()
+                .next()
+                .ok_or("missing sequence")?
+                .tracks
+                .iter()
+                .all(|track| track.clips[0].source_start == RationalTime::ZERO)
         );
         Ok(())
     }
@@ -6367,6 +6969,9 @@ mod tests {
                 "SOURCE",
                 "PRECISION",
                 "PAIRED",
+                "SCOPES",
+                "WAVEFORM",
+                "VECTOR",
                 "MARKERS",
                 "COMMANDS",
                 "COMMANDS_EMPTY",
@@ -6393,6 +6998,11 @@ mod tests {
                 );
                 ui.set_precision_open(workspace == "PRECISION");
                 ui.set_paired_tools_open(workspace == "PAIRED");
+                ui.set_program_scope_mode(match workspace {
+                    "WAVEFORM" => 1,
+                    "VECTOR" => 2,
+                    _ => 0,
+                });
                 ui.set_browser_tab(
                     if workspace == "MARKERS" {
                         "Markers"
@@ -6415,6 +7025,7 @@ mod tests {
                     match workspace {
                         "HISTORY" => "History",
                         "JOBS" => "Jobs",
+                        "SCOPES" | "WAVEFORM" | "VECTOR" => "Scopes",
                         _ => "Properties",
                     }
                     .into(),
@@ -6590,6 +7201,28 @@ mod tests {
         let playback_started = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_millis(100))
             .ok_or("playback start instant underflow")?;
+        let master = crate::audio_clock::AudioClock::default();
+        *runtime.audio_clock.borrow_mut() = Some(master.clone());
+        runtime.playback_started.set(Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(2))
+                .ok_or("playback start instant underflow")?,
+        ));
+        let held = runtime.playhead.get();
+        runtime.poll(&ui);
+        assert_eq!(runtime.playhead.get(), held);
+        assert!(ui.get_playback_buffering());
+        master.observe(b"0.12 M-A: 0 aq=4KB");
+        runtime.poll(&ui);
+        assert_eq!(
+            runtime.playhead.get(),
+            runtime
+                .playback_origin
+                .get()
+                .checked_add(RationalTime::new(120, 1000)?)?
+        );
+        assert!(!ui.get_playback_buffering());
+        runtime.audio_clock.borrow_mut().take();
         runtime.playback_started.set(Some(playback_started));
         runtime.poll(&ui);
         assert!(runtime.playhead.get() > RationalTime::ZERO);
@@ -6601,12 +7234,28 @@ mod tests {
             *runtime.audio_process.borrow_mut() = Some(child);
             pid
         };
+        #[cfg(unix)]
+        let decoder_pid = {
+            let child = std::process::Command::new("/bin/sleep").arg("30").spawn()?;
+            let pid = child.id();
+            *runtime.audio_decoder.borrow_mut() = Some(child);
+            pid
+        };
         let paused_position = runtime.playhead.get();
         runtime.handle("playback.play_pause", &ui)?;
         assert!(!ui.get_playing());
         assert!(!runtime.playing.get());
         assert!(runtime.playback_started.get().is_none());
         assert!(runtime.audio_process.borrow().is_none());
+        assert!(runtime.audio_decoder.borrow().is_none());
+        #[cfg(unix)]
+        assert!(
+            !std::process::Command::new("/bin/kill")
+                .args(["-0", &decoder_pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status()?
+                .success()
+        );
         assert_eq!(runtime.playhead.get(), paused_position);
         #[cfg(unix)]
         assert!(
@@ -6618,6 +7267,60 @@ mod tests {
             "Pause left the audio process running"
         );
 
+        *runtime.audio_clock.borrow_mut() = Some(crate::audio_clock::AudioClock::default());
+        runtime.playing.set(true);
+        ui.set_playing(true);
+        runtime.playback_started.set(Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(6))
+                .ok_or("playback start instant underflow")?,
+        ));
+        runtime.poll(&ui);
+        assert!(!runtime.playing.get());
+        assert!(!ui.get_playback_buffering());
+        assert!(runtime.audio_clock.borrow().is_none());
+        runtime.playing.set(true);
+        ui.set_playing(true);
+        runtime
+            .playback_started
+            .set(Some(std::time::Instant::now()));
+        runtime
+            .program_preview
+            .generation
+            .set(runtime.program_preview.generation.get().wrapping_add(1));
+        runtime.program_preview.pending.borrow_mut().take();
+        runtime.program_preview.busy.set(true);
+        runtime.program_preview.requested_at.set(Some(
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(6))
+                .ok_or("preview request instant underflow")?,
+        ));
+        #[cfg(unix)]
+        let watchdog_pids = {
+            let player = std::process::Command::new("/bin/sleep").arg("30").spawn()?;
+            let decoder = std::process::Command::new("/bin/sleep").arg("30").spawn()?;
+            let pids = [player.id(), decoder.id()];
+            *runtime.audio_process.borrow_mut() = Some(player);
+            *runtime.audio_decoder.borrow_mut() = Some(decoder);
+            pids
+        };
+        runtime.poll(&ui);
+        #[cfg(unix)]
+        for pid in watchdog_pids {
+            assert!(
+                !std::process::Command::new("/bin/kill")
+                    .args(["-0", &pid.to_string()])
+                    .stderr(std::process::Stdio::null())
+                    .status()?
+                    .success()
+            );
+        }
+        assert!(ui.get_preview_status().contains("timed out"));
+        assert!(!runtime.playing.get());
+        assert!(!runtime.program_preview.busy.get());
+        assert!(runtime.program_preview.requested_at.get().is_none());
+        assert!(runtime.audio_process.borrow().is_none());
+        assert!(runtime.audio_decoder.borrow().is_none());
         let sequence_position = runtime.playhead.get();
         runtime.source_duration.set(RationalTime::new(1, 1)?);
         runtime.source_in.set(RationalTime::new(1, 4)?);
@@ -6928,11 +7631,42 @@ mod tests {
         runtime.source_out.set(RationalTime::ZERO);
         runtime.update_source_labels(&ui);
         assert_eq!(ui.get_source_out_ratio(), 0.0);
+        // Media lookup follows source IDs and does not create an editing transaction.
+        let lookup_revision = runtime.project.borrow().as_ref().map(Project::revision);
+        ui.set_selected_media_index(0);
+        ui.set_selected_clip_index(-1);
+        runtime.find_media_in_timeline(&ui)?;
+        let first_found = ui.get_selected_clip_index();
+        assert!(first_found >= 0);
+        assert_eq!(ui.get_inspector_section(), "Clip");
+        runtime.find_media_in_timeline(&ui)?;
+        assert!(ui.get_selected_clip_index() >= 0);
+        assert_eq!(
+            runtime.project.borrow().as_ref().map(Project::revision),
+            lookup_revision
+        );
+        ui.set_search("".into());
+        ui.set_media_filter(1);
+        runtime.filter_cards(&ui);
+        assert!(ui.get_media_cards().row_count() > 0);
+        assert!(ui.get_media_cards().iter().all(|card| card.uses > 0));
+        ui.set_media_filter(2);
+        runtime.filter_cards(&ui);
+        assert!(ui.get_media_cards().iter().all(|card| card.uses == 0));
+        ui.set_media_filter(3);
+        runtime.filter_cards(&ui);
+        assert!(ui.get_media_cards().iter().all(|card| card.offline));
+        ui.set_media_filter(0);
+        runtime.filter_cards(&ui);
         // View persistence must not mutate editing history or source identities.
         let edit_revision = runtime.project.borrow().as_ref().map(Project::revision);
         ui.set_layout_preset("Assembly".into());
         ui.set_inspector_section("Source".into());
         ui.set_media_sort(2);
+        runtime.handle("view.scopes", &ui)?;
+        ui.set_media_filter(2);
+        ui.set_program_scope_mode(2);
+        ui.set_show_monitor_scope(true);
         runtime.save_view(&ui)?;
         runtime.handle("view.reset", &ui)?;
         assert_eq!(ui.get_layout_preset(), "Editing");
@@ -6940,6 +7674,11 @@ mod tests {
         assert_eq!(ui.get_layout_preset(), "Assembly");
         assert_eq!(ui.get_inspector_section(), "Source");
         assert_eq!(ui.get_media_sort(), 2);
+        assert_eq!(ui.get_inspector_tab(), "Scopes");
+        assert_eq!(ui.get_program_scope_mode(), 2);
+        assert!(ui.get_show_monitor_scope());
+        assert_eq!(ui.get_media_filter(), 2);
+        ui.set_media_filter(0);
         assert_eq!(
             runtime.project.borrow().as_ref().map(Project::revision),
             edit_revision
