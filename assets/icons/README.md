@@ -16,3 +16,9 @@ active, hover, focus, keyboard and accessible-label behavior. Prism's violet act
 state remains consistent with the rest of the workspace. Tooltips/context help name
 the operation and current Prism shortcut. Existing command bindings are preserved;
 this change does not claim Premiere keyboard-map parity or add unsupported tools.
+
+File and clip actions also use folder-open, new-project, save/save-as, import/export,
+duplicate, delete and link/unlink icons. Named actions use `with-icon` so their labels
+remain visible; navigation may use a trailing arrow. Icon-only tools retain their
+accessible names and hover help. The same SVG tinting handles disabled and active
+states across both variants.

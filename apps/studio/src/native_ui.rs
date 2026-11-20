@@ -424,6 +424,53 @@ fn audio_preview_segment(project: &Project, playhead: RationalTime) -> Option<Au
         })
 }
 
+fn program_clip_index(project: &Project, position: RationalTime) -> Option<i32> {
+    let sequence = project.sequences.values().next()?;
+    sequence
+        .tracks
+        .iter()
+        .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
+        .enumerate()
+        .find_map(|(index, (track, clip))| {
+            (track.kind == TrackKind::Video
+                && track.visible
+                && position >= clip.timeline_start
+                && position < clip.timeline_start.checked_add(clip.source_duration).ok()?)
+            .then(|| i32::try_from(index).ok())
+            .flatten()
+        })
+}
+
+fn split_all_commands(project: &Project, position: RationalTime) -> Result<Vec<Command>, String> {
+    let sequence = project
+        .sequences
+        .values()
+        .next()
+        .ok_or("Open a sequence first")?;
+    let mut commands = Vec::new();
+    for track in sequence.tracks.iter().filter(|track| !track.locked) {
+        for clip in &track.clips {
+            let end = clip
+                .timeline_start
+                .checked_add(clip.source_duration)
+                .map_err(|e| e.to_string())?;
+            if position > clip.timeline_start && position < end {
+                commands.push(Command::SplitClip {
+                    sequence_id: sequence.id,
+                    track_id: track.id,
+                    clip_id: clip.id,
+                    right_clip_id: ClipId::new(),
+                    timeline_position: position,
+                });
+            }
+        }
+    }
+    if commands.is_empty() {
+        return Err("No unlocked clip crosses the playhead".into());
+    }
+    Ok(commands)
+}
+
 fn aligned_av_commands(
     project: &Project,
     index: i32,
@@ -678,6 +725,175 @@ fn append_source_commands(
     Ok(commands)
 }
 
+/// Native source edits use explicit fixed first-video/first-audio destinations until
+/// source patching is available. Plan everything before committing a single transaction.
+fn source_edit_commands(
+    project: &Project,
+    media_id: MediaAssetId,
+    source_start: RationalTime,
+    source_duration: RationalTime,
+    position: RationalTime,
+    overwrite: bool,
+) -> Result<Vec<Command>, String> {
+    let sequence = project
+        .sequences
+        .values()
+        .next()
+        .ok_or("Open a sequence first")?;
+    if !source_duration.is_positive()
+        || source_start < RationalTime::ZERO
+        || position < RationalTime::ZERO
+    {
+        return Err("Use a positive source range and a nonnegative playhead position".into());
+    }
+    source_start
+        .checked_add(source_duration)
+        .map_err(|e| e.to_string())?;
+    let end = position
+        .checked_add(source_duration)
+        .map_err(|e| e.to_string())?;
+    if !sequence.transitions.is_empty() {
+        return Err(
+            "Insert/Overwrite with transitions is not supported yet; remove the transitions first"
+                .into(),
+        );
+    }
+    if !project.media.contains_key(&media_id) {
+        return Err("Selected source is unavailable".into());
+    }
+    let (video, audio, _) = media_stream_summary(project, media_id);
+    if !video && !audio {
+        return Err("Selected source has no classified streams".into());
+    }
+    let mut commands = Vec::new();
+    let mut destinations = Vec::new();
+    for kind in [TrackKind::Video, TrackKind::Audio]
+        .into_iter()
+        .filter(|kind| (*kind == TrackKind::Video && video) || (*kind == TrackKind::Audio && audio))
+    {
+        let id = if let Some(track) = sequence.tracks.iter().find(|track| track.kind == kind) {
+            if track.locked {
+                return Err("Unlock the first destination video/audio track before editing".into());
+            }
+            track.id
+        } else {
+            let id = TrackId::new();
+            commands.push(Command::CreateTrack {
+                sequence_id: sequence.id,
+                id,
+                kind,
+            });
+            id
+        };
+        destinations.push(id);
+    }
+    if overwrite {
+        for track in sequence
+            .tracks
+            .iter()
+            .filter(|track| destinations.contains(&track.id))
+        {
+            for clip in &track.clips {
+                let clip_end = clip
+                    .timeline_start
+                    .checked_add(clip.source_duration)
+                    .map_err(|e| e.to_string())?;
+                if clip.timeline_start >= end || clip_end <= position {
+                    continue;
+                }
+                commands.push(Command::DeleteClip {
+                    sequence_id: sequence.id,
+                    track_id: track.id,
+                    clip_id: clip.id,
+                });
+                // Preserve exact source offsets for both surviving fragments.
+                if clip.timeline_start < position {
+                    commands.push(Command::InsertClip {
+                        sequence_id: sequence.id,
+                        track_id: track.id,
+                        id: clip.id,
+                        media_id: clip.media_id,
+                        timeline_start: clip.timeline_start,
+                        source_start: clip.source_start,
+                        source_duration: position
+                            .checked_sub(clip.timeline_start)
+                            .map_err(|e| e.to_string())?,
+                    });
+                }
+                if clip_end > end {
+                    commands.push(Command::InsertClip {
+                        sequence_id: sequence.id,
+                        track_id: track.id,
+                        id: if clip.timeline_start < position {
+                            ClipId::new()
+                        } else {
+                            clip.id
+                        },
+                        media_id: clip.media_id,
+                        timeline_start: end,
+                        source_start: clip
+                            .source_start
+                            .checked_add(
+                                end.checked_sub(clip.timeline_start)
+                                    .map_err(|e| e.to_string())?,
+                            )
+                            .map_err(|e| e.to_string())?,
+                        source_duration: clip_end.checked_sub(end).map_err(|e| e.to_string())?,
+                    });
+                }
+            }
+        }
+    } else {
+        // Move from the end backwards so each intermediate command stays overlap-free.
+        for track in sequence.tracks.iter().filter(|track| !track.locked) {
+            for clip in track.clips.iter().rev() {
+                let clip_end = clip
+                    .timeline_start
+                    .checked_add(clip.source_duration)
+                    .map_err(|e| e.to_string())?;
+                if clip.timeline_start >= position {
+                    commands.push(Command::MoveClip {
+                        sequence_id: sequence.id,
+                        track_id: track.id,
+                        clip_id: clip.id,
+                        timeline_start: clip
+                            .timeline_start
+                            .checked_add(source_duration)
+                            .map_err(|e| e.to_string())?,
+                    });
+                } else if clip_end > position {
+                    let right = ClipId::new();
+                    commands.push(Command::SplitClip {
+                        sequence_id: sequence.id,
+                        track_id: track.id,
+                        clip_id: clip.id,
+                        right_clip_id: right,
+                        timeline_position: position,
+                    });
+                    commands.push(Command::MoveClip {
+                        sequence_id: sequence.id,
+                        track_id: track.id,
+                        clip_id: right,
+                        timeline_start: end,
+                    });
+                }
+            }
+        }
+    }
+    for track_id in destinations {
+        commands.push(Command::InsertClip {
+            sequence_id: sequence.id,
+            track_id,
+            id: ClipId::new(),
+            media_id,
+            timeline_start: position,
+            source_start,
+            source_duration,
+        });
+    }
+    Ok(commands)
+}
+
 fn media_usage(project: &Project) -> BTreeMap<MediaAssetId, usize> {
     let mut counts = BTreeMap::new();
     if let Some(sequence) = project.sequences.values().next() {
@@ -916,6 +1132,7 @@ fn capture_view(ui: &PrismStudio) -> ViewPreferences {
         media_filter: ui.get_media_filter(),
         scope_mode: ui.get_program_scope_mode(),
         monitor_scope: ui.get_show_monitor_scope(),
+        keyboard_preset: ui.get_keyboard_preset().to_string(),
         ..Default::default()
     }
 }
@@ -941,6 +1158,7 @@ fn apply_view(ui: &PrismStudio, view: &ViewPreferences) {
     ui.set_media_filter(view.media_filter);
     ui.set_program_scope_mode(view.scope_mode);
     ui.set_show_monitor_scope(view.monitor_scope);
+    ui.set_keyboard_preset(view.keyboard_preset.clone().into());
     ui.set_precision_open(false);
     ui.set_media_tools_open(false);
     ui.set_timeline_zoom(1.0);
@@ -1017,6 +1235,24 @@ fn launcher_actions(ui: &PrismStudio) -> Vec<CommandItem> {
             clip,
         ),
         (
+            "timeline.split_all",
+            "Add edit to all unlocked tracks",
+            "Cut crossing clips together, including muted and hidden tracks",
+            "Ctrl/⌘ Shift K",
+            sequence,
+        ),
+        (
+            "source.match_program_frame",
+            "Match Program frame in Source",
+            "Locate the original frame beneath the playhead",
+            if ui.get_keyboard_preset() == "Premiere" {
+                "F"
+            } else {
+                ""
+            },
+            sequence,
+        ),
+        (
             "timeline.trim_av",
             "Change aligned A/V source range",
             "Apply Source In and Duration to both matching clips",
@@ -1062,7 +1298,11 @@ fn launcher_actions(ui: &PrismStudio) -> Vec<CommandItem> {
             "timeline.ripple_delete",
             "Ripple delete selected clip",
             "Remove the clip and close time on its track",
-            "Backspace",
+            if ui.get_keyboard_preset() == "Premiere" {
+                "Shift Delete"
+            } else {
+                "Backspace"
+            },
             clip,
         ),
         (
@@ -1111,7 +1351,11 @@ fn launcher_actions(ui: &PrismStudio) -> Vec<CommandItem> {
             "timeline.fit",
             "Fit sequence in timeline",
             "Show the entire sequence",
-            "F",
+            if ui.get_keyboard_preset() == "Premiere" {
+                "Backslash"
+            } else {
+                "F"
+            },
             project,
         ),
         (
@@ -1125,7 +1369,11 @@ fn launcher_actions(ui: &PrismStudio) -> Vec<CommandItem> {
             "source.match_frame",
             "Match selected clip in Source",
             "Show its frame at the playhead, or its source In when outside the clip",
-            "Shift F",
+            if ui.get_keyboard_preset() == "Premiere" {
+                ""
+            } else {
+                "Shift F"
+            },
             ui.get_selected_clip_index() >= 0,
         ),
         (
@@ -1136,10 +1384,36 @@ fn launcher_actions(ui: &PrismStudio) -> Vec<CommandItem> {
             ui.get_source_ready(),
         ),
         (
+            "source.insert",
+            "Insert marked source at playhead",
+            "Use first video/audio tracks and shift unlocked tracks",
+            if ui.get_keyboard_preset() == "Premiere" {
+                ","
+            } else {
+                ""
+            },
+            ui.get_source_ready(),
+        ),
+        (
+            "source.overwrite",
+            "Overwrite with marked source at playhead",
+            "Replace first video/audio tracks while preserving later timing",
+            if ui.get_keyboard_preset() == "Premiere" {
+                "."
+            } else {
+                ""
+            },
+            ui.get_source_ready(),
+        ),
+        (
             "source.append",
             "Append marked source range",
             "Add the source In/Out range to the sequence",
-            ",",
+            if ui.get_keyboard_preset() == "Premiere" {
+                ""
+            } else {
+                ","
+            },
             ui.get_source_ready(),
         ),
         (
@@ -1167,6 +1441,13 @@ fn launcher_actions(ui: &PrismStudio) -> Vec<CommandItem> {
             "view.properties",
             "Show clip properties",
             "Edit selected clip timing",
+            "",
+            true,
+        ),
+        (
+            "view.shortcuts",
+            "Show keyboard shortcuts",
+            "Choose a preset and inspect available or reserved mappings",
             "",
             true,
         ),
@@ -1230,7 +1511,11 @@ fn launcher_actions(ui: &PrismStudio) -> Vec<CommandItem> {
             "tool.T",
             "Trim tool",
             "Drag the nearest clip edge",
-            "T",
+            if ui.get_keyboard_preset() == "Premiere" {
+                ""
+            } else {
+                "T"
+            },
             true,
         ),
         (
@@ -1251,7 +1536,11 @@ fn launcher_actions(ui: &PrismStudio) -> Vec<CommandItem> {
             "tool.R",
             "Rolling edit tool",
             "Move a boundary between adjacent clips",
-            "R",
+            if ui.get_keyboard_preset() == "Premiere" {
+                "N"
+            } else {
+                "R"
+            },
             true,
         ),
     ];
@@ -1373,6 +1662,7 @@ struct PreviewRequest {
     time: RationalTime,
     cache_root: Option<PathBuf>,
     playback: bool,
+    frame_rate: RationalTime,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -1473,14 +1763,14 @@ impl PreviewWorker {
                         if !decode_control.active() {
                             return Err("Video playback stopped".to_owned());
                         }
-                        if !stream
-                            .as_ref()
-                            .is_some_and(|stream| stream.reusable(&request.path, request.time))
-                        {
+                        if !stream.as_ref().is_some_and(|stream| {
+                            stream.reusable(&request.path, request.time, request.frame_rate)
+                        }) {
                             stream.take();
                             stream = Some(StreamPreview::open(
                                 &request.path,
                                 request.time,
+                                request.frame_rate,
                                 &media_tool("ffmpeg"),
                                 &media_tool("ffprobe"),
                                 decode_control.clone(),
@@ -1551,13 +1841,14 @@ impl PreviewWorker {
             time,
             cache_root: None,
             playback: false,
+            frame_rate: RationalTime::from_integer(30),
             cancelled: self.stream_control.request_token(),
         });
         self.flush();
     }
 
     // Playback must let the active decode finish. Scrubbing still supersedes it.
-    fn request_playback(&self, path: PathBuf, time: RationalTime) {
+    fn request_playback(&self, path: PathBuf, time: RationalTime, frame_rate: RationalTime) {
         if !self.busy.get() {
             self.stream_control.activate();
             self.generation.set(self.generation.get().wrapping_add(1));
@@ -1569,6 +1860,7 @@ impl PreviewWorker {
                 time,
                 cache_root: None,
                 playback: true,
+                frame_rate,
                 cancelled: self.stream_control.request_token(),
             });
             self.flush();
@@ -1585,6 +1877,7 @@ impl PreviewWorker {
             time: RationalTime::ZERO,
             cache_root,
             playback: false,
+            frame_rate: RationalTime::from_integer(30),
             cancelled: self.stream_control.request_token(),
         });
         self.flush();
@@ -1676,16 +1969,27 @@ fn decode_preview(
 }
 
 fn display_timecode(time: RationalTime) -> String {
+    display_timecode_at_rate(time, RationalTime::from_integer(30))
+}
+
+fn display_timecode_at_rate(time: RationalTime, frame_rate: RationalTime) -> String {
+    let scale = u32::try_from(frame_rate.value()).unwrap_or(30);
     let frames = time
-        .to_ticks(30, prism_timeline::RoundingMode::Floor)
+        .to_ticks(scale, prism_timeline::RoundingMode::Floor)
+        .unwrap_or(0)
+        .checked_div(i64::from(frame_rate.timescale()))
         .unwrap_or(0)
         .max(0);
+    #[allow(clippy::cast_possible_truncation)]
+    let nominal = frame_rate.as_seconds_f64().round().max(1.0) as i64;
+    let minute = nominal.saturating_mul(60);
+    let hour = minute.saturating_mul(60);
     format!(
         "{:02}:{:02}:{:02}:{:02}",
-        frames / 108_000,
-        frames / 1_800 % 60,
-        frames / 30 % 60,
-        frames % 30
+        frames / hour,
+        frames / minute % 60,
+        frames / nominal % 60,
+        frames % nominal
     )
 }
 
@@ -1852,6 +2156,39 @@ impl NativeExportRuntime {
         }
     }
 
+    fn frame_duration(&self) -> RationalTime {
+        self.project
+            .borrow()
+            .as_ref()
+            .and_then(|project| {
+                let sequence_id = *project.sequences.keys().next()?;
+                project.sequence_frame_duration(sequence_id)
+            })
+            .unwrap_or_else(|| RationalTime::new(1, 30).unwrap_or(RationalTime::from_integer(1)))
+    }
+
+    fn frame_rate(&self) -> RationalTime {
+        self.project
+            .borrow()
+            .as_ref()
+            .and_then(|project| {
+                let sequence_id = *project.sequences.keys().next()?;
+                project.sequence_frame_rate(sequence_id)
+            })
+            .unwrap_or(RationalTime::from_integer(30))
+    }
+
+    fn quantize_to_frame(&self, seconds: f64) -> RationalTime {
+        let frame = self.frame_duration();
+        #[allow(clippy::cast_possible_truncation)]
+        let count = (seconds.max(0.0) / frame.as_seconds_f64()).floor() as i64;
+        frame.checked_mul_i64(count).unwrap_or(RationalTime::ZERO)
+    }
+
+    fn display_timecode(&self, time: RationalTime) -> String {
+        display_timecode_at_rate(time, self.frame_rate())
+    }
+
     #[allow(clippy::too_many_lines)]
     fn handle(&self, command: &str, ui: &PrismStudio) -> Result<(), String> {
         match command {
@@ -1860,7 +2197,8 @@ impl NativeExportRuntime {
                 ui.set_browser_tab("Markers".into());
                 Ok(())
             }
-            "view.properties" | "view.source" | "view.history" | "view.jobs" | "view.scopes" => {
+            "view.properties" | "view.source" | "view.history" | "view.jobs" | "view.scopes"
+            | "view.shortcuts" => {
                 ui.set_active_workspace("EDIT".into());
                 ui.set_inspector_open(true);
                 ui.set_inspector_tab(
@@ -1868,6 +2206,7 @@ impl NativeExportRuntime {
                         "view.history" => "History",
                         "view.jobs" => "Jobs",
                         "view.scopes" => "Scopes",
+                        "view.shortcuts" => "Shortcuts",
                         _ => "Properties",
                     }
                     .into(),
@@ -1923,6 +2262,9 @@ impl NativeExportRuntime {
             | "timeline.slide_left"
             | "timeline.slide_right" => self.precision_edit_frame(ui, command),
             "source.append" => self.append_source(ui),
+            "source.insert" | "source.overwrite" => {
+                self.edit_source(ui, command == "source.overwrite")
+            }
             "media.assign_proxy" => self.assign_proxy(ui),
             "media.relink_source" => self.relink_source(ui),
             "media.clear_proxy" => self.clear_proxy(ui),
@@ -1944,6 +2286,17 @@ impl NativeExportRuntime {
                 self.select_media(ui, ui.get_selected_media_index());
                 self.seek_time(ui, self.playhead.get());
                 Ok(())
+            }
+            "source.match_program_frame" => {
+                let index = self
+                    .project
+                    .borrow()
+                    .as_ref()
+                    .and_then(|project| program_clip_index(project, self.playhead.get()))
+                    .ok_or("No visible video clip beneath the playhead")?;
+                ui.set_selected_clip_index(index);
+                self.update_inspector(ui);
+                self.match_frame(ui)
             }
             "source.match_frame" => self.match_frame(ui),
             "source.clear_marks" => {
@@ -1968,7 +2321,7 @@ impl NativeExportRuntime {
                     self.source_in.set(position);
                 } else {
                     let end = position
-                        .checked_add(RationalTime::new(1, 30).map_err(|e| e.to_string())?)
+                        .checked_add(self.frame_duration())
                         .map_err(|e| e.to_string())?
                         .min(self.source_duration.get());
                     if end <= self.source_in.get() {
@@ -1977,6 +2330,19 @@ impl NativeExportRuntime {
                     self.source_out.set(end);
                 }
                 self.update_source_labels(ui);
+                Ok(())
+            }
+            "timeline.split_all" => {
+                let commands = split_all_commands(
+                    self.project
+                        .borrow()
+                        .as_ref()
+                        .ok_or("Open a project first")?,
+                    self.playhead.get(),
+                )?;
+                self.commit_commands(ui, commands, "Add edit to all unlocked tracks")?;
+                ui.set_selected_clip_index(-1);
+                self.update_inspector(ui);
                 Ok(())
             }
             "timeline.split_av"
@@ -2003,6 +2369,25 @@ impl NativeExportRuntime {
                     }
                     .into(),
                 );
+                Ok(())
+            }
+            "playback.stop" => {
+                let retain_picture = ui.get_has_program_frame();
+                self.stop_playback(ui);
+                self.seek_time(ui, self.playhead.get());
+                ui.set_has_program_frame(retain_picture);
+                Ok(())
+            }
+            "view.zoom_in" | "view.zoom_out" => {
+                let zoom = if command == "view.zoom_in" {
+                    ui.get_timeline_zoom() * 2.0
+                } else {
+                    ui.get_timeline_zoom() / 2.0
+                }
+                .clamp(1.0, 8.0);
+                ui.set_timeline_zoom(zoom);
+                ui.set_timeline_offset(ui.get_timeline_offset().min(1.0 - 1.0 / zoom));
+                self.update_ruler(ui);
                 Ok(())
             }
             "playback.play_pause" => {
@@ -2046,15 +2431,14 @@ impl NativeExportRuntime {
             }
             "playback.step_backward" | "playback.step_forward" => {
                 self.stop_playback(ui);
-                let delta = RationalTime::new(
-                    if command == "playback.step_forward" {
-                        1
-                    } else {
-                        -1
-                    },
-                    30,
-                )
-                .map_err(|e| e.to_string())?;
+                let frame = self.frame_duration();
+                let delta = if command == "playback.step_forward" {
+                    frame
+                } else {
+                    RationalTime::ZERO
+                        .checked_sub(frame)
+                        .map_err(|error| error.to_string())?
+                };
                 let time = self
                     .playhead
                     .get()
@@ -2810,7 +3194,7 @@ impl NativeExportRuntime {
             let available = Path::new(&asset.source_path).is_file() && duration.is_positive();
             ui.set_source_ready(available);
             ui.set_source_preview_size(
-                format!("Audio source · {}", display_timecode(duration)).into(),
+                format!("Audio source · {}", self.display_timecode(duration)).into(),
             );
             ui.set_source_detail("Audio source · waveform available in timeline".into());
             self.update_source_labels(ui);
@@ -2884,7 +3268,7 @@ impl NativeExportRuntime {
                 } else {
                     "audio source"
                 },
-                display_timecode(time)
+                self.display_timecode(time)
             )
             .into(),
         );
@@ -2928,12 +3312,9 @@ impl NativeExportRuntime {
             .and_then(|p| p.sequences.values().next()?.duration().ok());
         if let Some(duration) = duration {
             // Pointer coordinates are display values; quantize once at the UI boundary.
-            #[allow(clippy::cast_possible_truncation)]
-            let frame = (duration.as_seconds_f64() * f64::from(ratio.clamp(0.0, 1.0)) * 30.0)
-                .floor() as i64;
-            if let Ok(time) = RationalTime::new(frame, 30) {
-                self.seek_time(ui, time);
-            }
+            let time = self
+                .quantize_to_frame(duration.as_seconds_f64() * f64::from(ratio.clamp(0.0, 1.0)));
+            self.seek_time(ui, time);
         }
     }
 
@@ -2945,7 +3326,7 @@ impl NativeExportRuntime {
             .unwrap_or(RationalTime::ZERO);
         let time = time.min(duration).max(RationalTime::ZERO);
         self.playhead.set(time);
-        ui.set_timecode(display_timecode(time).into());
+        ui.set_timecode(self.display_timecode(time).into());
         #[allow(clippy::cast_possible_truncation)]
         let ratio = if duration.is_positive() {
             (time.as_seconds_f64() / duration.as_seconds_f64()) as f32
@@ -2987,7 +3368,8 @@ impl NativeExportRuntime {
         if let Some((path, time)) = target {
             if self.playing.get() {
                 // Keep the last completed frame visible while the next one decodes.
-                self.program_preview.request_playback(path, time);
+                self.program_preview
+                    .request_playback(path, time, self.frame_rate());
             } else {
                 ui.set_has_program_frame(false);
                 self.program_preview.request(path, time);
@@ -3673,7 +4055,9 @@ impl NativeExportRuntime {
                     transition_id: transition.id,
                 }
             } else {
-                let duration = RationalTime::new(15, 30)
+                let duration = self
+                    .frame_duration()
+                    .checked_mul_i64(15)
                     .map_err(|error| error.to_string())?
                     .min(outgoing.source_duration)
                     .min(incoming.source_duration);
@@ -4337,7 +4721,7 @@ impl NativeExportRuntime {
     }
 
     fn adjust_clip_frame(&self, ui: &PrismStudio, operation: &str) -> Result<(), String> {
-        let frame = RationalTime::new(1, 30).map_err(|error| error.to_string())?;
+        let frame = self.frame_duration();
         if matches!(operation, "timeline.move_left" | "timeline.move_right") {
             let current = parse_timing(ui.get_clip_start().as_str())?;
             let timeline_start = if operation == "timeline.move_left" {
@@ -4422,7 +4806,7 @@ impl NativeExportRuntime {
     }
 
     fn precision_edit_frame(&self, ui: &PrismStudio, operation: &str) -> Result<(), String> {
-        let frame = RationalTime::new(1, 30).map_err(|error| error.to_string())?;
+        let frame = self.frame_duration();
         let delta = if operation.ends_with("_left") {
             RationalTime::ZERO
                 .checked_sub(frame)
@@ -4546,15 +4930,24 @@ impl NativeExportRuntime {
             .as_ref()
             .and_then(|project| project.sequences.values().next()?.duration().ok())
             .ok_or_else(|| "No sequence available".to_owned())?;
-        let timescale = if ui.get_snap_enabled() { 30 } else { 300 };
-        #[allow(clippy::cast_possible_truncation)]
-        let ticks =
-            (sequence_duration.as_seconds_f64() * f64::from(delta_ratio) * f64::from(timescale))
+        let delta = if ui.get_snap_enabled() {
+            let frame = self.frame_duration();
+            #[allow(clippy::cast_possible_truncation)]
+            let frames = (sequence_duration.as_seconds_f64() * f64::from(delta_ratio)
+                / frame.as_seconds_f64())
+            .round() as i64;
+            frame
+                .checked_mul_i64(frames)
+                .map_err(|error| error.to_string())?
+        } else {
+            #[allow(clippy::cast_possible_truncation)]
+            let ticks = (sequence_duration.as_seconds_f64() * f64::from(delta_ratio) * 300.0)
                 .round() as i64;
-        if ticks == 0 {
+            RationalTime::new(ticks, 300).map_err(|error| error.to_string())?
+        };
+        if delta.is_zero() {
             return Ok(());
         }
-        let delta = RationalTime::new(ticks, timescale).map_err(|error| error.to_string())?;
         if matches!(edge, "slip" | "slide" | "roll_in" | "roll_out") {
             return self.precision_edit_delta(ui, edge, delta);
         }
@@ -4688,24 +5081,20 @@ impl NativeExportRuntime {
         let offset = f64::from(ui.get_timeline_offset()).clamp(0.0, 1.0 - 1.0 / zoom);
         let labels = (0..6)
             .map(|index| {
-                #[allow(clippy::cast_possible_truncation)]
-                let frame =
-                    (duration.as_seconds_f64() * (offset + f64::from(index) / (5.0 * zoom)) * 30.0)
-                        .floor() as i64;
-                RationalTime::new(frame, 30)
-                    .map(display_timecode)
-                    .unwrap_or_default()
-                    .into()
+                self.display_timecode(self.quantize_to_frame(
+                    duration.as_seconds_f64() * (offset + f64::from(index) / (5.0 * zoom)),
+                ))
+                .into()
             })
             .collect::<Vec<slint::SharedString>>();
         ui.set_ruler_labels(slint::ModelRc::new(slint::VecModel::from(labels)));
     }
 
     fn update_source_labels(&self, ui: &PrismStudio) {
-        ui.set_source_timecode(display_timecode(self.source_position.get()).into());
-        ui.set_source_duration_label(display_timecode(self.source_duration.get()).into());
-        ui.set_source_in_label(display_timecode(self.source_in.get()).into());
-        ui.set_source_out_label(display_timecode(self.source_out.get()).into());
+        ui.set_source_timecode(self.display_timecode(self.source_position.get()).into());
+        ui.set_source_duration_label(self.display_timecode(self.source_duration.get()).into());
+        ui.set_source_in_label(self.display_timecode(self.source_in.get()).into());
+        ui.set_source_out_label(self.display_timecode(self.source_out.get()).into());
         #[allow(clippy::cast_possible_truncation)]
         let ratio = if self.source_duration.get().is_positive() {
             (self.source_position.get().as_seconds_f64()
@@ -4749,16 +5138,14 @@ impl NativeExportRuntime {
             Some((asset, has_video))
         });
         if let Some((asset, has_video)) = asset {
-            #[allow(clippy::cast_possible_truncation)]
-            let frame = (self.source_duration.get().as_seconds_f64()
-                * f64::from(ratio.clamp(0.0, 1.0))
-                * 30.0)
-                .floor() as i64;
-            if let Ok(time) = RationalTime::new(frame, 30) {
+            let time = self.quantize_to_frame(
+                self.source_duration.get().as_seconds_f64() * f64::from(ratio.clamp(0.0, 1.0)),
+            );
+            {
                 let last_frame = self
                     .source_duration
                     .get()
-                    .checked_sub(RationalTime::new(1, 30).unwrap_or(RationalTime::ZERO))
+                    .checked_sub(self.frame_duration())
                     .unwrap_or(RationalTime::ZERO)
                     .max(RationalTime::ZERO);
                 let time = time.min(last_frame);
@@ -4774,6 +5161,51 @@ impl NativeExportRuntime {
                 }
             }
         }
+    }
+
+    fn edit_source(&self, ui: &PrismStudio, overwrite: bool) -> Result<(), String> {
+        if !ui.get_source_ready() {
+            return Err("Select an available source and mark its range first".into());
+        }
+        let duration = self
+            .source_out
+            .get()
+            .checked_sub(self.source_in.get())
+            .map_err(|e| e.to_string())?;
+        let position = self.playhead.get();
+        let commands = {
+            let project = self.project.borrow();
+            let project = project.as_ref().ok_or("Open a project first")?;
+            let asset = project
+                .media
+                .values()
+                .nth(usize::try_from(ui.get_selected_media_index()).map_err(|e| e.to_string())?)
+                .ok_or("Select a source first")?;
+            source_edit_commands(
+                project,
+                asset.id,
+                self.source_in.get(),
+                duration,
+                position,
+                overwrite,
+            )?
+        };
+        self.commit_commands(
+            ui,
+            commands,
+            if overwrite {
+                "Overwrite source range"
+            } else {
+                "Insert source range"
+            },
+        )?;
+        ui.set_selected_clip_index(-1);
+        self.update_inspector(ui);
+        self.seek_time(
+            ui,
+            position.checked_add(duration).map_err(|e| e.to_string())?,
+        );
+        Ok(())
     }
 
     fn append_source(&self, ui: &PrismStudio) -> Result<(), String> {
@@ -5113,7 +5545,7 @@ impl NativeExportRuntime {
                             },
                             size.width,
                             size.height,
-                            display_timecode(duration)
+                            self.display_timecode(duration)
                         )
                         .into(),
                     );
@@ -5188,6 +5620,13 @@ fn import_media_into_project(project: &mut Project, path: &Path) -> Result<UndoR
         .streams
         .iter()
         .any(|stream| matches!(stream.kind, StreamKind::Audio(_)));
+    let source_frame_rate = metadata
+        .streams
+        .iter()
+        .find_map(|stream| match &stream.kind {
+            StreamKind::Video(video) => video.nominal_frame_rate.or(video.average_frame_rate),
+            _ => None,
+        });
     if !has_video && !has_audio {
         return Err(format!(
             "{} has no supported video or audio stream",
@@ -5198,7 +5637,14 @@ fn import_media_into_project(project: &mut Project, path: &Path) -> Result<UndoR
         .duration
         .filter(|duration| duration.is_positive())
         .ok_or_else(|| format!("{} has no valid duration", path.display()))?;
-    insert_stream_media_into_project(project, path, duration, has_video, has_audio)
+    insert_stream_media_into_project(
+        project,
+        path,
+        duration,
+        has_video,
+        has_audio,
+        source_frame_rate,
+    )
 }
 
 #[cfg(test)]
@@ -5217,7 +5663,7 @@ fn insert_media_into_project(
     duration: RationalTime,
     has_audio: bool,
 ) -> Result<UndoRecord, String> {
-    insert_stream_media_into_project(project, path, duration, true, has_audio)
+    insert_stream_media_into_project(project, path, duration, true, has_audio, None)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -5227,6 +5673,7 @@ fn insert_stream_media_into_project(
     duration: RationalTime,
     has_video: bool,
     has_audio: bool,
+    source_frame_rate: Option<RationalTime>,
 ) -> Result<UndoRecord, String> {
     if !has_video && !has_audio {
         return Err("media must contain a supported video or audio stream".to_owned());
@@ -5268,22 +5715,22 @@ fn insert_stream_media_into_project(
                 .and_then(|name| name.to_str())
                 .unwrap_or("Sequence 01")
                 .to_owned();
-            (
+            let mut commands = vec![Command::CreateSequence {
+                id: sequence_id,
+                name,
+            }];
+            if let Some(frame_rate) = source_frame_rate {
+                commands.push(Command::SetSequenceFrameRate {
+                    sequence_id,
+                    frame_rate,
+                });
+            }
+            commands.push(Command::CreateTrack {
                 sequence_id,
-                track_id,
-                RationalTime::ZERO,
-                vec![
-                    Command::CreateSequence {
-                        id: sequence_id,
-                        name,
-                    },
-                    Command::CreateTrack {
-                        sequence_id,
-                        id: track_id,
-                        kind: primary_kind,
-                    },
-                ],
-            )
+                id: track_id,
+                kind: primary_kind,
+            });
+            (sequence_id, track_id, RationalTime::ZERO, commands)
         };
     commands.insert(
         0,
@@ -5486,6 +5933,9 @@ fn apply_project_summary(ui: &PrismStudio, project: &Project, project_path: &Pat
         .unwrap_or_default();
     ui.set_tracks(slint::ModelRc::new(slint::VecModel::from(tracks)));
     ui.set_sequence_name(sequence.map_or("Main sequence", |s| s.name.as_str()).into());
+    let frame_rate = sequence
+        .and_then(|sequence| project.sequence_frame_rate(sequence.id))
+        .unwrap_or(RationalTime::from_integer(30));
     let duration = sequence
         .and_then(|s| s.duration().ok())
         .unwrap_or(RationalTime::ZERO);
@@ -5495,7 +5945,7 @@ fn apply_project_summary(ui: &PrismStudio, project: &Project, project_path: &Pat
                 .markers
                 .iter()
                 .map(|marker| TimelineMarkerItem {
-                    timecode: display_timecode(marker.time).into(),
+                    timecode: display_timecode_at_rate(marker.time, frame_rate).into(),
                     label: marker.label.clone().into(),
                     ratio: if duration.is_positive() {
                         (marker.time.as_seconds_f64() / duration.as_seconds_f64()) as f32
@@ -5508,14 +5958,17 @@ fn apply_project_summary(ui: &PrismStudio, project: &Project, project_path: &Pat
         .unwrap_or_default();
     ui.set_timeline_markers(slint::ModelRc::new(slint::VecModel::from(marker_items)));
     ui.set_selected_marker_index(-1);
-    ui.set_duration_label(display_timecode(duration).into());
+    ui.set_duration_label(display_timecode_at_rate(duration, frame_rate).into());
     update_export_summary(ui, project);
     let labels = (0..6)
         .map(|index| {
             duration
                 .checked_mul_i64(index)
                 .and_then(|t| t.checked_div_i64(5))
-                .map_or_else(|_| "--:--:--:--".to_owned(), display_timecode)
+                .map_or_else(
+                    |_| "--:--:--:--".to_owned(),
+                    |time| display_timecode_at_rate(time, frame_rate),
+                )
                 .into()
         })
         .collect::<Vec<slint::SharedString>>();
@@ -5552,9 +6005,73 @@ fn load_project_into_ui(
     Ok(Some(project))
 }
 
+fn refresh_shortcuts(ui: &PrismStudio) {
+    let query = ui.get_shortcut_query().to_lowercase();
+    let premiere = ui.get_keyboard_preset() == "Premiere";
+    let items = crate::edit_shortcuts::bindings(premiere)
+        .into_iter()
+        .filter(|binding| {
+            query.is_empty()
+                || binding.name.to_lowercase().contains(&query)
+                || binding.detail.to_lowercase().contains(&query)
+                || binding.key.to_lowercase().contains(&query)
+        })
+        .map(|binding| {
+            let mut modifiers = Vec::new();
+            if binding.primary {
+                modifiers.push("Ctrl/Cmd");
+            }
+            if binding.shift {
+                modifiers.push("Shift");
+            }
+            modifiers.push(binding.key);
+            ShortcutItem {
+                keys: modifiers.join("+").into(),
+                name: binding.name.into(),
+                detail: binding.detail.into(),
+                available: !matches!(binding.target, crate::edit_shortcuts::Target::Missing(_)),
+            }
+        })
+        .collect::<Vec<_>>();
+    ui.set_shortcut_items(slint::ModelRc::new(slint::VecModel::from(items)));
+}
+
 #[allow(clippy::too_many_lines)]
 fn bind_editor_callbacks(ui: &PrismStudio, runtime: &Rc<NativeExportRuntime>) {
     let weak_ui = ui.as_weak();
+    let weak = ui.as_weak();
+    ui.on_shortcuts_changed(move || {
+        if let Some(ui) = weak.upgrade() {
+            refresh_shortcuts(&ui);
+        }
+    });
+    let weak = ui.as_weak();
+    let shortcut_runtime = Rc::clone(runtime);
+    ui.on_edit_shortcut(move |key, primary, shift, alt| {
+        let Some(ui) = weak.upgrade() else {
+            return false;
+        };
+        let premiere = ui.get_keyboard_preset() == "Premiere";
+        let Some(target) =
+            crate::edit_shortcuts::resolve(key.as_str(), primary, shift, alt, premiere)
+        else {
+            return false;
+        };
+        match target {
+            crate::edit_shortcuts::Target::Tool(tool) => {
+                ui.set_active_tool(tool.into());
+            }
+            crate::edit_shortcuts::Target::Command(command) => {
+                if let Err(error) = shortcut_runtime.handle(command, &ui) {
+                    ui.set_feedback(error.into());
+                }
+            }
+            crate::edit_shortcuts::Target::Missing(detail) => {
+                ui.set_feedback(format!("Shortcut reserved · {detail} is not built yet").into());
+            }
+        }
+        true
+    });
     let weak = ui.as_weak();
     let handler = Rc::clone(runtime);
     ui.on_source_seek(move |ratio| {
@@ -5659,6 +6176,7 @@ fn bind_editor_callbacks(ui: &PrismStudio, runtime: &Rc<NativeExportRuntime>) {
             ui.set_feedback(error.into());
         }
     });
+    refresh_shortcuts(ui);
 }
 
 /// Opens the main editor window and runs the native event loop.
@@ -5724,7 +6242,11 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut completed = 0;
         while std::time::Instant::now() < deadline {
-            worker.request_playback(fixture.clone(), RationalTime::new(1, 2)?);
+            worker.request_playback(
+                fixture.clone(),
+                RationalTime::new(1, 2)?,
+                RationalTime::from_integer(30),
+            );
             if let Some(frame) = worker.poll_decoded() {
                 let (frame, _, _, _) = frame?;
                 assert!(frame.width > 0 && frame.height > 0);
@@ -5757,11 +6279,19 @@ mod tests {
             stream_control: super::StreamControl::default(),
         };
         let path = PathBuf::from("slow-video.mp4");
-        worker.request_playback(path.clone(), RationalTime::ZERO);
+        worker.request_playback(
+            path.clone(),
+            RationalTime::ZERO,
+            RationalTime::from_integer(30),
+        );
         let first = requests.recv().unwrap();
         // Simulate a decode taking longer than multiple playback timer ticks.
         for tick in 1..10 {
-            worker.request_playback(path.clone(), RationalTime::new(tick, 20).unwrap());
+            worker.request_playback(
+                path.clone(),
+                RationalTime::new(tick, 20).unwrap(),
+                RationalTime::from_integer(30),
+            );
             assert_eq!(worker.generation.get(), first.generation);
         }
         assert!(requests.try_recv().is_err());
@@ -5787,7 +6317,11 @@ mod tests {
         assert!(worker.poll_decoded().unwrap().is_ok());
         assert!(!worker.timed_out(std::time::Duration::ZERO));
         assert!(!worker.busy.get());
-        worker.request_playback(path.clone(), RationalTime::new(1, 1).unwrap());
+        worker.request_playback(
+            path.clone(),
+            RationalTime::new(1, 1).unwrap(),
+            RationalTime::from_integer(30),
+        );
         let second = requests.recv().unwrap();
         worker.request(path, RationalTime::new(2, 1).unwrap());
         let scrub = requests.recv().unwrap();
@@ -5798,6 +6332,248 @@ mod tests {
         replies.send((scrub.generation, frame())).unwrap();
         assert!(worker.poll_decoded().unwrap().is_ok());
         assert!(!worker.busy.get());
+    }
+
+    #[test]
+    fn source_insert_splits_shifts_and_preserves_source_offsets()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Insert edit");
+        insert_media_into_project(
+            &mut project,
+            std::path::Path::new("insert.mp4"),
+            RationalTime::new(4, 1)?,
+            true,
+        )?;
+        let media = *project.media.keys().next().unwrap();
+        let append = super::append_source_commands(
+            &project,
+            media,
+            RationalTime::ZERO,
+            RationalTime::new(4, 1)?,
+        )?;
+        prism_commands::CommandEngine::execute_transaction(&mut project, "Append", append)?;
+        let commands = super::source_edit_commands(
+            &project,
+            media,
+            RationalTime::new(1, 2)?,
+            RationalTime::new(1, 1)?,
+            RationalTime::new(1, 1)?,
+            false,
+        )?;
+        let result =
+            prism_commands::CommandEngine::execute_transaction(&mut project, "Insert", commands)?;
+        for track in &project.sequences.values().next().unwrap().tracks {
+            assert_eq!(track.clips.len(), 4);
+            let ranges = track
+                .clips
+                .iter()
+                .map(|c| (c.timeline_start, c.source_start, c.source_duration))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ranges,
+                vec![
+                    (
+                        RationalTime::ZERO,
+                        RationalTime::ZERO,
+                        RationalTime::new(1, 1)?
+                    ),
+                    (
+                        RationalTime::new(1, 1)?,
+                        RationalTime::new(1, 2)?,
+                        RationalTime::new(1, 1)?
+                    ),
+                    (
+                        RationalTime::new(2, 1)?,
+                        RationalTime::new(1, 1)?,
+                        RationalTime::new(3, 1)?
+                    ),
+                    (
+                        RationalTime::new(5, 1)?,
+                        RationalTime::ZERO,
+                        RationalTime::new(4, 1)?
+                    )
+                ]
+            );
+        }
+        result.undo.apply(&mut project)?;
+        assert!(
+            project
+                .sequences
+                .values()
+                .next()
+                .unwrap()
+                .tracks
+                .iter()
+                .all(|t| t.clips.len() == 2)
+        );
+        project.sequences.values_mut().next().unwrap().tracks[1].locked = true;
+        assert!(
+            super::source_edit_commands(
+                &project,
+                media,
+                RationalTime::ZERO,
+                RationalTime::new(1, 1)?,
+                RationalTime::new(1, 1)?,
+                false
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_overwrite_preserves_tails_and_later_timing() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for (position, duration, expected) in [
+            (1, 2, vec![(0, 0, 1), (1, 0, 2), (3, 3, 1), (4, 0, 4)]),
+            (3, 2, vec![(0, 0, 3), (3, 0, 2), (5, 1, 3)]),
+            (0, 8, vec![(0, 0, 8)]),
+            (10, 1, vec![(0, 0, 4), (4, 0, 4), (10, 0, 1)]),
+        ] {
+            let mut project = Project::new("Overwrite edit");
+            insert_media_into_project(
+                &mut project,
+                std::path::Path::new("overwrite.mp4"),
+                RationalTime::new(4, 1)?,
+                true,
+            )?;
+            let media = *project.media.keys().next().unwrap();
+            let append = super::append_source_commands(
+                &project,
+                media,
+                RationalTime::ZERO,
+                RationalTime::new(4, 1)?,
+            )?;
+            prism_commands::CommandEngine::execute_transaction(&mut project, "Append", append)?;
+            let commands = super::source_edit_commands(
+                &project,
+                media,
+                RationalTime::ZERO,
+                RationalTime::new(duration, 1)?,
+                RationalTime::new(position, 1)?,
+                true,
+            )?;
+            let result = prism_commands::CommandEngine::execute_transaction(
+                &mut project,
+                "Overwrite",
+                commands,
+            )?;
+            for track in &project.sequences.values().next().unwrap().tracks {
+                let ranges = track
+                    .clips
+                    .iter()
+                    .map(|c| (c.timeline_start, c.source_start, c.source_duration))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    ranges,
+                    expected
+                        .iter()
+                        .map(|&(a, b, c)| (
+                            RationalTime::new(a, 1).unwrap(),
+                            RationalTime::new(b, 1).unwrap(),
+                            RationalTime::new(c, 1).unwrap()
+                        ))
+                        .collect::<Vec<_>>()
+                );
+            }
+            result.undo.apply(&mut project)?;
+            assert!(
+                project
+                    .sequences
+                    .values()
+                    .next()
+                    .unwrap()
+                    .tracks
+                    .iter()
+                    .all(|t| t.clips.len() == 2)
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn all_track_cuts_skip_locks_and_undo_atomically() -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("All track cut");
+        insert_media_into_project(
+            &mut project,
+            std::path::Path::new("all-tracks.mp4"),
+            RationalTime::new(2, 1)?,
+            true,
+        )?;
+        let cut = RationalTime::new(1, 1)?;
+        assert!(super::split_all_commands(&project, RationalTime::ZERO).is_err());
+        let commands = super::split_all_commands(&project, cut)?;
+        assert_eq!(commands.len(), 2);
+        let original = project.clone();
+        let result = prism_commands::CommandEngine::execute_transaction(
+            &mut project,
+            "All track cut",
+            commands,
+        )?;
+        assert!(
+            project
+                .sequences
+                .values()
+                .next()
+                .unwrap()
+                .tracks
+                .iter()
+                .all(|track| track.clips.len() == 2)
+        );
+        result.undo.apply(&mut project)?;
+        let clips = |project: &Project| {
+            project
+                .sequences
+                .values()
+                .flat_map(|sequence| &sequence.tracks)
+                .flat_map(|track| {
+                    track.clips.iter().map(move |clip| {
+                        (
+                            track.id,
+                            clip.id,
+                            clip.media_id,
+                            clip.timeline_start,
+                            clip.source_start,
+                            clip.source_duration,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(clips(&project), clips(&original));
+        let sequence = project.sequences.values_mut().next().unwrap();
+        sequence.tracks[0].locked = true;
+        sequence.tracks[1].muted = true;
+        assert_eq!(super::split_all_commands(&project, cut)?.len(), 1);
+        project.sequences.values_mut().next().unwrap().tracks[1].locked = true;
+        assert!(super::split_all_commands(&project, cut).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn program_match_uses_visible_picture_and_rejects_gaps()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut project = Project::new("Match Program");
+        insert_media_into_project(
+            &mut project,
+            std::path::Path::new("match-program.mp4"),
+            RationalTime::new(2, 1)?,
+            true,
+        )?;
+        assert_eq!(
+            super::program_clip_index(&project, RationalTime::new(1, 1)?),
+            Some(0)
+        );
+        assert_eq!(
+            super::program_clip_index(&project, RationalTime::new(2, 1)?),
+            None
+        );
+        project.sequences.values_mut().next().unwrap().tracks[0].visible = false;
+        assert_eq!(
+            super::program_clip_index(&project, RationalTime::ZERO),
+            None
+        );
+        Ok(())
     }
 
     #[test]
@@ -6215,6 +6991,7 @@ mod tests {
             RationalTime::new(3, 1)?,
             false,
             true,
+            None,
         )?;
         let media_id = *project.media.keys().next().ok_or("missing media")?;
         assert_eq!(
@@ -6480,6 +7257,7 @@ mod tests {
             RationalTime::new(3, 1)?,
             false,
             true,
+            None,
         )?;
         project.validate()?;
         let sequence = project
@@ -6510,6 +7288,7 @@ mod tests {
             RationalTime::new(3, 1)?,
             true,
             true,
+            None,
         )?;
         let media_id = *project.media.keys().next().ok_or("missing media")?;
         let commands = super::append_source_commands(
@@ -6642,6 +7421,7 @@ mod tests {
             RationalTime::new(3, 1)?,
             false,
             true,
+            None,
         )?;
         let media_id = *project.media.keys().next().ok_or("missing media")?;
         let commands = super::append_source_commands(
@@ -6685,6 +7465,7 @@ mod tests {
             RationalTime::new(3, 1)?,
             false,
             true,
+            None,
         )?;
         super::insert_stream_media_into_project(
             &mut project,
@@ -6692,6 +7473,7 @@ mod tests {
             RationalTime::new(2, 1)?,
             true,
             true,
+            None,
         )?;
         project.validate()?;
         let sequence = project
@@ -6759,6 +7541,22 @@ mod tests {
         apply_project_summary(&ui, &project, &path);
         let runtime = Rc::new(NativeExportRuntime::new(Some(project), Some(path.clone())));
         bind_editor_callbacks(&ui, &runtime);
+        assert!(ui.invoke_edit_shortcut("n".into(), false, false, false));
+        assert_eq!(ui.get_active_tool(), "R");
+        ui.set_active_tool("V".into());
+        assert!(ui.invoke_edit_shortcut("r".into(), false, false, false));
+        assert_eq!(ui.get_active_tool(), "V");
+        assert!(ui.get_feedback().contains("not built"));
+        ui.set_keyboard_preset("Prism".into());
+        assert!(ui.invoke_edit_shortcut("r".into(), false, false, false));
+        assert_eq!(ui.get_active_tool(), "R");
+        ui.set_keyboard_preset("Premiere".into());
+        ui.set_active_tool("V".into());
+        assert!(ui.invoke_edit_shortcut("=".into(), false, false, false));
+        assert_eq!(ui.get_timeline_zoom(), 2.0);
+        assert!(ui.invoke_edit_shortcut("\\".into(), false, false, false));
+        assert_eq!(ui.get_timeline_zoom(), 1.0);
+
         runtime.reset_view(&ui);
         assert_eq!(ui.get_media_task_status(), "DECODING");
         assert_eq!(ui.get_media_task_pending(), 1);
@@ -6975,6 +7773,7 @@ mod tests {
                 "MARKERS",
                 "COMMANDS",
                 "COMMANDS_EMPTY",
+                "SHORTCUTS",
                 "EXPORT4K",
             ] {
                 ui.set_palette_open(matches!(workspace, "COMMANDS" | "COMMANDS_EMPTY"));
@@ -7023,6 +7822,7 @@ mod tests {
                 ui.set_inspector_open(workspace != "COLLAPSED");
                 ui.set_inspector_tab(
                     match workspace {
+                        "SHORTCUTS" => "Shortcuts",
                         "HISTORY" => "History",
                         "JOBS" => "Jobs",
                         "SCOPES" | "WAVEFORM" | "VECTOR" => "Scopes",

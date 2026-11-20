@@ -18,7 +18,11 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const STORAGE_SCHEMA_VERSION: u32 = 6;
+const STORAGE_SCHEMA_VERSION: u32 = 7;
+type StoredSequences = (
+    BTreeMap<SequenceId, Sequence>,
+    BTreeMap<SequenceId, RationalTime>,
+);
 
 /// Persistence and stored-data validation failures.
 #[derive(Debug, Error)]
@@ -123,7 +127,7 @@ pub fn load_from_connection(connection: &Connection) -> Result<Project, Persiste
     validate_database(connection)?;
     let root = read_root(connection)?;
     let media = read_media(connection)?;
-    let mut sequences = read_sequences(connection)?;
+    let (mut sequences, sequence_frame_rates) = read_sequences(connection)?;
     read_markers(connection, &mut sequences)?;
     read_transitions(connection, &mut sequences)?;
     read_tracks(connection, &mut sequences)?;
@@ -135,6 +139,7 @@ pub fn load_from_connection(connection: &Connection) -> Result<Project, Persiste
         revision: root.revision,
         media,
         sequences,
+        sequence_frame_rates,
     })
     .map_err(PersistenceError::from)
 }
@@ -525,7 +530,9 @@ fn initialize(connection: &Connection) -> Result<(), PersistenceError> {
          );
          CREATE TABLE IF NOT EXISTS sequence (
              id TEXT PRIMARY KEY,
-             name TEXT NOT NULL
+             name TEXT NOT NULL,
+             frame_rate_value INTEGER NOT NULL DEFAULT 30 CHECK(frame_rate_value > 0),
+             frame_rate_scale INTEGER NOT NULL DEFAULT 1 CHECK(frame_rate_scale > 0)
          );
          CREATE TABLE IF NOT EXISTS track (
              id TEXT PRIMARY KEY,
@@ -570,7 +577,7 @@ fn initialize(connection: &Connection) -> Result<(), PersistenceError> {
              duration_scale INTEGER NOT NULL CHECK(duration_scale > 0),
              UNIQUE(track_id, position)
          );
-         PRAGMA user_version = 6;",
+         PRAGMA user_version = 7;",
     )?;
     Ok(())
 }
@@ -629,6 +636,14 @@ fn upgrade_storage_schema(connection: &Connection) -> Result<(), PersistenceErro
             "ALTER TABLE media ADD COLUMN proxy_source_sha256 TEXT;
              ALTER TABLE media ADD COLUMN proxy_source_bytes INTEGER;
              PRAGMA user_version = 6;",
+        )?;
+    }
+    let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 6 {
+        connection.execute_batch(
+            "ALTER TABLE sequence ADD COLUMN frame_rate_value INTEGER NOT NULL DEFAULT 30 CHECK(frame_rate_value > 0);
+             ALTER TABLE sequence ADD COLUMN frame_rate_scale INTEGER NOT NULL DEFAULT 1 CHECK(frame_rate_scale > 0);
+             PRAGMA user_version = 7;",
         )?;
     }
     Ok(())
@@ -722,9 +737,23 @@ fn write_project(transaction: &Transaction<'_>, project: &Project) -> Result<(),
         )?;
     }
     for sequence in project.sequences.values() {
+        let frame_rate =
+            project
+                .sequence_frame_rate(sequence.id)
+                .ok_or(PersistenceError::Orphan {
+                    child: "sequence settings",
+                    parent: "sequence",
+                    id: sequence.id.as_uuid().to_string(),
+                })?;
         transaction.execute(
-            "INSERT INTO sequence(id, name) VALUES(?1, ?2)",
-            params![sequence.id.as_uuid().to_string(), sequence.name],
+            "INSERT INTO sequence(id, name, frame_rate_value, frame_rate_scale)
+             VALUES(?1, ?2, ?3, ?4)",
+            params![
+                sequence.id.as_uuid().to_string(),
+                sequence.name,
+                frame_rate.value(),
+                i64::from(frame_rate.timescale())
+            ],
         )?;
         write_markers(transaction, sequence)?;
         write_transitions(transaction, sequence)?;
@@ -911,17 +940,26 @@ fn read_media(
     Ok(media)
 }
 
-fn read_sequences(
-    connection: &Connection,
-) -> Result<BTreeMap<SequenceId, Sequence>, PersistenceError> {
-    let mut statement = connection.prepare("SELECT id, name FROM sequence ORDER BY id")?;
+fn read_sequences(connection: &Connection) -> Result<StoredSequences, PersistenceError> {
+    let mut statement = connection
+        .prepare("SELECT id, name, frame_rate_value, frame_rate_scale FROM sequence ORDER BY id")?;
     let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
     })?;
     let mut sequences = BTreeMap::new();
+    let mut frame_rates = BTreeMap::new();
     for row in rows {
-        let (raw_id, name) = row?;
+        let (raw_id, name, frame_rate_value, frame_rate_scale) = row?;
         let id = SequenceId::from_uuid(parse_uuid("sequence.id", &raw_id)?);
+        let frame_rate = RationalTime::new(
+            frame_rate_value,
+            to_u32(frame_rate_scale, "sequence.frame_rate_scale")?,
+        )?;
         sequences.insert(
             id,
             Sequence {
@@ -932,8 +970,9 @@ fn read_sequences(
                 tracks: Vec::new(),
             },
         );
+        frame_rates.insert(id, frame_rate);
     }
-    Ok(sequences)
+    Ok((sequences, frame_rates))
 }
 
 fn read_markers(
@@ -1218,6 +1257,10 @@ mod tests {
                     id: sequence_id,
                     name: "Main".to_owned(),
                 },
+                Command::SetSequenceFrameRate {
+                    sequence_id,
+                    frame_rate: RationalTime::new(30_000, 1_001)?,
+                },
                 Command::CreateTrack {
                     sequence_id,
                     id: track_id,
@@ -1317,6 +1360,10 @@ mod tests {
         assert_eq!(loaded.revision(), project.revision());
         assert_eq!(loaded.media.len(), 1);
         assert_eq!(
+            loaded.sequence_frame_rate(sequence_id),
+            Some(RationalTime::new(30_000, 1_001)?)
+        );
+        assert_eq!(
             loaded.media[&media_id].proxy_path.as_deref(),
             Some("/cache/source-proxy.mp4")
         );
@@ -1367,8 +1414,13 @@ mod tests {
             .tracks[0];
         assert!(track.visible);
         assert!(!track.muted);
+        let sequence_id = *loaded.sequences.keys().next().ok_or("missing sequence")?;
+        assert_eq!(
+            loaded.sequence_frame_rate(sequence_id),
+            Some(RationalTime::from_integer(30))
+        );
         let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         Ok(())
     }
 

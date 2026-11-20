@@ -25,6 +25,7 @@ pub(crate) struct ViewPreferences {
     pub media_filter: i32,
     pub scope_mode: i32,
     pub monitor_scope: bool,
+    pub keyboard_preset: String,
 }
 
 impl Default for ViewPreferences {
@@ -43,6 +44,7 @@ impl Default for ViewPreferences {
             media_filter: 0,
             scope_mode: 0,
             monitor_scope: false,
+            keyboard_preset: "Premiere".into(),
         }
     }
 }
@@ -51,7 +53,8 @@ impl ViewPreferences {
     pub fn validate(&self) -> Result<(), io::Error> {
         if self.version != 1
             || !["Editing", "Assembly"].contains(&self.layout.as_str())
-            || !["Properties", "History", "Jobs", "Scopes"].contains(&self.inspector_tab.as_str())
+            || !["Properties", "History", "Jobs", "Scopes", "Shortcuts"]
+                .contains(&self.inspector_tab.as_str())
             || !["Clip", "Source"].contains(&self.inspector_section.as_str())
             || !["Media", "Markers", "Info"].contains(&self.browser_tab.as_str())
             || !self.monitor_height.is_finite()
@@ -59,6 +62,7 @@ impl ViewPreferences {
             || !(0..=2).contains(&self.media_sort)
             || !(0..=3).contains(&self.media_filter)
             || !(0..=2).contains(&self.scope_mode)
+            || !["Premiere", "Prism"].contains(&self.keyboard_preset.as_str())
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -124,7 +128,8 @@ mod tests {
             std::env::temp_dir().join(format!("prism-view-{}-{nonce}.json", std::process::id()));
         assert!(ViewPreferences::load(&path)?.is_none());
         let settings = ViewPreferences {
-            inspector_tab: "Scopes".into(),
+            keyboard_preset: "Prism".into(),
+            inspector_tab: "Shortcuts".into(),
             scope_mode: 2,
             monitor_scope: true,
             layout: "Assembly".into(),
@@ -136,6 +141,7 @@ mod tests {
         assert_eq!(ViewPreferences::load(&path)?, Some(settings));
         fs::write(&path, br#"{"layout":"Editing"}"#)?;
         let legacy = ViewPreferences::load(&path)?.ok_or("legacy preferences were not loaded")?;
+        assert_eq!(legacy.keyboard_preset, "Premiere");
         assert_eq!(legacy.scope_mode, 0);
         assert!(!legacy.monitor_scope);
         assert!(

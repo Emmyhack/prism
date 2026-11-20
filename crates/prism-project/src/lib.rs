@@ -12,6 +12,9 @@ use thiserror::Error;
 /// Current authoritative project schema version.
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
+/// Default sequence rate used for projects created without explicit settings.
+pub const DEFAULT_SEQUENCE_FRAME_RATE: RationalTime = RationalTime::from_integer(30);
+
 /// A Prism project aggregate.
 #[derive(Clone, Debug)]
 pub struct Project {
@@ -25,6 +28,7 @@ pub struct Project {
     pub media: BTreeMap<MediaAssetId, MediaAsset>,
     /// Editable sequences.
     pub sequences: BTreeMap<SequenceId, Sequence>,
+    sequence_frame_rates: BTreeMap<SequenceId, RationalTime>,
     revision: u64,
 }
 
@@ -38,6 +42,7 @@ impl Project {
             schema_version: CURRENT_SCHEMA_VERSION,
             media: BTreeMap::new(),
             sequences: BTreeMap::new(),
+            sequence_frame_rates: BTreeMap::new(),
             revision: 0,
         }
     }
@@ -61,6 +66,7 @@ impl Project {
             schema_version: state.schema_version,
             media: state.media,
             sequences: state.sequences,
+            sequence_frame_rates: state.sequence_frame_rates,
             revision: state.revision,
         };
         project.validate()?;
@@ -71,6 +77,52 @@ impl Project {
     #[must_use]
     pub const fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Returns the exact frames-per-second setting for a sequence.
+    #[must_use]
+    pub fn sequence_frame_rate(&self, sequence_id: SequenceId) -> Option<RationalTime> {
+        self.sequences.get(&sequence_id).map(|_| {
+            self.sequence_frame_rates
+                .get(&sequence_id)
+                .copied()
+                .unwrap_or(DEFAULT_SEQUENCE_FRAME_RATE)
+        })
+    }
+
+    /// Returns the exact duration of one frame for a sequence.
+    #[must_use]
+    pub fn sequence_frame_duration(&self, sequence_id: SequenceId) -> Option<RationalTime> {
+        let rate = self.sequence_frame_rate(sequence_id)?;
+        let scale = u32::try_from(rate.value()).ok()?;
+        RationalTime::new(i64::from(rate.timescale()), scale).ok()
+    }
+
+    /// Sets the exact frames-per-second setting for an existing sequence.
+    ///
+    /// # Errors
+    /// Returns a validation error when the sequence is missing or the rate is not
+    /// positive and no greater than 1,000 fps.
+    pub fn set_sequence_frame_rate(
+        &mut self,
+        sequence_id: SequenceId,
+        frame_rate: RationalTime,
+    ) -> Result<(), ProjectValidationError> {
+        if !self.sequences.contains_key(&sequence_id) {
+            return Err(ProjectValidationError::SequenceSettingOrphan);
+        }
+        if !frame_rate.is_positive() || frame_rate > RationalTime::from_integer(1_000) {
+            return Err(ProjectValidationError::InvalidSequenceFrameRate);
+        }
+        self.sequence_frame_rates.insert(sequence_id, frame_rate);
+        Ok(())
+    }
+
+    /// Iterates explicitly stored sequence frame-rate settings.
+    pub fn sequence_frame_rates(&self) -> impl Iterator<Item = (SequenceId, RationalTime)> + '_ {
+        self.sequence_frame_rates
+            .iter()
+            .map(|(sequence_id, rate)| (*sequence_id, *rate))
     }
 
     /// Marks one successfully committed mutation.
@@ -100,6 +152,14 @@ impl Project {
         let mut clip_ids = BTreeSet::new();
         let mut marker_ids = BTreeSet::new();
         let mut transition_ids = BTreeSet::new();
+        for (sequence_id, frame_rate) in &self.sequence_frame_rates {
+            if !self.sequences.contains_key(sequence_id) {
+                return Err(ProjectValidationError::SequenceSettingOrphan.into());
+            }
+            if !frame_rate.is_positive() || *frame_rate > RationalTime::from_integer(1_000) {
+                return Err(ProjectValidationError::InvalidSequenceFrameRate.into());
+            }
+        }
         for (asset_key, asset) in &self.media {
             if *asset_key != asset.id {
                 return Err(ProjectValidationError::KeyMismatch { object: "media" }.into());
@@ -316,6 +376,8 @@ pub struct RestoredProject {
     pub media: BTreeMap<MediaAssetId, MediaAsset>,
     /// Editable sequences.
     pub sequences: BTreeMap<SequenceId, Sequence>,
+    /// Exact frames-per-second settings keyed by sequence.
+    pub sequence_frame_rates: BTreeMap<SequenceId, RationalTime>,
 }
 
 /// A nondestructive reference to source media.
@@ -528,6 +590,12 @@ pub enum ProjectError {
 /// Structured authoritative project invariant failures.
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum ProjectValidationError {
+    /// A sequence setting references no sequence.
+    #[error("sequence setting references a missing sequence")]
+    SequenceSettingOrphan,
+    /// A sequence frame rate is zero, negative, or outside the supported bound.
+    #[error("sequence frame rate must be positive and no greater than 1000 fps")]
+    InvalidSequenceFrameRate,
     /// A user-visible object name is blank.
     #[error("{object} name must not be empty")]
     EmptyName {

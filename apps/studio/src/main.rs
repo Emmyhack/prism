@@ -5,6 +5,7 @@
 // retains the workspace's strict lint policy.
 mod audio_clock;
 mod audio_preview;
+mod edit_shortcuts;
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod native_ui;
 mod stream_preview;

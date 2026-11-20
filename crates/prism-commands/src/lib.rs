@@ -399,6 +399,13 @@ pub enum Command {
         /// User-visible sequence name.
         name: String,
     },
+    /// Changes a sequence's exact frames-per-second setting.
+    SetSequenceFrameRate {
+        /// Sequence to update.
+        sequence_id: SequenceId,
+        /// Exact frames per second.
+        frame_rate: RationalTime,
+    },
     /// Adds a named exact-time marker to a sequence.
     AddMarker {
         /// Owning sequence.
@@ -635,6 +642,13 @@ pub enum Event {
     SequenceCreated {
         /// Created sequence.
         id: SequenceId,
+    },
+    /// A sequence frame-rate setting changed.
+    SequenceFrameRateChanged {
+        /// Updated sequence.
+        sequence_id: SequenceId,
+        /// New exact frames per second.
+        frame_rate: RationalTime,
     },
     /// A marker was added.
     MarkerAdded {
@@ -1008,6 +1022,10 @@ impl CommandEngine {
                 source_fingerprint,
             } => set_media_proxy(project, media_id, proxy_path, source_fingerprint),
             Command::CreateSequence { id, name } => create_sequence(project, id, name),
+            Command::SetSequenceFrameRate {
+                sequence_id,
+                frame_rate,
+            } => set_sequence_frame_rate(project, sequence_id, frame_rate),
             Command::AddMarker {
                 sequence_id,
                 id,
@@ -1298,6 +1316,20 @@ fn create_sequence(
         },
     );
     Ok(Event::SequenceCreated { id })
+}
+
+fn set_sequence_frame_rate(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    frame_rate: RationalTime,
+) -> Result<Event, CommandError> {
+    project
+        .set_sequence_frame_rate(sequence_id, frame_rate)
+        .map_err(|error| CommandError::Invariant(error.to_string()))?;
+    Ok(Event::SequenceFrameRateChanged {
+        sequence_id,
+        frame_rate,
+    })
 }
 
 fn add_marker(

@@ -89,6 +89,8 @@ pub(crate) struct StreamPreview {
     duration: RationalTime,
     width: u32,
     height: u32,
+    frame_rate: RationalTime,
+    catch_up_frames: usize,
     next_index: usize,
     epoch: u64,
     last: Option<DecodedVideoFrame>,
@@ -114,6 +116,7 @@ impl StreamPreview {
     pub fn open(
         path: &Path,
         base: RationalTime,
+        frame_rate: RationalTime,
         ffmpeg: &Path,
         ffprobe: &Path,
         control: StreamControl,
@@ -121,6 +124,9 @@ impl StreamPreview {
     ) -> Result<Self, String> {
         if !control.active() || cancelled.load(Ordering::Acquire) {
             return Err("Video playback stopped".into());
+        }
+        if !frame_rate.is_positive() {
+            return Err("Video playback frame rate must be positive".into());
         }
         let epoch = control.epoch.load(Ordering::Acquire);
         let metadata = FfprobeInspector::new(ffprobe)
@@ -141,6 +147,13 @@ impl StreamPreview {
             })
             .ok_or("No video dimensions available")?;
         let (width, height) = preview_size(width, height)?;
+        let catch_up_frames = frame_rate
+            .value()
+            .checked_add(i64::from(frame_rate.timescale()).saturating_sub(1))
+            .and_then(|value| value.checked_div(i64::from(frame_rate.timescale())))
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(1)
+            .max(1);
         if cancelled.load(Ordering::Acquire) {
             return Err("Video playback stopped".into());
         }
@@ -161,7 +174,11 @@ impl StreamPreview {
                 "1",
                 "-vf",
             ])
-            .arg(format!("fps=30,scale={width}:{height}"))
+            .arg(format!(
+                "fps={}/{},scale={width}:{height}",
+                frame_rate.value(),
+                frame_rate.timescale()
+            ))
             .args(["-pix_fmt", "rgba", "-f", "rawvideo", "pipe:1"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -181,6 +198,8 @@ impl StreamPreview {
             duration: metadata.duration.unwrap_or(RationalTime::ZERO),
             width,
             height,
+            frame_rate,
+            catch_up_frames,
             next_index: 0,
             epoch,
             last: None,
@@ -193,21 +212,22 @@ impl StreamPreview {
         if time < self.base {
             return None;
         }
-        usize::try_from(
-            time.checked_sub(self.base)
-                .ok()?
-                .to_ticks(30, RoundingMode::Floor)
-                .ok()?,
-        )
-        .ok()
+        let scale = u32::try_from(self.frame_rate.value()).ok()?;
+        let ticks = time
+            .checked_sub(self.base)
+            .ok()?
+            .to_ticks(scale, RoundingMode::Floor)
+            .ok()?;
+        usize::try_from(ticks.checked_div(i64::from(self.frame_rate.timescale()))?).ok()
     }
-    pub fn reusable(&self, path: &Path, time: RationalTime) -> bool {
+    pub fn reusable(&self, path: &Path, time: RationalTime, frame_rate: RationalTime) -> bool {
         self.control.active()
             && self.epoch == self.control.epoch.load(Ordering::Acquire)
             && self.path == path
+            && self.frame_rate == frame_rate
             && self.index(time).is_some_and(|index| {
                 index.saturating_add(1) >= self.next_index
-                    && index < self.next_index.saturating_add(30)
+                    && index < self.next_index.saturating_add(self.catch_up_frames)
             })
     }
     pub fn frame(
@@ -220,7 +240,7 @@ impl StreamPreview {
         let target = self
             .index(time)
             .ok_or("Video seek precedes decoder session")?;
-        if target >= self.next_index.saturating_add(30) {
+        if target >= self.next_index.saturating_add(self.catch_up_frames) {
             return Err("Video seek exceeds bounded preview window".into());
         }
         while self.next_index <= target {
@@ -269,6 +289,7 @@ mod tests {
             StreamPreview::open(
                 Path::new("source.mp4"),
                 RationalTime::ZERO,
+                RationalTime::from_integer(30),
                 Path::new("/nonexistent/ffmpeg"),
                 Path::new("/nonexistent/ffprobe"),
                 control,
@@ -306,6 +327,7 @@ mod tests {
         let mut preview = StreamPreview::open(
             &path,
             RationalTime::ZERO,
+            RationalTime::new(30_000, 1_001)?,
             &ffmpeg,
             &ffprobe,
             control.clone(),
@@ -314,17 +336,19 @@ mod tests {
         let pid = control.pid().ok_or("Missing decoder process")?;
         let (first, _) = preview.frame(RationalTime::ZERO)?;
         let position = RationalTime::new(1, 2)?;
-        assert!(preview.reusable(&path, position));
+        let frame_rate = RationalTime::new(30_000, 1_001)?;
+        assert!(preview.reusable(&path, position, frame_rate));
         let (later, _) = preview.frame(position)?;
         assert_eq!(control.pid(), Some(pid));
         assert_ne!(first.rgba, later.rgba);
-        assert!(!preview.reusable(&path, RationalTime::ZERO));
-        assert!(!preview.reusable(Path::new("other.mp4"), position));
-        assert!(!preview.reusable(&path, RationalTime::new(5, 1)?));
+        assert!(!preview.reusable(&path, RationalTime::ZERO, frame_rate));
+        assert!(!preview.reusable(Path::new("other.mp4"), position, frame_rate));
+        assert!(!preview.reusable(&path, RationalTime::new(5, 1)?, frame_rate));
+        assert!(!preview.reusable(&path, position, RationalTime::from_integer(25)));
         control.stop();
         assert!(control.pid().is_none());
         control.activate();
-        assert!(!preview.reusable(&path, position));
+        assert!(!preview.reusable(&path, position, frame_rate));
         assert!(preview.frame(RationalTime::new(3, 4)?).is_err());
         assert!(
             started.elapsed() < std::time::Duration::from_secs(10),

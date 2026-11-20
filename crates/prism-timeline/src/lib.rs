@@ -66,6 +66,15 @@ impl RationalTime {
         timescale: 1,
     };
 
+    /// Creates an exact whole-second value with a unit timebase.
+    #[must_use]
+    pub const fn from_integer(value: i64) -> Self {
+        Self {
+            value,
+            timescale: 1,
+        }
+    }
+
     /// Creates and normalizes exact time.
     ///
     /// # Errors

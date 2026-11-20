@@ -34,7 +34,9 @@ the interface.
   slide and rolling edits, plus transport/frame steps, In/Out, marker, snapping,
   lock, visibility, guides and zoom controls. Active tools keep Prism’s violet
   state. Hover/context help, accessible labels, focus and existing shortcuts remain
-  available. See `../../assets/icons/README.md` for icon conventions and references.
+  available. File, import/export, duplicate/delete and proxy link actions pair
+  matching icons with visible names; disclosure rows use vector chevrons. See
+  `../../assets/icons/README.md` for icon conventions and references.
 
 - Project resets cancel obsolete waveform decoding and use a fresh work queue and
   result receiver. Fingerprint and decode stages are deadline-bounded, with cooperative

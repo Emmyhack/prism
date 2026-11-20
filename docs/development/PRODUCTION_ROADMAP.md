@@ -5,6 +5,19 @@ readiness or parity with Premiere Pro. This roadmap follows the interface study 
 `../research/PREMIERE_INTERFACE_REFERENCE.md` and the actual engine status in
 `../FEATURE_STATUS.md`.
 
+## Premiere coverage baseline
+
+Use [the capability coverage matrix](PREMIERE_PARITY_MATRIX.md) alongside this
+roadmap. It separates native workflows, partial foundations and missing/integration
+work, and defines acceptance gates. It is a family-level inventory; a complete
+versioned command/effect/format catalog remains required before any parity claim.
+
+The native Edit workspace now defaults to a Premiere-oriented shortcut subset,
+with a searchable Keys inspector and the legacy Prism preset. Conflicting missing
+commands are reserved rather than dispatched to unrelated edits. Program Match
+Frame and an atomic cut across all unlocked tracks are implemented; full targeted
+Add Edit, Insert/Overwrite, clipboard and focus-aware monitor commands remain open.
+
 ## Current increment
 
 - Waveform jobs now use supervised audio decoding and cooperative fingerprint
