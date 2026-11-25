@@ -844,11 +844,13 @@ export component PrismStudio inherits Window {
                         HorizontalLayout { height: 32px; spacing: 8px;
                             Action { label: "1080p"; active: root.export-preset-index == 0; enabled: !root.export-can-cancel; clicked => { root.export-preset-index = 0; } }
                             Action { label: "4K UHD"; active: root.export-preset-index == 1; enabled: !root.export-can-cancel; clicked => { root.export-preset-index = 1; } }
+                            Action { label: "Vertical"; active: root.export-preset-index == 2; enabled: !root.export-can-cancel; clicked => { root.export-preset-index = 2; } }
+                            Action { label: "Square"; active: root.export-preset-index == 3; enabled: !root.export-can-cancel; clicked => { root.export-preset-index = 3; } }
                         }
-                        Text { text: root.export-preset-index == 0 ? "1920 × 1080 · 29.97 fps · 8 Mbps" : "3840 × 2160 · 29.97 fps · 35 Mbps"; color: #92929f; font-size: 11px; height: 22px; }
+                        Text { text: root.export-preset-index == 0 ? "1920 × 1080 · 29.97 fps · 8 Mbps" : root.export-preset-index == 1 ? "3840 × 2160 · 29.97 fps · 35 Mbps" : root.export-preset-index == 2 ? "1080 × 1920 · 29.97 fps · 8 Mbps" : "1080 × 1080 · 29.97 fps · 8 Mbps"; color: #92929f; font-size: 11px; height: 22px; }
                         Text { text: root.export-video-summary + "\n" + root.export-audio-summary; color: #aaa2b4; font-size: 11px; wrap: word-wrap; }
                         Rectangle { height: 1px; background: #3a3a44; }
-                        Text { text: "Exports one visible video track with an optional unmuted audio track. Extra active tracks and unsupported transitions are blocked until their rendering is supported."; color: #9696a4; font-size: 12px; wrap: word-wrap; }
+                        Text { text: "Composites every visible video track, renders dissolves, and mixes every unmuted audio track."; color: #9696a4; font-size: 12px; wrap: word-wrap; }
                         Text { text: root.export-preflight; color: root.can-export ? #8fb9a5 : #d0aa7f; font-size: 11px; wrap: word-wrap; }
                         } }
                         Action { with-icon: true; icon: @image-url("../../../assets/icons/export.svg"); label: root.export-can-cancel ? "Exporting…" : "Export sequence"; primary: true; height: 40px; enabled: root.can-export && !root.export-can-cancel; clicked => { root.command-invoked("export.queue"); } }

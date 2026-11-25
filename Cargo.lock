@@ -3739,6 +3739,7 @@ dependencies = [
 name = "prism-export"
 version = "0.1.0"
 dependencies = [
+ "prism-audio",
  "prism-commands",
  "prism-core",
  "prism-media",

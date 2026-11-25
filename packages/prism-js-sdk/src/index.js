@@ -77,10 +77,11 @@ export function rippleDelete({ sequenceId, trackId, clipId }) {
   return { type: "rippleDelete", sequenceId, trackId, clipId };
 }
 
-export function addTransition({ sequenceId, id, outgoingClip, incomingClip, duration, kind = "dissolve" }) {
+export function addTransition({ sequenceId, id, outgoingClip, incomingClip, duration, alignment = "centered", kind = "dissolve" }) {
   if (!(duration instanceof RationalTime)) throw new TypeError("duration must be RationalTime");
+  if (!["startAtCut", "centered", "endAtCut"].includes(alignment)) throw new TypeError("invalid transition alignment");
   if (kind !== "dissolve") throw new TypeError("kind must be dissolve");
-  return { type: "addTransition", sequenceId, id, outgoingClip, incomingClip, duration: duration.toJSON(), kind };
+  return { type: "addTransition", sequenceId, id, outgoingClip, incomingClip, duration: duration.toJSON(), alignment, kind };
 }
 
 export function deleteTransition({ sequenceId, transitionId }) {

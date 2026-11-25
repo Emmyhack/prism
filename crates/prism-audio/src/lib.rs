@@ -375,6 +375,15 @@ impl StereoGainPan {
         Self::default()
     }
 
+    /// Returns the per-channel gains used by processing and mixing.
+    ///
+    /// Export and realtime callers share this mapping so pan-law semantics do
+    /// not drift between pipelines.
+    #[must_use]
+    pub fn channel_gains(self) -> (f32, f32) {
+        self.coefficients()
+    }
+
     /// Sets a linear gain multiplier.
     ///
     /// # Errors

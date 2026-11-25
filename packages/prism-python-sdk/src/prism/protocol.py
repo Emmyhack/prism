@@ -214,12 +214,15 @@ class AddTransition:
     outgoing_clip: str
     incoming_clip: str
     duration: RationalTime
+    alignment: str = "centered"
     kind: str = "dissolve"
 
     def as_dict(self) -> dict[str, Any]:
         if self.kind != "dissolve":
             raise ValueError("kind must be dissolve")
-        return {"type": "addTransition", "sequenceId": self.sequence_id, "id": self.id, "outgoingClip": self.outgoing_clip, "incomingClip": self.incoming_clip, "duration": self.duration.as_dict(), "kind": self.kind}
+        if self.alignment not in {"startAtCut", "centered", "endAtCut"}:
+            raise ValueError("alignment must be startAtCut, centered, or endAtCut")
+        return {"type": "addTransition", "sequenceId": self.sequence_id, "id": self.id, "outgoingClip": self.outgoing_clip, "incomingClip": self.incoming_clip, "duration": self.duration.as_dict(), "alignment": self.alignment, "kind": self.kind}
 
 
 @dataclass(frozen=True)

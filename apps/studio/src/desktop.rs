@@ -7,7 +7,8 @@
 use prism_core::{SequenceId, TrackId};
 use prism_export::{
     BasicMp4Exporter, ExportCancellation, ExportJobId, ExportJobState, ExportQueue,
-    ExportQueueError, SingleTrackMp4ExportRequest, VideoAudioMp4ExportRequest,
+    ExportQueueError, SequenceMp4ExportRequest, SingleTrackMp4ExportRequest,
+    VideoAudioMp4ExportRequest,
 };
 use prism_project::Project;
 use serde::{Deserialize, Serialize};
@@ -682,6 +683,29 @@ impl ExportWorker {
                 )
                 .map_err(|error| error.to_string())?;
             progress.report(100);
+            Ok(())
+        })
+    }
+
+    /// Starts the complete multitrack sequence exporter.
+    #[must_use]
+    pub fn spawn_sequence(
+        ffmpeg: PathBuf,
+        ffprobe: PathBuf,
+        project: Project,
+        sequence_id: SequenceId,
+        request: SequenceMp4ExportRequest,
+    ) -> Self {
+        Self::spawn(move |cancellation, progress| {
+            BasicMp4Exporter::new(ffmpeg, ffprobe)
+                .export_sequence_with_control(
+                    &project,
+                    sequence_id,
+                    &request,
+                    Some(&cancellation),
+                    |percent| progress.report(percent),
+                )
+                .map_err(|error| error.to_string())?;
             Ok(())
         })
     }

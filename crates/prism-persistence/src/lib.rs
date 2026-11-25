@@ -3,7 +3,7 @@
 use prism_core::{ClipId, MarkerId, MediaAssetId, ProjectId, SequenceId, TrackId, TransitionId};
 use prism_project::{
     Clip, Marker, MediaAsset, Project, ProjectError, ProxySourceFingerprint, RestoredProject,
-    Sequence, Track, TrackKind, Transition, TransitionKind,
+    Sequence, Track, TrackKind, Transition, TransitionAlignment, TransitionKind,
 };
 use prism_timeline::{RationalTime, TimeError};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -18,7 +18,7 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const STORAGE_SCHEMA_VERSION: u32 = 7;
+const STORAGE_SCHEMA_VERSION: u32 = 8;
 type StoredSequences = (
     BTreeMap<SequenceId, Sequence>,
     BTreeMap<SequenceId, RationalTime>,
@@ -561,6 +561,7 @@ fn initialize(connection: &Connection) -> Result<(), PersistenceError> {
              incoming_clip_id TEXT NOT NULL,
              duration_value INTEGER NOT NULL CHECK(duration_value > 0),
              duration_scale INTEGER NOT NULL CHECK(duration_scale > 0),
+             alignment TEXT NOT NULL DEFAULT 'centered' CHECK(alignment IN ('start_at_cut', 'centered', 'end_at_cut')),
              kind TEXT NOT NULL CHECK(kind IN ('dissolve')),
              UNIQUE(sequence_id, position)
          );
@@ -577,7 +578,7 @@ fn initialize(connection: &Connection) -> Result<(), PersistenceError> {
              duration_scale INTEGER NOT NULL CHECK(duration_scale > 0),
              UNIQUE(track_id, position)
          );
-         PRAGMA user_version = 7;",
+         PRAGMA user_version = 8;",
     )?;
     Ok(())
 }
@@ -644,6 +645,13 @@ fn upgrade_storage_schema(connection: &Connection) -> Result<(), PersistenceErro
             "ALTER TABLE sequence ADD COLUMN frame_rate_value INTEGER NOT NULL DEFAULT 30 CHECK(frame_rate_value > 0);
              ALTER TABLE sequence ADD COLUMN frame_rate_scale INTEGER NOT NULL DEFAULT 1 CHECK(frame_rate_scale > 0);
              PRAGMA user_version = 7;",
+        )?;
+    }
+    let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 7 {
+        connection.execute_batch(
+            "ALTER TABLE transition ADD COLUMN alignment TEXT NOT NULL DEFAULT 'centered' CHECK(alignment IN ('start_at_cut', 'centered', 'end_at_cut'));
+             PRAGMA user_version = 8;",
         )?;
     }
     Ok(())
@@ -789,8 +797,8 @@ fn write_transitions(
 ) -> Result<(), PersistenceError> {
     for (position, transition) in sequence.transitions.iter().enumerate() {
         transaction.execute(
-            "INSERT INTO transition(id, sequence_id, position, outgoing_clip_id, incoming_clip_id, duration_value, duration_scale, kind)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO transition(id, sequence_id, position, outgoing_clip_id, incoming_clip_id, duration_value, duration_scale, alignment, kind)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 transition.id.as_uuid().to_string(),
                 sequence.id.as_uuid().to_string(),
@@ -799,6 +807,11 @@ fn write_transitions(
                 transition.incoming_clip.as_uuid().to_string(),
                 transition.duration.value(),
                 i64::from(transition.duration.timescale()),
+                match transition.alignment {
+                    TransitionAlignment::StartAtCut => "start_at_cut",
+                    TransitionAlignment::Centered => "centered",
+                    TransitionAlignment::EndAtCut => "end_at_cut",
+                },
                 match transition.kind {
                     TransitionKind::Dissolve => "dissolve",
                 },
@@ -1017,7 +1030,7 @@ fn read_transitions(
     sequences: &mut BTreeMap<SequenceId, Sequence>,
 ) -> Result<(), PersistenceError> {
     let mut statement = connection.prepare(
-        "SELECT id, sequence_id, outgoing_clip_id, incoming_clip_id, duration_value, duration_scale, kind
+        "SELECT id, sequence_id, outgoing_clip_id, incoming_clip_id, duration_value, duration_scale, alignment, kind
          FROM transition ORDER BY sequence_id, position",
     )?;
     let rows = statement.query_map([], |row| {
@@ -1029,6 +1042,7 @@ fn read_transitions(
             row.get::<_, i64>(4)?,
             row.get::<_, i64>(5)?,
             row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
         ))
     })?;
     for row in rows {
@@ -1039,6 +1053,7 @@ fn read_transitions(
             raw_incoming,
             duration_value,
             duration_scale,
+            raw_alignment,
             raw_kind,
         ) = row?;
         let sequence_id =
@@ -1061,6 +1076,7 @@ fn read_transitions(
                 &raw_incoming,
             )?),
             duration: read_time(duration_value, duration_scale, "transition.duration_scale")?,
+            alignment: parse_transition_alignment(&raw_alignment)?,
             kind: parse_transition_kind(&raw_kind)?,
         });
     }
@@ -1189,6 +1205,18 @@ fn parse_transition_kind(value: &str) -> Result<TransitionKind, PersistenceError
     }
 }
 
+fn parse_transition_alignment(value: &str) -> Result<TransitionAlignment, PersistenceError> {
+    match value {
+        "start_at_cut" => Ok(TransitionAlignment::StartAtCut),
+        "centered" => Ok(TransitionAlignment::Centered),
+        "end_at_cut" => Ok(TransitionAlignment::EndAtCut),
+        _ => Err(PersistenceError::InvalidEnum {
+            field: "transition.alignment",
+            value: value.to_owned(),
+        }),
+    }
+}
+
 fn read_time(
     value: i64,
     scale: i64,
@@ -1231,7 +1259,7 @@ mod tests {
     use super::{
         AutosaveScheduler, AutosaveSubmit, PersistenceError, initialize, list_autosaves, load,
         load_from_connection, recover_autosave, retain_autosaves, save_atomic, save_autosave,
-        save_backup, save_to_connection,
+        save_backup, save_to_connection, upgrade_storage_schema,
     };
     use prism_commands::{Command, CommandEngine};
     use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
@@ -1333,6 +1361,7 @@ mod tests {
                 outgoing_clip: first_clip_id,
                 incoming_clip: second_clip_id,
                 duration: RationalTime::new(1, 2)?,
+                alignment: prism_project::TransitionAlignment::Centered,
                 kind: TransitionKind::Dissolve,
             },
         )?;
@@ -1381,6 +1410,10 @@ mod tests {
         assert_eq!(loaded_sequence.markers[0].label, "Beat");
         assert_eq!(loaded_sequence.transitions[0].id, transition_id);
         assert_eq!(
+            loaded_sequence.transitions[0].alignment,
+            prism_project::TransitionAlignment::Centered
+        );
+        assert_eq!(
             loaded_sequence.transitions[0].kind,
             TransitionKind::Dissolve
         );
@@ -1420,7 +1453,38 @@ mod tests {
             Some(RationalTime::from_integer(30))
         );
         let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
+        Ok(())
+    }
+
+    #[test]
+    fn migrates_v7_transitions_to_centered_alignment() -> Result<(), Box<dyn std::error::Error>> {
+        let connection = Connection::open_in_memory()?;
+        connection.execute_batch(
+            "CREATE TABLE transition (
+                 id TEXT PRIMARY KEY,
+                 sequence_id TEXT NOT NULL,
+                 position INTEGER NOT NULL,
+                 outgoing_clip_id TEXT NOT NULL,
+                 incoming_clip_id TEXT NOT NULL,
+                 duration_value INTEGER NOT NULL,
+                 duration_scale INTEGER NOT NULL,
+                 kind TEXT NOT NULL
+             );
+             INSERT INTO transition VALUES(
+                 '00000000-0000-0000-0000-000000000001',
+                 '00000000-0000-0000-0000-000000000002', 0,
+                 '00000000-0000-0000-0000-000000000003',
+                 '00000000-0000-0000-0000-000000000004', 1, 2, 'dissolve'
+             );
+             PRAGMA user_version = 7;",
+        )?;
+        upgrade_storage_schema(&connection)?;
+        let alignment: String =
+            connection.query_row("SELECT alignment FROM transition", [], |row| row.get(0))?;
+        let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        assert_eq!(alignment, "centered");
+        assert_eq!(version, 8);
         Ok(())
     }
 

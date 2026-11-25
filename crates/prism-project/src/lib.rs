@@ -298,14 +298,16 @@ fn validate_sequence(
             .ok_or(ProjectValidationError::TransitionClipMissing {
                 transition_id: transition.id.as_uuid().to_string(),
             })?;
+        let handles = transition.handles()?;
         let adjacent = outgoing_track.id == incoming_track.id
             && outgoing_track.kind == TrackKind::Video
             && outgoing
                 .timeline_start
                 .checked_add(outgoing.source_duration)?
                 == incoming.timeline_start
-            && transition.duration <= outgoing.source_duration
-            && transition.duration <= incoming.source_duration;
+            && handles.before_cut <= outgoing.source_duration
+            && handles.after_cut <= incoming.source_duration
+            && handles.incoming_preroll <= incoming.source_start;
         if !adjacent {
             return Err(ProjectValidationError::InvalidTransition {
                 transition_id: transition.id.as_uuid().to_string(),
@@ -509,6 +511,30 @@ pub enum TransitionKind {
     Dissolve,
 }
 
+/// Placement of a transition window relative to its edit boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransitionAlignment {
+    /// The transition begins at the cut and extends into the incoming clip.
+    StartAtCut,
+    /// The transition is split exactly across both sides of the cut.
+    Centered,
+    /// The transition ends at the cut and begins in the outgoing clip.
+    EndAtCut,
+}
+
+/// Exact visible portions and hidden source handles required by a transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransitionHandles {
+    /// Transition time rendered before the edit boundary.
+    pub before_cut: RationalTime,
+    /// Transition time rendered after the edit boundary.
+    pub after_cut: RationalTime,
+    /// Hidden incoming media required before its visible source range.
+    pub incoming_preroll: RationalTime,
+    /// Hidden outgoing media required after its visible source range.
+    pub outgoing_postroll: RationalTime,
+}
+
 /// Nondestructive transition between two clips.
 #[derive(Clone, Debug)]
 pub struct Transition {
@@ -520,8 +546,34 @@ pub struct Transition {
     pub incoming_clip: ClipId,
     /// Exact overlap duration.
     pub duration: RationalTime,
+    /// Placement of the overlap relative to the edit boundary.
+    pub alignment: TransitionAlignment,
     /// Transition operation.
     pub kind: TransitionKind,
+}
+
+impl Transition {
+    /// Derives exact visible spans and hidden source handles from alignment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError`] when centered half-duration arithmetic overflows.
+    pub fn handles(&self) -> Result<TransitionHandles, TimeError> {
+        let (before_cut, after_cut) = match self.alignment {
+            TransitionAlignment::StartAtCut => (RationalTime::ZERO, self.duration),
+            TransitionAlignment::Centered => {
+                let half = self.duration.checked_div_i64(2)?;
+                (half, half)
+            }
+            TransitionAlignment::EndAtCut => (self.duration, RationalTime::ZERO),
+        };
+        Ok(TransitionHandles {
+            before_cut,
+            after_cut,
+            incoming_preroll: before_cut,
+            outgoing_postroll: after_cut,
+        })
+    }
 }
 
 /// Track media kind.
@@ -683,9 +735,9 @@ pub enum ProjectValidationError {
 mod tests {
     use super::{
         Clip, Marker, MediaAsset, Project, ProjectError, ProjectValidationError, Sequence, Track,
-        TrackKind,
+        TrackKind, Transition, TransitionAlignment, TransitionKind,
     };
-    use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId};
+    use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
     use prism_timeline::{RationalTime, TimeError};
 
     #[test]
@@ -854,6 +906,32 @@ mod tests {
                 ProjectValidationError::EmptyName { object: "marker" }
             ))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn transition_alignment_derives_exact_visible_spans_and_handles() -> Result<(), TimeError> {
+        let mut transition = Transition {
+            id: TransitionId::new(),
+            outgoing_clip: ClipId::new(),
+            incoming_clip: ClipId::new(),
+            duration: RationalTime::new(1, 2)?,
+            alignment: TransitionAlignment::StartAtCut,
+            kind: TransitionKind::Dissolve,
+        };
+        let start = transition.handles()?;
+        assert_eq!(start.before_cut, RationalTime::ZERO);
+        assert_eq!(start.after_cut, RationalTime::new(1, 2)?);
+        assert_eq!(start.outgoing_postroll, RationalTime::new(1, 2)?);
+        transition.alignment = TransitionAlignment::Centered;
+        let centered = transition.handles()?;
+        assert_eq!(centered.before_cut, RationalTime::new(1, 4)?);
+        assert_eq!(centered.after_cut, RationalTime::new(1, 4)?);
+        transition.alignment = TransitionAlignment::EndAtCut;
+        let end = transition.handles()?;
+        assert_eq!(end.before_cut, RationalTime::new(1, 2)?);
+        assert_eq!(end.after_cut, RationalTime::ZERO);
+        assert_eq!(end.incoming_preroll, RationalTime::new(1, 2)?);
         Ok(())
     }
 }

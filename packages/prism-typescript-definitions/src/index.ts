@@ -22,7 +22,8 @@ export interface AddMarkerOperation { readonly type: "addMarker"; readonly seque
 export interface DeleteMarkerOperation { readonly type: "deleteMarker"; readonly sequenceId: string; readonly markerId: string; }
 export interface DuplicateClipOperation { readonly type: "duplicateClip"; readonly sequenceId: string; readonly trackId: string; readonly clipId: string; readonly newClipId: string; readonly timelineStart: RationalTime; }
 export interface RippleDeleteOperation { readonly type: "rippleDelete"; readonly sequenceId: string; readonly trackId: string; readonly clipId: string; }
-export interface AddTransitionOperation { readonly type: "addTransition"; readonly sequenceId: string; readonly id: string; readonly outgoingClip: string; readonly incomingClip: string; readonly duration: RationalTime; readonly kind: "dissolve"; }
+export type TransitionAlignment = "startAtCut" | "centered" | "endAtCut";
+export interface AddTransitionOperation { readonly type: "addTransition"; readonly sequenceId: string; readonly id: string; readonly outgoingClip: string; readonly incomingClip: string; readonly duration: RationalTime; readonly alignment: TransitionAlignment; readonly kind: "dissolve"; }
 export interface DeleteTransitionOperation { readonly type: "deleteTransition"; readonly sequenceId: string; readonly transitionId: string; }
 export interface ImportMediaOperation { readonly type: "importMedia"; readonly id: string; readonly sourcePath: string; }
 export interface SetMediaProxyOperation { readonly type: "setMediaProxy"; readonly mediaId: string; readonly proxyPath: string | null; readonly sourceSha256: string | null; readonly sourceBytes: number | null; }
@@ -90,9 +91,9 @@ export function duplicateClip(sequenceId: string, trackId: string, clipId: strin
   return { type: "duplicateClip", sequenceId, trackId, clipId, newClipId, timelineStart };
 }
 export function rippleDelete(sequenceId: string, trackId: string, clipId: string): RippleDeleteOperation { return { type: "rippleDelete", sequenceId, trackId, clipId }; }
-export function addTransition(sequenceId: string, id: string, outgoingClip: string, incomingClip: string, duration: RationalTime, kind: "dissolve" = "dissolve"): AddTransitionOperation {
+export function addTransition(sequenceId: string, id: string, outgoingClip: string, incomingClip: string, duration: RationalTime, alignment: TransitionAlignment = "centered", kind: "dissolve" = "dissolve"): AddTransitionOperation {
   if (kind !== "dissolve") throw new TypeError("kind must be dissolve");
-  return { type: "addTransition", sequenceId, id, outgoingClip, incomingClip, duration, kind };
+  return { type: "addTransition", sequenceId, id, outgoingClip, incomingClip, duration, alignment, kind };
 }
 export function deleteTransition(sequenceId: string, transitionId: string): DeleteTransitionOperation { return { type: "deleteTransition", sequenceId, transitionId }; }
 export function insertClip(sequenceId: string, trackId: string, id: string, mediaId: string, timelineStart: RationalTime, sourceStart: RationalTime, sourceDuration: RationalTime): InsertClipOperation {

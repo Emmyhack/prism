@@ -121,7 +121,16 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(RippleDelete("s", "t", "c").as_dict()["type"], "rippleDelete")
 
     def test_emits_transition_operations(self) -> None:
-        self.assertEqual(AddTransition("s", "x", "a", "b", RationalTime(1, 2)).as_dict()["type"], "addTransition")
+        self.assertEqual(
+            AddTransition("s", "x", "a", "b", RationalTime(1, 2)).as_dict()["alignment"],
+            "centered",
+        )
+        self.assertEqual(
+            AddTransition("s", "x", "a", "b", RationalTime(1, 2), "startAtCut").as_dict()["alignment"],
+            "startAtCut",
+        )
+        with self.assertRaises(ValueError):
+            AddTransition("s", "x", "a", "b", RationalTime(1, 2), "unknown").as_dict()
         self.assertEqual(DeleteTransition("s", "x").as_dict()["type"], "deleteTransition")
 
 

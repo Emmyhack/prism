@@ -3,7 +3,7 @@
 use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
 use prism_project::{
     Clip, Marker, MediaAsset, Project, ProxySourceFingerprint, Sequence, Track, TrackKind,
-    Transition, TransitionKind,
+    Transition, TransitionAlignment, TransitionKind,
 };
 use prism_timeline::RationalTime;
 use thiserror::Error;
@@ -436,6 +436,8 @@ pub enum Command {
         incoming_clip: ClipId,
         /// Exact overlap duration.
         duration: RationalTime,
+        /// Placement of the overlap relative to the edit boundary.
+        alignment: TransitionAlignment,
         /// Transition operation.
         kind: TransitionKind,
     },
@@ -1042,15 +1044,19 @@ impl CommandEngine {
                 outgoing_clip,
                 incoming_clip,
                 duration,
+                alignment,
                 kind,
             } => add_transition(
                 project,
                 sequence_id,
-                id,
-                outgoing_clip,
-                incoming_clip,
-                duration,
-                kind,
+                Transition {
+                    id,
+                    outgoing_clip,
+                    incoming_clip,
+                    duration,
+                    alignment,
+                    kind,
+                },
             ),
             Command::DeleteTransition {
                 sequence_id,
@@ -1391,13 +1397,9 @@ fn delete_marker(
 fn add_transition(
     project: &mut Project,
     sequence_id: SequenceId,
-    id: TransitionId,
-    outgoing_clip: ClipId,
-    incoming_clip: ClipId,
-    duration: RationalTime,
-    kind: TransitionKind,
+    transition: Transition,
 ) -> Result<Event, CommandError> {
-    if !duration.is_positive() {
+    if !transition.duration.is_positive() {
         return Err(CommandError::InvalidTime {
             field: "transition_duration",
             constraint: "positive",
@@ -1407,7 +1409,7 @@ fn add_transition(
         sequence
             .transitions
             .iter()
-            .any(|transition| transition.id == id)
+            .any(|existing| existing.id == transition.id)
     }) {
         return Err(CommandError::DuplicateId);
     }
@@ -1420,19 +1422,25 @@ fn add_transition(
         .iter()
         .find(|track| {
             track.kind == TrackKind::Video
-                && track.clips.iter().any(|clip| clip.id == outgoing_clip)
-                && track.clips.iter().any(|clip| clip.id == incoming_clip)
+                && track
+                    .clips
+                    .iter()
+                    .any(|clip| clip.id == transition.outgoing_clip)
+                && track
+                    .clips
+                    .iter()
+                    .any(|clip| clip.id == transition.incoming_clip)
         })
         .ok_or(CommandError::ClipNotFound)?;
     let outgoing = track
         .clips
         .iter()
-        .find(|clip| clip.id == outgoing_clip)
+        .find(|clip| clip.id == transition.outgoing_clip)
         .ok_or(CommandError::ClipNotFound)?;
     let incoming = track
         .clips
         .iter()
-        .find(|clip| clip.id == incoming_clip)
+        .find(|clip| clip.id == transition.incoming_clip)
         .ok_or(CommandError::ClipNotFound)?;
     let outgoing_end = outgoing
         .timeline_start
@@ -1441,19 +1449,21 @@ fn add_transition(
             field: "transition_boundary",
             constraint: "representable",
         })?;
+    let handles = transition
+        .handles()
+        .map_err(|_| CommandError::InvalidTime {
+            field: "transition_duration",
+            constraint: "representable",
+        })?;
     if incoming.timeline_start != outgoing_end
-        || duration > outgoing.source_duration
-        || duration > incoming.source_duration
+        || handles.before_cut > outgoing.source_duration
+        || handles.after_cut > incoming.source_duration
+        || handles.incoming_preroll > incoming.source_start
     {
         return Err(CommandError::InvalidTransition);
     }
-    sequence.transitions.push(Transition {
-        id,
-        outgoing_clip,
-        incoming_clip,
-        duration,
-        kind,
-    });
+    let id = transition.id;
+    sequence.transitions.push(transition);
     Ok(Event::TransitionAdded { sequence_id, id })
 }
 
@@ -2683,6 +2693,7 @@ mod tests {
                 outgoing_clip: outgoing,
                 incoming_clip: incoming,
                 duration: RationalTime::new(1, 2)?,
+                alignment: prism_project::TransitionAlignment::Centered,
                 kind: TransitionKind::Dissolve,
             },
         )?;

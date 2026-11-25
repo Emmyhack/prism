@@ -5,10 +5,15 @@
 //! effects, and production codec distribution remain separate milestones.
 
 mod codec;
+mod sequence_export;
 
 pub use codec::{
     AudioCodec, CodecCapabilities, CodecPolicyError, ContainerFormat, ExportCodecPolicy,
     ResolvedCodecPolicy, VideoCodec, VideoProfile,
+};
+pub use sequence_export::{
+    SequenceAudioTrackPlan, SequenceExportPlan, SequenceMp4ExportRequest, SequenceVideoSegment,
+    SequenceVideoTrackPlan, plan_sequence_export,
 };
 
 use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
@@ -352,6 +357,10 @@ pub enum ExportPreset {
     Youtube1080p,
     /// 3840×2160 at 30000/1001 fps.
     Youtube4k,
+    /// Vertical 1080×1920 at 30000/1001 fps.
+    Vertical1080p,
+    /// Square 1080×1080 at 30000/1001 fps.
+    Square1080p,
 }
 
 impl ExportPreset {
@@ -361,6 +370,8 @@ impl ExportPreset {
         match self {
             Self::Youtube1080p => "youtube-1080p",
             Self::Youtube4k => "youtube-4k",
+            Self::Vertical1080p => "vertical-1080x1920",
+            Self::Square1080p => "square-1080x1080",
         }
     }
 
@@ -373,6 +384,8 @@ impl ExportPreset {
         match name {
             "youtube-1080p" => Ok(Self::Youtube1080p),
             "youtube-4k" => Ok(Self::Youtube4k),
+            "vertical-1080x1920" => Ok(Self::Vertical1080p),
+            "square-1080x1080" => Ok(Self::Square1080p),
             _ => Err(ExportError::UnknownPreset(name.to_owned())),
         }
     }
@@ -385,6 +398,8 @@ impl ExportPreset {
         match self {
             Self::Youtube1080p => (1920, 1080, frame_rate, 8_000),
             Self::Youtube4k => (3840, 2160, frame_rate, 35_000),
+            Self::Vertical1080p => (1080, 1920, frame_rate, 8_000),
+            Self::Square1080p => (1080, 1080, frame_rate, 8_000),
         }
     }
 
@@ -523,6 +538,9 @@ pub enum ExportError {
     /// be represented by the export plan.
     #[error("transition rendering requires validated source handles")]
     TransitionSourceHandlesRequired,
+    /// A transition requires media outside an available source range.
+    #[error("transition source handle is unavailable for clip {0:?}")]
+    SourceHandleUnavailable(ClipId),
     /// A planned clip references media absent from the project.
     #[error("planned export clip references missing media")]
     MissingMedia,
@@ -1393,9 +1411,10 @@ impl Drop for TemporaryExport {
 mod tests {
     use super::{
         BasicMp4ExportRequest, ExportCancellation, ExportError, ExportJobState, ExportPreset,
-        ExportQueue, ExportQueueError, SequenceExportSegment, SingleTrackMp4ExportRequest,
-        VideoAudioMp4ExportRequest, build_audio_concat_filter, build_video_audio_ffmpeg_arguments,
-        format_timestamp, plan_single_audio_track, plan_single_video_track, validate_request,
+        ExportQueue, ExportQueueError, SequenceExportSegment, SequenceMp4ExportRequest,
+        SingleTrackMp4ExportRequest, VideoAudioMp4ExportRequest, build_audio_concat_filter,
+        build_video_audio_ffmpeg_arguments, format_timestamp, plan_single_audio_track,
+        plan_single_video_track, validate_request,
     };
     use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId, TransitionId};
     use prism_project::{
@@ -1490,6 +1509,28 @@ mod tests {
         );
         assert_eq!((audio_request.width, audio_request.height), (3840, 2160));
         assert_eq!(audio_request.video_bitrate_kbps, 35_000);
+        assert_eq!(
+            ExportPreset::parse("vertical-1080x1920")?.settings().0,
+            1080
+        );
+        assert_eq!(ExportPreset::parse("square-1080x1080")?.settings().1, 1080);
+        let source_match = SequenceMp4ExportRequest::source_match(
+            720,
+            480,
+            RationalTime::new(24_000, 1_001)?,
+            5_000,
+            PathBuf::from("source-match.mp4"),
+        );
+        assert_eq!((source_match.width, source_match.height), (720, 480));
+        let custom = SequenceMp4ExportRequest::custom(
+            640,
+            360,
+            RationalTime::new(25, 1)?,
+            2_500,
+            128,
+            PathBuf::from("custom.mp4"),
+        );
+        assert_eq!(custom.audio_bitrate_kbps, 128);
         assert!(matches!(
             ExportPreset::parse("unknown"),
             Err(ExportError::UnknownPreset(name)) if name == "unknown"
@@ -1767,6 +1808,7 @@ mod tests {
                     outgoing_clip: outgoing,
                     incoming_clip: incoming,
                     duration: RationalTime::new(1, 2)?,
+                    alignment: prism_project::TransitionAlignment::Centered,
                     kind: TransitionKind::Dissolve,
                 }],
                 tracks: vec![Track {
