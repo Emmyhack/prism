@@ -507,4 +507,64 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    #[ignore = "requires PRISM_TASK0_LONG_MEDIA, FFmpeg/FFplay, and ten real minutes"]
+    fn task0_measures_ten_minute_audio_master_drift() -> Result<(), Box<dyn std::error::Error>> {
+        let Some(source) = std::env::var_os("PRISM_TASK0_LONG_MEDIA").map(PathBuf::from) else {
+            return Ok(());
+        };
+        let plan = AudioPreviewPlan {
+            inputs: vec![AudioInput::Source {
+                path: source,
+                start: RationalTime::ZERO,
+                duration: RationalTime::from_integer(600),
+            }],
+            duration: RationalTime::from_integer(600),
+        };
+        let ffmpeg = std::env::var_os("PRISM_FFMPEG").unwrap_or_else(|| "ffmpeg".into());
+        let ffplay = std::env::var_os("PRISM_FFPLAY").unwrap_or_else(|| "ffplay".into());
+        let (mut decoder, mut player, clock) =
+            start_with_driver(&plan, Path::new(&ffmpeg), Path::new(&ffplay), Some("dummy"))?;
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_secs(615);
+        let mut first_observation = None;
+        let last = loop {
+            if let Some(position) = clock.position() {
+                first_observation.get_or_insert((std::time::Instant::now(), position));
+                if position >= RationalTime::new(599_900, 1000)? {
+                    break position;
+                }
+            }
+            if let Some(status) = player.try_wait()? {
+                return Err(format!("audio player exited early with {status}").into());
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = player.kill();
+                let _ = player.wait();
+                let _ = decoder.kill();
+                let _ = decoder.wait();
+                return Err("ten-minute audio session exceeded its 615-second deadline".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let sampled_at = std::time::Instant::now();
+        let _ = player.kill();
+        let _ = player.wait();
+        let _ = decoder.kill();
+        let _ = decoder.wait();
+        let (first_at, first_position) = first_observation.ok_or("audio clock never advanced")?;
+        let elapsed_ms = i64::try_from(sampled_at.duration_since(first_at).as_millis())?;
+        let clock_ms = last
+            .checked_sub(first_position)?
+            .to_ticks(1000, prism_timeline::RoundingMode::NearestTiesAway)?;
+        let drift_ms = clock_ms - elapsed_ms;
+        eprintln!(
+            "TASK0_AUDIO_MASTER elapsed_ms={elapsed_ms} clock_ms={clock_ms} drift_ms={drift_ms}"
+        );
+        if clock_ms < 599_000 {
+            return Err(format!("audio master stopped early at {clock_ms} ms").into());
+        }
+        Ok(())
+    }
 }

@@ -1,0 +1,157 @@
+{
+  "requestId": "task0-small-benchmark",
+  "apiVersion": "1",
+  "expectedRevision": 0,
+  "label": "Build Task 0 Small benchmark",
+  "dryRun": false,
+  "operations": [
+    {
+      "type": "importMedia",
+      "id": "10000000-0000-4000-8000-000000000001",
+      "sourcePath": "/tmp/prism-task0-baseline/source-10m-1080p.mp4"
+    },
+    {
+      "type": "createSequence",
+      "id": "20000000-0000-4000-8000-000000000001",
+      "name": "Task 0 Small Benchmark"
+    },
+    {
+      "type": "createTrack",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "id": "30000000-0000-4000-8000-000000000001",
+      "kind": "video"
+    },
+    {
+      "type": "createTrack",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "id": "30000000-0000-4000-8000-000000000002",
+      "kind": "audio"
+    },
+    {
+      "type": "createTrack",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "id": "30000000-0000-4000-8000-000000000003",
+      "kind": "audio"
+    },
+    {
+      "type": "insertClip",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "trackId": "30000000-0000-4000-8000-000000000001",
+      "id": "40000000-0000-4000-8000-000000000001",
+      "mediaId": "10000000-0000-4000-8000-000000000001",
+      "timelineStart": { "value": 0, "timescale": 1 },
+      "sourceStart": { "value": 0, "timescale": 1 },
+      "sourceDuration": { "value": 12, "timescale": 1 }
+    },
+    {
+      "type": "insertClip",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "trackId": "30000000-0000-4000-8000-000000000001",
+      "id": "40000000-0000-4000-8000-000000000002",
+      "mediaId": "10000000-0000-4000-8000-000000000001",
+      "timelineStart": { "value": 12, "timescale": 1 },
+      "sourceStart": { "value": 60, "timescale": 1 },
+      "sourceDuration": { "value": 12, "timescale": 1 }
+    },
+    {
+      "type": "insertClip",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "trackId": "30000000-0000-4000-8000-000000000001",
+      "id": "40000000-0000-4000-8000-000000000003",
+      "mediaId": "10000000-0000-4000-8000-000000000001",
+      "timelineStart": { "value": 24, "timescale": 1 },
+      "sourceStart": { "value": 120, "timescale": 1 },
+      "sourceDuration": { "value": 12, "timescale": 1 }
+    },
+    {
+      "type": "insertClip",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "trackId": "30000000-0000-4000-8000-000000000001",
+      "id": "40000000-0000-4000-8000-000000000004",
+      "mediaId": "10000000-0000-4000-8000-000000000001",
+      "timelineStart": { "value": 36, "timescale": 1 },
+      "sourceStart": { "value": 180, "timescale": 1 },
+      "sourceDuration": { "value": 12, "timescale": 1 }
+    },
+    {
+      "type": "insertClip",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "trackId": "30000000-0000-4000-8000-000000000001",
+      "id": "40000000-0000-4000-8000-000000000005",
+      "mediaId": "10000000-0000-4000-8000-000000000001",
+      "timelineStart": { "value": 48, "timescale": 1 },
+      "sourceStart": { "value": 240, "timescale": 1 },
+      "sourceDuration": { "value": 12, "timescale": 1 }
+    },
+    {
+      "type": "insertClip",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "trackId": "30000000-0000-4000-8000-000000000001",
+      "id": "40000000-0000-4000-8000-000000000006",
+      "mediaId": "10000000-0000-4000-8000-000000000001",
+      "timelineStart": { "value": 60, "timescale": 1 },
+      "sourceStart": { "value": 300, "timescale": 1 },
+      "sourceDuration": { "value": 12, "timescale": 1 }
+    },
+    {
+      "type": "insertClip",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "trackId": "30000000-0000-4000-8000-000000000001",
+      "id": "40000000-0000-4000-8000-000000000007",
+      "mediaId": "10000000-0000-4000-8000-000000000001",
+      "timelineStart": { "value": 72, "timescale": 1 },
+      "sourceStart": { "value": 360, "timescale": 1 },
+      "sourceDuration": { "value": 12, "timescale": 1 }
+    },
+    {
+      "type": "insertClip",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "trackId": "30000000-0000-4000-8000-000000000001",
+      "id": "40000000-0000-4000-8000-000000000008",
+      "mediaId": "10000000-0000-4000-8000-000000000001",
+      "timelineStart": { "value": 84, "timescale": 1 },
+      "sourceStart": { "value": 420, "timescale": 1 },
+      "sourceDuration": { "value": 12, "timescale": 1 }
+    },
+    {
+      "type": "insertClip",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "trackId": "30000000-0000-4000-8000-000000000001",
+      "id": "40000000-0000-4000-8000-000000000009",
+      "mediaId": "10000000-0000-4000-8000-000000000001",
+      "timelineStart": { "value": 96, "timescale": 1 },
+      "sourceStart": { "value": 480, "timescale": 1 },
+      "sourceDuration": { "value": 12, "timescale": 1 }
+    },
+    {
+      "type": "insertClip",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "trackId": "30000000-0000-4000-8000-000000000001",
+      "id": "40000000-0000-4000-8000-000000000010",
+      "mediaId": "10000000-0000-4000-8000-000000000001",
+      "timelineStart": { "value": 108, "timescale": 1 },
+      "sourceStart": { "value": 540, "timescale": 1 },
+      "sourceDuration": { "value": 12, "timescale": 1 }
+    },
+    {
+      "type": "insertClip",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "trackId": "30000000-0000-4000-8000-000000000002",
+      "id": "50000000-0000-4000-8000-000000000001",
+      "mediaId": "10000000-0000-4000-8000-000000000001",
+      "timelineStart": { "value": 0, "timescale": 1 },
+      "sourceStart": { "value": 0, "timescale": 1 },
+      "sourceDuration": { "value": 120, "timescale": 1 }
+    },
+    {
+      "type": "insertClip",
+      "sequenceId": "20000000-0000-4000-8000-000000000001",
+      "trackId": "30000000-0000-4000-8000-000000000003",
+      "id": "50000000-0000-4000-8000-000000000002",
+      "mediaId": "10000000-0000-4000-8000-000000000001",
+      "timelineStart": { "value": 0, "timescale": 1 },
+      "sourceStart": { "value": 120, "timescale": 1 },
+      "sourceDuration": { "value": 120, "timescale": 1 }
+    }
+  ]
+}

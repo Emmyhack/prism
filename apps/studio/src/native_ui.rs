@@ -11,7 +11,9 @@ use prism_media::{
     MediaArtifactWorker, MediaCatalogEntry, MediaFingerprint, MediaItemKind, ProxyProfile,
     ProxyRequest, ProxyStatus, StreamKind, decode_thumbnail_artifact, fingerprint,
 };
-use prism_project::{MediaAsset, Project, ProxySourceFingerprint, TrackKind, TransitionKind};
+use prism_project::{
+    MediaAsset, Project, ProxySourceFingerprint, Sequence, TrackKind, TransitionKind,
+};
 use prism_studio::desktop::{
     AutosavePreferences, AutosavePreferencesStore, ExportController, ExportStatus, ExportWorker,
     ExportWorkerEvent,
@@ -766,119 +768,11 @@ fn source_edit_commands(
         return Err("Selected source has no classified streams".into());
     }
     let mut commands = Vec::new();
-    let mut destinations = Vec::new();
-    for kind in [TrackKind::Video, TrackKind::Audio]
-        .into_iter()
-        .filter(|kind| (*kind == TrackKind::Video && video) || (*kind == TrackKind::Audio && audio))
-    {
-        let id = if let Some(track) = sequence.tracks.iter().find(|track| track.kind == kind) {
-            if track.locked {
-                return Err("Unlock the first destination video/audio track before editing".into());
-            }
-            track.id
-        } else {
-            let id = TrackId::new();
-            commands.push(Command::CreateTrack {
-                sequence_id: sequence.id,
-                id,
-                kind,
-            });
-            id
-        };
-        destinations.push(id);
-    }
+    let destinations = source_edit_destinations(sequence, video, audio, &mut commands)?;
     if overwrite {
-        for track in sequence
-            .tracks
-            .iter()
-            .filter(|track| destinations.contains(&track.id))
-        {
-            for clip in &track.clips {
-                let clip_end = clip
-                    .timeline_start
-                    .checked_add(clip.source_duration)
-                    .map_err(|e| e.to_string())?;
-                if clip.timeline_start >= end || clip_end <= position {
-                    continue;
-                }
-                commands.push(Command::DeleteClip {
-                    sequence_id: sequence.id,
-                    track_id: track.id,
-                    clip_id: clip.id,
-                });
-                // Preserve exact source offsets for both surviving fragments.
-                if clip.timeline_start < position {
-                    commands.push(Command::InsertClip {
-                        sequence_id: sequence.id,
-                        track_id: track.id,
-                        id: clip.id,
-                        media_id: clip.media_id,
-                        timeline_start: clip.timeline_start,
-                        source_start: clip.source_start,
-                        source_duration: position
-                            .checked_sub(clip.timeline_start)
-                            .map_err(|e| e.to_string())?,
-                    });
-                }
-                if clip_end > end {
-                    commands.push(Command::InsertClip {
-                        sequence_id: sequence.id,
-                        track_id: track.id,
-                        id: if clip.timeline_start < position {
-                            ClipId::new()
-                        } else {
-                            clip.id
-                        },
-                        media_id: clip.media_id,
-                        timeline_start: end,
-                        source_start: clip
-                            .source_start
-                            .checked_add(
-                                end.checked_sub(clip.timeline_start)
-                                    .map_err(|e| e.to_string())?,
-                            )
-                            .map_err(|e| e.to_string())?,
-                        source_duration: clip_end.checked_sub(end).map_err(|e| e.to_string())?,
-                    });
-                }
-            }
-        }
+        plan_source_overwrite(sequence, &destinations, position, end, &mut commands)?;
     } else {
-        // Move from the end backwards so each intermediate command stays overlap-free.
-        for track in sequence.tracks.iter().filter(|track| !track.locked) {
-            for clip in track.clips.iter().rev() {
-                let clip_end = clip
-                    .timeline_start
-                    .checked_add(clip.source_duration)
-                    .map_err(|e| e.to_string())?;
-                if clip.timeline_start >= position {
-                    commands.push(Command::MoveClip {
-                        sequence_id: sequence.id,
-                        track_id: track.id,
-                        clip_id: clip.id,
-                        timeline_start: clip
-                            .timeline_start
-                            .checked_add(source_duration)
-                            .map_err(|e| e.to_string())?,
-                    });
-                } else if clip_end > position {
-                    let right = ClipId::new();
-                    commands.push(Command::SplitClip {
-                        sequence_id: sequence.id,
-                        track_id: track.id,
-                        clip_id: clip.id,
-                        right_clip_id: right,
-                        timeline_position: position,
-                    });
-                    commands.push(Command::MoveClip {
-                        sequence_id: sequence.id,
-                        track_id: track.id,
-                        clip_id: right,
-                        timeline_start: end,
-                    });
-                }
-            }
-        }
+        plan_source_insert(sequence, position, end, source_duration, &mut commands)?;
     }
     for track_id in destinations {
         commands.push(Command::InsertClip {
@@ -892,6 +786,146 @@ fn source_edit_commands(
         });
     }
     Ok(commands)
+}
+
+fn source_edit_destinations(
+    sequence: &Sequence,
+    video: bool,
+    audio: bool,
+    commands: &mut Vec<Command>,
+) -> Result<Vec<TrackId>, String> {
+    [TrackKind::Video, TrackKind::Audio]
+        .into_iter()
+        .filter(|kind| (*kind == TrackKind::Video && video) || (*kind == TrackKind::Audio && audio))
+        .map(|kind| {
+            if let Some(track) = sequence.tracks.iter().find(|track| track.kind == kind) {
+                if track.locked {
+                    return Err(
+                        "Unlock the first destination video/audio track before editing".into(),
+                    );
+                }
+                return Ok(track.id);
+            }
+            let id = TrackId::new();
+            commands.push(Command::CreateTrack {
+                sequence_id: sequence.id,
+                id,
+                kind,
+            });
+            Ok(id)
+        })
+        .collect()
+}
+
+fn plan_source_overwrite(
+    sequence: &Sequence,
+    destinations: &[TrackId],
+    position: RationalTime,
+    end: RationalTime,
+    commands: &mut Vec<Command>,
+) -> Result<(), String> {
+    for track in sequence
+        .tracks
+        .iter()
+        .filter(|track| destinations.contains(&track.id))
+    {
+        for clip in &track.clips {
+            let clip_end = clip
+                .timeline_start
+                .checked_add(clip.source_duration)
+                .map_err(|error| error.to_string())?;
+            if clip.timeline_start >= end || clip_end <= position {
+                continue;
+            }
+            commands.push(Command::DeleteClip {
+                sequence_id: sequence.id,
+                track_id: track.id,
+                clip_id: clip.id,
+            });
+            if clip.timeline_start < position {
+                commands.push(Command::InsertClip {
+                    sequence_id: sequence.id,
+                    track_id: track.id,
+                    id: clip.id,
+                    media_id: clip.media_id,
+                    timeline_start: clip.timeline_start,
+                    source_start: clip.source_start,
+                    source_duration: position
+                        .checked_sub(clip.timeline_start)
+                        .map_err(|error| error.to_string())?,
+                });
+            }
+            if clip_end > end {
+                commands.push(Command::InsertClip {
+                    sequence_id: sequence.id,
+                    track_id: track.id,
+                    id: if clip.timeline_start < position {
+                        ClipId::new()
+                    } else {
+                        clip.id
+                    },
+                    media_id: clip.media_id,
+                    timeline_start: end,
+                    source_start: clip
+                        .source_start
+                        .checked_add(
+                            end.checked_sub(clip.timeline_start)
+                                .map_err(|error| error.to_string())?,
+                        )
+                        .map_err(|error| error.to_string())?,
+                    source_duration: clip_end
+                        .checked_sub(end)
+                        .map_err(|error| error.to_string())?,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn plan_source_insert(
+    sequence: &Sequence,
+    position: RationalTime,
+    end: RationalTime,
+    source_duration: RationalTime,
+    commands: &mut Vec<Command>,
+) -> Result<(), String> {
+    // Move from the end backwards so each intermediate command stays overlap-free.
+    for track in sequence.tracks.iter().filter(|track| !track.locked) {
+        for clip in track.clips.iter().rev() {
+            let clip_end = clip
+                .timeline_start
+                .checked_add(clip.source_duration)
+                .map_err(|error| error.to_string())?;
+            if clip.timeline_start >= position {
+                commands.push(Command::MoveClip {
+                    sequence_id: sequence.id,
+                    track_id: track.id,
+                    clip_id: clip.id,
+                    timeline_start: clip
+                        .timeline_start
+                        .checked_add(source_duration)
+                        .map_err(|error| error.to_string())?,
+                });
+            } else if clip_end > position {
+                let right = ClipId::new();
+                commands.push(Command::SplitClip {
+                    sequence_id: sequence.id,
+                    track_id: track.id,
+                    clip_id: clip.id,
+                    right_clip_id: right,
+                    timeline_position: position,
+                });
+                commands.push(Command::MoveClip {
+                    sequence_id: sequence.id,
+                    track_id: track.id,
+                    clip_id: right,
+                    timeline_start: end,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn media_usage(project: &Project) -> BTreeMap<MediaAssetId, usize> {
@@ -6258,6 +6292,36 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert_eq!(completed, 2, "Playback timer starved video decoding");
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires PRISM_TASK0_LONG_MEDIA and installed FFmpeg tools"]
+    fn task0_measures_long_media_scrub_latency() -> Result<(), Box<dyn std::error::Error>> {
+        let Some(path) = std::env::var_os("PRISM_TASK0_LONG_MEDIA").map(PathBuf::from) else {
+            return Ok(());
+        };
+        let worker = PreviewWorker::new();
+        let mut samples = Vec::new();
+        for seconds in (0..600).step_by(60) {
+            let started = std::time::Instant::now();
+            worker.request(path.clone(), RationalTime::from_integer(seconds));
+            let result = loop {
+                if let Some(result) = worker.poll_decoded() {
+                    break result;
+                }
+                if started.elapsed() > std::time::Duration::from_secs(5) {
+                    return Err(format!("scrub at {seconds}s exceeded five seconds").into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            };
+            result?;
+            samples.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        samples.sort_by(f64::total_cmp);
+        let median = samples[samples.len() / 2];
+        let maximum = samples.last().copied().ok_or("no scrub samples")?;
+        eprintln!("TASK0_SCRUB_MS samples={samples:?} median={median:.3} max={maximum:.3}");
         Ok(())
     }
 
