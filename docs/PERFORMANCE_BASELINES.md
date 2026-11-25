@@ -1,8 +1,26 @@
 # Performance baselines
 
-No measurements exist yet. Baselines must record machine, OS, build profile,
-media fingerprints, codec build, GPU/driver, warm/cold cache, and repetition
-count. Initial budgets are hypotheses, not achieved results:
+## Task 0: 2026-11-25
+
+Apple Silicon Mac, Darwin 27.2.0, debug build, Rust 1.94.1, Homebrew FFmpeg
+9.0.2. The generated source is ten minutes of 1920x1080 30 fps H.264 plus 48 kHz
+AAC. See `docs/BASELINE.md` for exact generation and reproduction commands.
+
+| Operation | Cache/sample conditions | Result |
+|---|---|---:|
+| Studio paused scrub, request to decoded frame | 10 seeks at one-minute intervals; subprocess path; warm build | median 96.736 ms, max 144.823 ms |
+| FFplay SDL-dummy audio-master vs monotonic wall time | 599.910 seconds of clock progress | -5,447 ms (-0.90%) |
+| Encoded A/V stream end delta | FFprobe, 600-second synthetic source | 0 ms |
+| Headless Studio project summary | Small project, warm debug build, one run | 1.86 s |
+
+Startup, import/probe, dropped frames, cache hit rate, memory, proxy generation,
+waveform generation, export speed and autosave latency remain unmeasured. The
+scrub result excludes UI event delivery and display scanout. The drift result is
+from a dummy audio backend, not physical hardware.
+
+## Initial budgets
+
+These are hypotheses, not achieved results:
 
 | Operation | Phase 1 target |
 |---|---:|
