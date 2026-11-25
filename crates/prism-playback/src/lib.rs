@@ -20,6 +20,9 @@ use std::{
 };
 use thiserror::Error;
 
+#[cfg(feature = "library-decoder-spike")]
+pub mod library_decoder_spike;
+
 /// A visible source selected for one sequence timestamp.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VideoSourceRequest {

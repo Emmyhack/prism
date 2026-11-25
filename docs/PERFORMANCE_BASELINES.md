@@ -31,3 +31,14 @@ These are hypotheses, not achieved results:
 
 Representative fixtures will include short 1080p, long interview, mixed-rate,
 4K multitrack, large library, effects-heavy, and long export projects.
+
+## Task 1 playback spike: 2026-11-25
+
+The feature-gated in-process decoder used the Task 0 ten-minute source, a 96 MiB
+RGBA cache and four-frame prefetch. Full/Half/Quarter seek medians were 14.617,
+17.423 and 12.339 ms; maxima were 19.134, 17.955 and 12.454 ms. A default-GOP
+960x540 proxy measured 63.967 ms median and 120.813 ms maximum. Sequential 30 fps
+p95 was 40.089/45.144/41.064/26.067 ms with 5/6/6/2 of 60 deadlines missed.
+Retained cache bytes were bounded at 99,532,800 except Quarter at 54,432,000.
+See `docs/decisions/ADR-013-library-backed-preview-decoding.md` for method,
+limitations and the go recommendation.
