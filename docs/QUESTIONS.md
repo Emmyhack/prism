@@ -11,6 +11,13 @@ The jobs contain zero steps and no logs. The required format, Clippy, full
 workspace test and ignored real-media gates passed locally on the documented
 macOS environment, but cross-platform CI could not run for this external reason.
 
+Task 3 PR #4 repeated the billing lock for Ubuntu and Windows. Its macOS job
+also did not start and reported the exact independent annotation
+`The configuration 'macos-14-arm64-us-default' is not supported`. Can the
+repository owner select a supported macOS runner configuration while clearing
+the billing lock? The Task 3 format, warnings-denied Clippy, full workspace,
+SDK, and all ignored real-media gates passed locally.
+
 ## Playback hardware qualification
 
 What approved measurement method and hardware should define end-to-end Studio
