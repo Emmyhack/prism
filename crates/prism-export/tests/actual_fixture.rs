@@ -1,14 +1,18 @@
 //! Opt-in basic MP4 export verification against the generated fixture.
 
+use prism_audio::{AudioAnalysis, measure_integrated_loudness};
 use prism_commands::{Command, CommandEngine};
-use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
+use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId, TransitionId};
 use prism_export::{
-    BasicMp4ExportRequest, BasicMp4Exporter, SingleTrackMp4ExportRequest,
+    BasicMp4ExportRequest, BasicMp4Exporter, SequenceMp4ExportRequest, SingleTrackMp4ExportRequest,
     VideoAudioMp4ExportRequest, plan_single_video_track,
 };
 use prism_media::{FfmpegReferenceDecoder, FfprobeInspector, StreamKind};
 use prism_persistence::{load, save_atomic};
-use prism_project::{Clip, MediaAsset, Project, Sequence, Track, TrackKind};
+use prism_project::{
+    Clip, MediaAsset, Project, Sequence, Track, TrackKind, Transition, TransitionAlignment,
+    TransitionKind,
+};
 use prism_timeline::RationalTime;
 use std::{fs, path::PathBuf};
 use uuid::Uuid;
@@ -320,6 +324,169 @@ fn saved_project_reopens_with_identical_export_plan_and_timing()
 
     fs::remove_file(&output)?;
     fs::remove_file(&project_path)?;
+    fs::remove_dir(&test_directory)?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires PRISM_FFMPEG, PRISM_FFPROBE, and the generated media fixture"]
+#[allow(clippy::too_many_lines)]
+fn exports_multitrack_dissolves_and_mixed_audio_with_golden_evidence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ffmpeg = PathBuf::from(std::env::var_os("PRISM_FFMPEG").ok_or("PRISM_FFMPEG is not set")?);
+    let ffprobe =
+        PathBuf::from(std::env::var_os("PRISM_FFPROBE").ok_or("PRISM_FFPROBE is not set")?);
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/media/av-ntsc-48k.mp4");
+    let test_directory =
+        std::env::temp_dir().join(format!("prism-complete-export-test-{}", Uuid::new_v4()));
+    fs::create_dir(&test_directory)?;
+    let output = test_directory.join("complete.mp4");
+    let media_id = MediaAssetId::new();
+    let sequence_id = SequenceId::new();
+    let video_track_id = TrackId::new();
+    let overlay_track_id = TrackId::new();
+    let audio_track_a = TrackId::new();
+    let audio_track_b = TrackId::new();
+    let clip_a = ClipId::new();
+    let clip_b = ClipId::new();
+    let clip_c = ClipId::new();
+    let video_clip = |id, timeline_start, source_start| Clip {
+        id,
+        media_id,
+        timeline_start,
+        source_start,
+        source_duration: RationalTime::new(1, 5).unwrap_or(RationalTime::ZERO),
+    };
+    let audio_clip = || Clip {
+        id: ClipId::new(),
+        media_id,
+        timeline_start: RationalTime::ZERO,
+        source_start: RationalTime::new(1, 10).unwrap_or(RationalTime::ZERO),
+        source_duration: RationalTime::new(3, 5).unwrap_or(RationalTime::ZERO),
+    };
+    let mut project = Project::new("Complete sequence export");
+    project.media.insert(
+        media_id,
+        MediaAsset {
+            id: media_id,
+            source_path: fixture.to_string_lossy().into_owned(),
+            proxy_path: None,
+            proxy_source_fingerprint: None,
+        },
+    );
+    project.sequences.insert(
+        sequence_id,
+        Sequence {
+            id: sequence_id,
+            name: "Main".to_owned(),
+            markers: Vec::new(),
+            transitions: vec![
+                Transition {
+                    id: TransitionId::new(),
+                    outgoing_clip: clip_a,
+                    incoming_clip: clip_b,
+                    duration: RationalTime::new(1, 10)?,
+                    alignment: TransitionAlignment::Centered,
+                    kind: TransitionKind::Dissolve,
+                },
+                Transition {
+                    id: TransitionId::new(),
+                    outgoing_clip: clip_b,
+                    incoming_clip: clip_c,
+                    duration: RationalTime::new(1, 10)?,
+                    alignment: TransitionAlignment::Centered,
+                    kind: TransitionKind::Dissolve,
+                },
+            ],
+            tracks: vec![
+                Track {
+                    id: video_track_id,
+                    kind: TrackKind::Video,
+                    clips: vec![
+                        video_clip(clip_a, RationalTime::ZERO, RationalTime::new(1, 10)?),
+                        video_clip(clip_b, RationalTime::new(1, 5)?, RationalTime::new(2, 5)?),
+                        video_clip(clip_c, RationalTime::new(2, 5)?, RationalTime::new(7, 10)?),
+                    ],
+                    locked: false,
+                    visible: true,
+                    muted: false,
+                },
+                Track {
+                    id: overlay_track_id,
+                    kind: TrackKind::Video,
+                    clips: vec![video_clip(
+                        ClipId::new(),
+                        RationalTime::new(1, 5)?,
+                        RationalTime::ZERO,
+                    )],
+                    locked: false,
+                    visible: true,
+                    muted: false,
+                },
+                Track {
+                    id: audio_track_a,
+                    kind: TrackKind::Audio,
+                    clips: vec![audio_clip()],
+                    locked: false,
+                    visible: true,
+                    muted: false,
+                },
+                Track {
+                    id: audio_track_b,
+                    kind: TrackKind::Audio,
+                    clips: vec![audio_clip()],
+                    locked: false,
+                    visible: true,
+                    muted: false,
+                },
+            ],
+        },
+    );
+    project.validate()?;
+    let report = BasicMp4Exporter::new(&ffmpeg, &ffprobe).export_sequence(
+        &project,
+        sequence_id,
+        &SequenceMp4ExportRequest {
+            width: 320,
+            height: 180,
+            frame_rate: RationalTime::new(30, 1)?,
+            video_bitrate_kbps: 1_000,
+            audio_bitrate_kbps: 192,
+            output: output.clone(),
+        },
+    )?;
+    assert!(report.has_video);
+    assert!(report.has_audio);
+    let decoder = FfmpegReferenceDecoder::new(&ffmpeg);
+    let mut hashes = Vec::new();
+    for time in [1_i64, 2, 3, 4, 5] {
+        hashes.push(
+            decoder
+                .decode_video_frame_rgba(&output, 0, RationalTime::new(time, 10)?, 320, 180)?
+                .sha256(),
+        );
+    }
+    let mono = decoder.decode_audio_mono_f32(&output, 0, 48_000, 28_800)?;
+    let analysis = AudioAnalysis::analyze(&mono);
+    let mut stereo = Vec::with_capacity(mono.len().saturating_mul(2));
+    for sample in mono {
+        stereo.extend([sample, sample]);
+    }
+    let loudness = measure_integrated_loudness(&stereo, 48_000)?;
+    assert_eq!(
+        hashes,
+        [
+            "1f074eedf2368d896e5fd91ca01323e41aaa885b1aa0f49cad59d3cd613c0caa",
+            "b0c544047ee931f6b0d1ee20960d5954aee158bd2417903c47a619dae872bf36",
+            "ff20fb4bc1aef07a15f8dd4d4fc6f5c4f5680396f1a2ce970b613bb479e30b2d",
+            "1c339bf57c4e7f2f34ba5b607922d98a4edc131274f26ce6c1535f64f60d01c2",
+            "e6124509df1f35e8cc19c12c691f8cc83dadb92364d236cb2b67506713c9b56a",
+        ]
+    );
+    assert!((analysis.peak - 0.184_210).abs() <= 0.000_010);
+    assert!((loudness.lufs - -15.039).abs() <= 0.010);
+    fs::remove_file(&output)?;
     fs::remove_dir(&test_directory)?;
     Ok(())
 }

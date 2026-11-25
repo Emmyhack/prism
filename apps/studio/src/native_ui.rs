@@ -5,7 +5,7 @@ use crate::view_preferences::ViewPreferences;
 use prism_cache::{CacheError, CacheEvictionPolicy, CacheEvictionWorker, CacheLayout};
 use prism_commands::{Command, CommandEngine, UndoRecord};
 use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
-use prism_export::{ExportPreset, SingleTrackMp4ExportRequest, VideoAudioMp4ExportRequest};
+use prism_export::{ExportPreset, SequenceMp4ExportRequest};
 use prism_media::{
     FfmpegProxyGenerator, FfmpegReferenceDecoder, FfprobeInspector, MediaArtifactKind,
     MediaArtifactWorker, MediaCatalogEntry, MediaFingerprint, MediaItemKind, ProxyProfile,
@@ -1079,6 +1079,8 @@ fn export_preset(index: i32) -> Result<ExportPreset, String> {
     match index {
         0 => Ok(ExportPreset::Youtube1080p),
         1 => Ok(ExportPreset::Youtube4k),
+        2 => Ok(ExportPreset::Vertical1080p),
+        3 => Ok(ExportPreset::Square1080p),
         _ => Err("Choose a supported export preset".to_owned()),
     }
 }
@@ -1091,10 +1093,10 @@ fn update_export_summary(ui: &PrismStudio, project: &Project) {
             .find(|track| {
                 track.kind == TrackKind::Video && track.visible && !track.clips.is_empty()
             })
-            .map(|video| (sequence, video))
+            .map(|_| sequence)
     });
     ui.set_can_export(false);
-    let Some((sequence, video)) = target else {
+    let Some(sequence) = target else {
         ui.set_export_video_summary("Video / no visible video track".into());
         ui.set_export_audio_summary("Audio / not included".into());
         ui.set_export_preflight("Add visible video clips before exporting.".into());
@@ -1110,39 +1112,24 @@ fn update_export_summary(ui: &PrismStudio, project: &Project) {
         .iter()
         .filter(|track| track.kind == TrackKind::Audio && !track.muted && !track.clips.is_empty())
         .count();
-    if video_tracks > 1 || audio_tracks > 1 {
-        ui.set_export_video_summary(format!("Video / {video_tracks} active tracks").into());
-        ui.set_export_audio_summary(format!("Audio / {audio_tracks} active tracks").into());
-        ui.set_export_preflight("This exporter currently supports one video and one audio track. Additional active tracks require compositing/mixing support; they will not be silently omitted.".into());
-        return;
-    }
-    let video_duration = sequence.track_duration(video.id).ok().flatten();
+    let video_duration = sequence.duration().ok();
     ui.set_export_video_summary(
         format!(
-            "Video / {} clips · {}",
-            video.clips.len(),
+            "Video / {video_tracks} active tracks · {} clips · {}",
+            sequence
+                .tracks
+                .iter()
+                .filter(|track| track.kind == TrackKind::Video && track.visible)
+                .map(|track| track.clips.len())
+                .sum::<usize>(),
             video_duration.map(display_timecode).unwrap_or_default()
         )
         .into(),
     );
-    let audio = sequence
-        .tracks
-        .iter()
-        .find(|track| track.kind == TrackKind::Audio && !track.muted && !track.clips.is_empty());
-    if let Some(audio) = audio {
-        ui.set_export_audio_summary(format!("Audio / AAC · {} clips", audio.clips.len()).into());
-        if sequence.track_duration(audio.id).ok().flatten() != video_duration {
-            ui.set_export_preflight("Audio and video tracks must end together for this export. Adjust their lengths or mute the audio track.".into());
-            return;
-        }
+    if audio_tracks > 0 {
+        ui.set_export_audio_summary(format!("Audio / AAC · {audio_tracks} active tracks").into());
     } else {
         ui.set_export_audio_summary("Audio / video-only export".into());
-    }
-    if !sequence.transitions.is_empty() {
-        ui.set_export_preflight(
-            "Export blocked: timeline dissolves require validated source handles.".into(),
-        );
-        return;
     }
     ui.set_can_export(video_duration.is_some_and(RationalTime::is_positive));
     ui.set_export_preflight(
@@ -1638,41 +1625,29 @@ fn launch_default_export(
                 .find(|track| {
                     track.kind == TrackKind::Video && track.visible && !track.clips.is_empty()
                 })
-                .map(|track| {
-                    let audio = sequence.tracks.iter().find(|candidate| {
-                        candidate.kind == TrackKind::Audio
-                            && !candidate.muted
-                            && !candidate.clips.is_empty()
-                    });
-                    (*sequence_id, track.id, audio.map(|candidate| candidate.id))
-                })
+                .map(|_| *sequence_id)
         });
-    let Some((sequence_id, track_id, audio_track_id)) = target else {
+    let Some(sequence_id) = target else {
         controller
             .fail("project has no visible non-empty video track")
             .map_err(|error| error.to_string())?;
         return Ok(());
     };
-    *worker = Some(if let Some(audio_track_id) = audio_track_id {
-        ExportWorker::spawn_single_video_audio_track(
-            media_tool("ffmpeg"),
-            media_tool("ffprobe"),
-            project.clone(),
-            sequence_id,
-            track_id,
-            audio_track_id,
-            VideoAudioMp4ExportRequest::from_preset(preset, output),
-        )
-    } else {
-        ExportWorker::spawn_single_video_track(
-            media_tool("ffmpeg"),
-            media_tool("ffprobe"),
-            project.clone(),
-            sequence_id,
-            track_id,
-            SingleTrackMp4ExportRequest::from_preset(preset, output),
-        )
-    });
+    let (width, height, frame_rate, video_bitrate_kbps) = preset.settings();
+    *worker = Some(ExportWorker::spawn_sequence(
+        media_tool("ffmpeg"),
+        media_tool("ffprobe"),
+        project.clone(),
+        sequence_id,
+        SequenceMp4ExportRequest {
+            width,
+            height,
+            frame_rate,
+            video_bitrate_kbps,
+            audio_bitrate_kbps: preset.audio_bitrate_kbps(),
+            output,
+        },
+    ));
     Ok(())
 }
 
@@ -4101,6 +4076,7 @@ impl NativeExportRuntime {
                     outgoing_clip: outgoing.id,
                     incoming_clip: incoming.id,
                     duration,
+                    alignment: prism_project::TransitionAlignment::Centered,
                     kind: TransitionKind::Dissolve,
                 }
             }
@@ -7743,8 +7719,8 @@ mod tests {
         runtime.toggle_dissolve(&ui)?;
         assert_eq!(ui.get_timeline_transitions().row_count(), 1);
         assert!(ui.get_selected_has_transition());
-        assert!(!ui.get_can_export());
-        assert!(ui.get_export_preflight().contains("source handles"));
+        assert!(ui.get_can_export());
+        assert!(ui.get_export_preflight().contains("Ready"));
         runtime.toggle_dissolve(&ui)?;
         assert_eq!(ui.get_timeline_transitions().row_count(), 0);
         assert!(ui.get_can_export());
@@ -8388,8 +8364,8 @@ mod tests {
         }
         sequence.tracks.push(extra);
         super::update_export_summary(&ui, &layered);
-        assert!(!ui.get_can_export());
-        assert!(ui.get_export_preflight().contains("compositing/mixing"));
+        assert!(ui.get_can_export());
+        assert!(ui.get_export_video_summary().contains("2 active tracks"));
         {
             let sequence = av
                 .sequences
@@ -8404,8 +8380,8 @@ mod tests {
             audio.clips[0].source_duration = RationalTime::new(1, 2)?;
         }
         super::update_export_summary(&ui, &av);
-        assert!(!ui.get_can_export());
-        assert!(ui.get_export_preflight().contains("end together"));
+        assert!(ui.get_can_export());
+        assert!(ui.get_export_audio_summary().contains("1 active tracks"));
         {
             let sequence = av
                 .sequences
@@ -8675,8 +8651,10 @@ mod tests {
         assert_eq!(super::export_preset(0)?.settings().0, 1920);
         assert_eq!(super::export_preset(1)?.settings().0, 3840);
         assert_eq!(super::export_preset(1)?.settings().3, 35_000);
+        assert_eq!(super::export_preset(2)?.settings().1, 1920);
+        assert_eq!(super::export_preset(3)?.settings().0, 1080);
         assert!(super::export_preset(-1).is_err());
-        assert!(super::export_preset(2).is_err());
+        assert!(super::export_preset(4).is_err());
         Ok(())
     }
 

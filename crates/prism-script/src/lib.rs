@@ -1067,6 +1067,9 @@ pub enum Operation {
         incoming_clip: Uuid,
         /// Exact duration.
         duration: RationalTimeDto,
+        /// Placement relative to the edit boundary. Older requests default to centered.
+        #[serde(default)]
+        alignment: TransitionAlignmentDto,
         /// Transition type.
         kind: TransitionKindDto,
     },
@@ -1278,6 +1281,19 @@ pub enum TransitionKindDto {
     Dissolve,
 }
 
+/// Serialized transition placement relative to the edit boundary.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TransitionAlignmentDto {
+    /// Transition begins at the cut.
+    StartAtCut,
+    /// Transition is split exactly around the cut.
+    #[default]
+    Centered,
+    /// Transition ends at the cut.
+    EndAtCut,
+}
+
 /// Protocol validation errors returned consistently to every SDK.
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum ProtocolError {
@@ -1442,6 +1458,7 @@ impl Operation {
                 outgoing_clip,
                 incoming_clip,
                 duration,
+                alignment,
                 kind,
             } => Command::AddTransition {
                 sequence_id: SequenceId::from_uuid(sequence_id),
@@ -1449,6 +1466,7 @@ impl Operation {
                 outgoing_clip: ClipId::from_uuid(outgoing_clip),
                 incoming_clip: ClipId::from_uuid(incoming_clip),
                 duration: duration.try_into()?,
+                alignment: alignment.into(),
                 kind: kind.into(),
             },
             Self::DeleteTransition {
@@ -1654,6 +1672,16 @@ impl From<TransitionKindDto> for prism_project::TransitionKind {
     fn from(value: TransitionKindDto) -> Self {
         match value {
             TransitionKindDto::Dissolve => Self::Dissolve,
+        }
+    }
+}
+
+impl From<TransitionAlignmentDto> for prism_project::TransitionAlignment {
+    fn from(value: TransitionAlignmentDto) -> Self {
+        match value {
+            TransitionAlignmentDto::StartAtCut => Self::StartAtCut,
+            TransitionAlignmentDto::Centered => Self::Centered,
+            TransitionAlignmentDto::EndAtCut => Self::EndAtCut,
         }
     }
 }

@@ -96,6 +96,8 @@ test("emits ripple delete operation", () => {
 });
 
 test("emits transition operations", () => {
-  assert.equal(addTransition({ sequenceId: "s", id: "x", outgoingClip: "a", incomingClip: "b", duration: new RationalTime(1, 2) }).type, "addTransition");
+  assert.equal(addTransition({ sequenceId: "s", id: "x", outgoingClip: "a", incomingClip: "b", duration: new RationalTime(1, 2) }).alignment, "centered");
+  assert.equal(addTransition({ sequenceId: "s", id: "x", outgoingClip: "a", incomingClip: "b", duration: new RationalTime(1, 2), alignment: "endAtCut" }).alignment, "endAtCut");
+  assert.throws(() => addTransition({ sequenceId: "s", id: "x", outgoingClip: "a", incomingClip: "b", duration: new RationalTime(1, 2), alignment: "unknown" }), /alignment/);
   assert.deepEqual(deleteTransition({ sequenceId: "s", transitionId: "x" }), { type: "deleteTransition", sequenceId: "s", transitionId: "x" });
 });

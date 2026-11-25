@@ -13,7 +13,7 @@ use prism_persistence::save_atomic;
 use prism_persistence::{
     PersistenceError, list_autosaves, load, recover_autosave, save_autosave, save_backup,
 };
-use prism_project::{Project, TrackKind, TransitionKind};
+use prism_project::{Project, TrackKind, TransitionAlignment, TransitionKind};
 use prism_recipe::RecipeLanguage;
 use prism_script::{
     ExternalScriptRunner, PermissionGrantSet, ProcessError, ProcessLimits, RecipeExecutionPlan,
@@ -654,6 +654,7 @@ fn run_add_transition(arguments: &[OsString]) -> Result<CliOutcome, CliError> {
             outgoing_clip,
             incoming_clip,
             duration,
+            alignment: TransitionAlignment::Centered,
             kind: TransitionKind::Dissolve,
         },
     )
