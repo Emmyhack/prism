@@ -1,5 +1,16 @@
 # Open questions
 
+## GitHub Actions billing lock
+
+Can the repository owner clear the GitHub Actions billing lock so the Linux,
+Windows and macOS CI matrix can run?
+
+Task 1 PR #2 received no CI execution: GitHub attached the exact annotation
+`The job was not started because your account is locked due to a billing issue.`
+The jobs contain zero steps and no logs. The required format, Clippy, full
+workspace test and ignored real-media gates passed locally on the documented
+macOS environment, but cross-platform CI could not run for this external reason.
+
 ## Playback hardware qualification
 
 What approved measurement method and hardware should define end-to-end Studio
