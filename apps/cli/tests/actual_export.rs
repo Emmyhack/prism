@@ -3,11 +3,85 @@
 use prism_commands::{Command, CommandEngine};
 use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
 use prism_media::FfprobeInspector;
-use prism_persistence::save_atomic;
+use prism_persistence::{load, save_atomic};
 use prism_project::{Project, TrackKind};
 use prism_timeline::RationalTime;
 use std::{fs, path::PathBuf, process::Command as ProcessCommand};
 use uuid::Uuid;
+
+#[test]
+#[ignore = "requires PRISM_FFMPEG, PRISM_FFPROBE, PRISM_PYTHON, and the generated media fixture"]
+fn podcast_folder_recipe_runs_from_folder_to_mp4() -> Result<(), Box<dyn std::error::Error>> {
+    let ffmpeg = PathBuf::from(std::env::var_os("PRISM_FFMPEG").ok_or("PRISM_FFMPEG is not set")?);
+    let ffprobe =
+        PathBuf::from(std::env::var_os("PRISM_FFPROBE").ok_or("PRISM_FFPROBE is not set")?);
+    let python = PathBuf::from(std::env::var_os("PRISM_PYTHON").ok_or("PRISM_PYTHON is not set")?);
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/media/av-ntsc-48k.mp4");
+    let recipe = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../recipes/podcast-folder/manifest.json");
+    let directory = std::env::temp_dir().join(format!("prism-wedge-recipe-{}", Uuid::new_v4()));
+    let media = directory.join("media");
+    fs::create_dir_all(&media)?;
+    fs::copy(&fixture, media.join("one.mp4"))?;
+    fs::copy(&fixture, media.join("two.mp4"))?;
+    fs::copy(&fixture, media.join("intro.mp4"))?;
+    let project = directory.join("recipe.prism");
+    let output = directory.join("recipe.mp4");
+    let config = directory.join("config.json");
+    let inputs = directory.join("inputs.json");
+    let permissions = directory.join("permissions.json");
+    fs::write(
+        &config,
+        r#"{"intro":"intro.mp4","order":["one.mp4","two.mp4"],"transitionSeconds":0.1}"#,
+    )?;
+    fs::write(
+        &inputs,
+        serde_json::to_vec(&serde_json::json!({
+            "folder": media, "config": config, "output": output, "preset": "square-1080x1080"
+        }))?,
+    )?;
+    fs::write(
+        &permissions,
+        r#"{"requested":["export.create","filesystem.read","filesystem.write","media.import","media.read","project.read","project.write"],"granted":["export.create","filesystem.read","filesystem.write","media.import","media.read","project.read","project.write"]}"#,
+    )?;
+    let result = ProcessCommand::new(env!("CARGO_BIN_EXE_prism-cli"))
+        .args(["run-recipe", "--project"])
+        .arg(&project)
+        .args(["--manifest"])
+        .arg(&recipe)
+        .args(["--inputs"])
+        .arg(&inputs)
+        .args(["--permissions"])
+        .arg(&permissions)
+        .args(["--python"])
+        .arg(&python)
+        .env("PRISM_FFMPEG", &ffmpeg)
+        .env("PRISM_FFPROBE", &ffprobe)
+        .output()?;
+    if !result.status.success() {
+        return Err(format!("recipe failed: {}", String::from_utf8_lossy(&result.stderr)).into());
+    }
+    let saved = load(&project)?;
+    let sequence = saved.sequences.values().next().ok_or("missing sequence")?;
+    assert_eq!(sequence.transitions.len(), 2);
+    assert_eq!(sequence.tracks.len(), 2);
+    let metadata = FfprobeInspector::new(ffprobe).inspect(&output)?;
+    assert!(
+        metadata
+            .streams
+            .iter()
+            .any(|stream| matches!(stream.kind, prism_media::StreamKind::Video(_)))
+    );
+    assert!(
+        metadata
+            .streams
+            .iter()
+            .any(|stream| matches!(stream.kind, prism_media::StreamKind::Audio(_)))
+    );
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
 
 #[test]
 #[ignore = "requires PRISM_FFMPEG, PRISM_FFPROBE, and the generated media fixture"]
