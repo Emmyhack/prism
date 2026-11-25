@@ -1,0 +1,22 @@
+{
+  "id": "prism.first-party.podcast-folder",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "language": "python",
+  "entry": "main.py",
+  "permissions": [
+    "export.create",
+    "filesystem.read",
+    "filesystem.write",
+    "media.import",
+    "media.read",
+    "project.read",
+    "project.write"
+  ],
+  "parameters": {
+    "folder": { "type": "string", "minimum": null, "maximum": null, "default": null },
+    "config": { "type": "string", "minimum": null, "maximum": null, "default": null },
+    "output": { "type": "string", "minimum": null, "maximum": null, "default": null },
+    "preset": { "type": "string", "minimum": null, "maximum": null, "default": "youtube-1080p" }
+  }
+}

@@ -67,6 +67,13 @@ builders that emit the same `{ manifest, inputs }` envelope; they do not grant
 permissions or bypass host validation.
 Worker hosts must call the authorization-aware planning path with an explicit
 permission grant set; manifest declarations alone never grant access.
+An authorized recipe may return `{ transaction, export }` instead of a bare
+transaction. The host commits the transaction through the same command engine,
+requires the manifest and review to grant `export.create`, then sends the named
+sequence to the complete-sequence exporter. The first-party
+`recipes/podcast-folder` Python recipe uses this boundary to turn an ordered,
+trimmed folder of A/V clips, optional intro, and dissolve duration into a saved
+project and MP4 in one `run-recipe` command.
 The Rust host boundary also enforces serialized-payload and operation-count
 limits, supports cancellation before mutation, and uses one dry-run/commit path
 for all command execution. Versioned runtime-bundle manifests resolve only

@@ -3,8 +3,8 @@
 use prism_commands::{Command, CommandEngine};
 use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
 use prism_export::{
-    BasicMp4Exporter, ExportError, ExportPreset, ExportReport, SingleTrackMp4ExportRequest,
-    VideoAudioMp4ExportRequest,
+    BasicMp4Exporter, ExportError, ExportPreset, ExportReport, SequenceMp4ExportRequest,
+    SingleTrackMp4ExportRequest, VideoAudioMp4ExportRequest,
 };
 use prism_media::{
     FfmpegProxyGenerator, FfprobeInspector, MediaError, ProxyProfile, ProxyRequest, StreamKind,
@@ -14,13 +14,13 @@ use prism_persistence::{
     PersistenceError, list_autosaves, load, recover_autosave, save_autosave, save_backup,
 };
 use prism_project::{Project, TrackKind, TransitionAlignment, TransitionKind};
-use prism_recipe::RecipeLanguage;
+use prism_recipe::{RecipeLanguage, RecipePermission};
 use prism_script::{
     ExternalScriptRunner, PermissionGrantSet, ProcessError, ProcessLimits, RecipeExecutionPlan,
     RuntimeBundleManifest, ScriptWorker, TransactionRequest, TypeScriptCompiler,
 };
 use prism_timeline::{RationalTime, TimeError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 use std::{
     ffi::OsString,
@@ -108,6 +108,62 @@ pub struct ExportVideoAudioArgs {
 }
 
 type ScriptPermissionFile = PermissionGrantSet;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecipeExportRequest {
+    sequence_id: Uuid,
+    output: PathBuf,
+    preset: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecipeCompleteOutput {
+    transaction: TransactionRequest,
+    export: RecipeExportRequest,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RecipeWorkerOutput {
+    Transaction(TransactionRequest),
+    Complete(RecipeCompleteOutput),
+}
+
+fn recipe_export_runtime(
+    export: Option<&RecipeExportRequest>,
+    request: &TransactionRequest,
+    permissions: &ScriptPermissionFile,
+) -> Result<Option<(PathBuf, PathBuf, ExportPreset)>, CliError> {
+    let Some(export) = export else {
+        return Ok(None);
+    };
+    if request.dry_run {
+        return Err(CliError::Command(
+            "a recipe export cannot use a dry-run transaction".to_owned(),
+        ));
+    }
+    if !permissions
+        .granted
+        .contains(&RecipePermission::ExportCreate)
+    {
+        return Err(CliError::Command(
+            "recipe permission was not granted: ExportCreate".to_owned(),
+        ));
+    }
+    let ffmpeg = std::env::var_os("PRISM_FFMPEG")
+        .map(PathBuf::from)
+        .ok_or_else(|| CliError::Command("PRISM_FFMPEG is not set".to_owned()))?;
+    let ffprobe = std::env::var_os("PRISM_FFPROBE")
+        .map(PathBuf::from)
+        .ok_or_else(|| CliError::Command("PRISM_FFPROBE is not set".to_owned()))?;
+    Ok(Some((
+        ffmpeg,
+        ffprobe,
+        ExportPreset::parse(&export.preset)?,
+    )))
+}
 
 fn read_permissions(path: impl AsRef<Path>) -> Result<ScriptPermissionFile, CliError> {
     let permissions: ScriptPermissionFile = serde_json::from_slice(
@@ -1018,7 +1074,11 @@ fn execute_recipe_plan(
     remaining: &[OsString],
     script_path: &Path,
 ) -> Result<CliOutcome, CliError> {
-    let mut project = load(project_path)?;
+    let mut project = if project_path.exists() {
+        load(project_path)?
+    } else {
+        Project::new(&plan.manifest.id)
+    };
     let revision = project.revision().to_string();
     let input_json = serde_json::to_string(&plan.inputs)?;
     let cancelled = AtomicBool::new(false);
@@ -1055,12 +1115,26 @@ fn execute_recipe_plan(
             &permissions.granted,
             &cancelled,
         )?;
-        let request: TransactionRequest = serde_json::from_slice(&output.stdout)?;
+        let worker_output: RecipeWorkerOutput = serde_json::from_slice(&output.stdout)?;
+        let (request, export) = match worker_output {
+            RecipeWorkerOutput::Transaction(request) => (request, None),
+            RecipeWorkerOutput::Complete(output) => (output.transaction, Some(output.export)),
+        };
+        let export_runtime = recipe_export_runtime(export.as_ref(), &request, permissions)?;
         let execution = ScriptWorker::default()
             .execute_authorized(&mut project, request, &cancelled, &permissions.granted)
             .map_err(|error| CliError::Command(error.to_string()))?;
         if !execution.dry_run {
             save_atomic(&project, project_path)?;
+        }
+        if let (Some(export), Some((ffmpeg, ffprobe, preset))) = (export, export_runtime) {
+            return Ok(CliOutcome::Exported(
+                BasicMp4Exporter::new(ffmpeg, ffprobe).export_sequence(
+                    &project,
+                    SequenceId::from_uuid(export.sequence_id),
+                    &SequenceMp4ExportRequest::from_preset(preset, export.output),
+                )?,
+            ));
         }
         Ok(CliOutcome::ScriptTransaction {
             path: project_path.to_path_buf(),
