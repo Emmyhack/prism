@@ -1,397 +1,56 @@
 # Prism
 
-Prism is a professional, cross-platform, programmable nonlinear video editor
-implemented in Rust. The project is in **Phase 1: functional editing foundation**.
-It has tested core editing, persistence, reference decoding, and constrained
-single-video-track MP4 export paths, plus a native desktop editing workspace.
-The desktop workflow supports project creation/opening, AV import, frame
-preview and scrubbing, split/delete/move/trim edits, track state, and AV export.
-Playback uses bounded video decoding with FFplay-backed source audio, and AV imports
-can export synchronized video/audio. Low-latency native audio mixing and effects
-rendering remain incomplete.
-See [the native workspace guide](docs/development/NATIVE_WORKSPACE.md).
+Prism is a programmable video editor: every edit is a validated command that
+the desktop app, CLI, scripts, and recipes can share. The goal is a dependable
+editor for finishing real videos—not a visual clone of an existing NLE—with
+exact timeline math, inspectable automation, safe project persistence, and
+preview/export semantics that converge on one pipeline.
 
-## Current foundation
+> **Alpha software:** the editing foundation works, but multitrack sequence
+> export, native mixed-audio playback, titles, and rendered effects are still in
+> development. See the [feature status](docs/FEATURE_STATUS.md) for evidence and
+> current limits.
 
-- exact rational timeline time with checked arithmetic;
-- typed project-object identifiers and a UI-independent domain model;
-- a typed command boundary used by all future interfaces;
-- a versioned, language-neutral scripting protocol boundary;
-- atomic SQLite project save/reopen;
-- exact timeline evaluation with bounded background decode scheduling;
-- validated reference MP4 export for one video track with explicit black gaps;
-- a non-interactive saved-project track export command;
-- architecture, security, testing, and milestone documentation.
+![Prism Studio editing workspace](docs/assets/prism-studio.png)
 
-## Headless track export
+## Why Prism
 
-Create an empty validated project without overwriting an existing file:
+- Edit conventionally in a native desktop timeline.
+- Automate the same operations with Python, JavaScript, TypeScript, or recipes.
+- Keep mutations behind one typed command engine with validation and undo/redo.
+- Preserve exact rational time and atomic, versioned project files.
+- Build toward matching preview and export behavior instead of parallel systems.
 
-```sh
-cargo run -p prism-cli -- create-project \
-  --project ./edit.prism --name "My edit"
-```
+The proof workflow is intentionally practical: take a folder of podcast or
+talking-head clips, apply ordered trims and dissolves, mix the audio, and export
+an MP4 through a reproducible recipe.
 
-Inspect real media and create the first video sequence through one validated
-command transaction:
+## Try the current build
 
-```sh
-cargo run -p prism-cli -- create-video-sequence \
-  --project ./edit.prism --media ./source.mp4 --sequence-name Main \
-  --source-start 0/1 --duration 10/1 --ffprobe /path/to/ffprobe
-```
-
-Inspect a saved project to discover stable object IDs and exact clip timing:
-
-```sh
-cargo run -p prism-cli -- inspect --project ./edit.prism
-```
-
-Append another trimmed source range to an existing video track:
-
-```sh
-cargo run -p prism-cli -- add-video-clip \
-  --project ./edit.prism \
-  --track 22222222-2222-4222-8222-222222222222 \
-  --media ./source.mp4 \
-  --source-start 10/1 --timeline-start 10/1 --duration 5/1 \
-  --ffprobe /path/to/ffprobe
-```
-
-Move an existing video clip without changing its source range:
-
-```sh
-cargo run -p prism-cli -- move-video-clip \
-  --project ./edit.prism \
-  --track 22222222-2222-4222-8222-222222222222 \
-  --clip 33333333-3333-4333-8333-333333333333 \
-  --timeline-start 15/1
-```
-
-Trim and reposition an existing video clip:
-
-```sh
-cargo run -p prism-cli -- trim-video-clip \
-  --project ./edit.prism \
-  --track 22222222-2222-4222-8222-222222222222 \
-  --clip 33333333-3333-4333-8333-333333333333 \
-  --timeline-start 15/1 --source-start 2/1 --duration 5/1
-```
-
-Split an existing clip at an exact timeline position:
-
-```sh
-cargo run -p prism-cli -- split-video-clip \
-  --project ./edit.prism \
-  --track 22222222-2222-4222-8222-222222222222 \
-  --clip 33333333-3333-4333-8333-333333333333 \
-  --timeline-position 13/16
-```
-
-Delete an existing video clip by stable IDs:
-
-```sh
-cargo run -p prism-cli -- delete-video-clip \
-  --project ./edit.prism \
-  --track 22222222-2222-4222-8222-222222222222 \
-  --clip 33333333-3333-4333-8333-333333333333
-```
-
-Validate a language-neutral script transaction without changing the project:
-
-```sh
-cargo run -p prism-cli -- script-transaction \
-  --project ./edit.prism --request ./transaction.json
-```
-
-Set `dryRun` to `false` in the versioned JSON request to commit through the
-same validated command engine.
-
-See [the example transaction](examples/script-transaction-dry-run.json) for
-the complete wire shape used by future Python, JavaScript, and TypeScript SDKs.
-
-Run a trusted Python authoring script through the supervised host. The script
-must print one JSON transaction envelope to stdout; its mutations still pass
-through the same protocol validation, revision checks, and command engine:
-
-```sh
-cargo run -p prism-cli -- run-python-script \
-  --project ./edit.prism --script ./scripts/organize.py --python python3 \
-  --permissions ./scripts/organize.permissions.json
-```
-
-The host injects `PRISM_PROJECT_REVISION`, bounds wall-clock execution and
-stdout/stderr size, and terminates cancelled or timed-out workers. This is a
-trusted-process boundary, not an OS-level sandbox; JavaScript and TypeScript
-runtime adapters remain separate milestones.
-
-JavaScript files can use the equivalent Node boundary and produce the same
-transaction envelope:
-
-```sh
-cargo run -p prism-cli -- run-javascript-script \
-  --project ./edit.prism --script ./scripts/organize.mjs --node node \
-  --permissions ./scripts/organize.permissions.json
-```
-
-TypeScript uses an explicit compiler followed by the same Node worker. Compiler
-output is isolated in a temporary directory and removed after execution:
-
-```sh
-cargo run -p prism-cli -- run-typescript-script \
-  --project ./edit.prism --script ./scripts/organize.ts \
-  --tsc /path/to/tsc --node node \
-  --permissions ./scripts/organize.permissions.json
-```
-
-Execute a validated recipe entry relative to its manifest. The permission
-review must match the manifest request, and materialized inputs are exposed to
-the worker as `PRISM_RECIPE_INPUTS`:
-
-```sh
-cargo run -p prism-cli -- run-recipe \
-  --project ./edit.prism --manifest ./recipes/organize/recipe.json \
-  --inputs ./recipes/organize/inputs.json \
-  --permissions ./recipes/organize/permissions.json \
-  --python /path/to/python
-```
-
-JavaScript recipes use `--node`; TypeScript recipes use
-`--tsc /path/to/tsc --node /path/to/node`.
-All recipe languages can instead use a reviewed runtime bundle:
-
-```sh
-cargo run -p prism-cli -- run-recipe \
-  --project ./edit.prism --manifest ./recipes/organize/recipe.json \
-  --inputs ./recipes/organize/inputs.json \
-  --permissions ./recipes/organize/permissions.json \
-  --runtime-bundle ./runtimes/runtime.json
-```
-
-Studio can inspect the combined scripting workspace and produce validated
-breakpoint snapshots for a transaction without changing the project:
-
-```sh
-cargo run -p prism-studio -- \
-  --script-workspace ./scripts ./scripts/permissions.json ./runtimes/runtime.json
-cargo run -p prism-studio -- \
-  --debug-transaction ./edit.prism ./transaction.json 1,3
-```
-
-The Studio binary launches the native professional editing workspace when
-started without arguments. Headless inspection remains available through the
-same binary for automation and diagnostics:
+Install Rust 1.94.1 plus `rustfmt` and Clippy. Media workflows also require a
+compatible local FFmpeg installation; Prism does not yet make a production codec
+distribution claim.
 
 ```sh
 cargo run -p prism-studio
-cargo run -p prism-studio -- --open-project ./edit.prism
-cargo run -p prism-studio -- --project ./edit.prism
-cargo run -p prism-studio -- --list-media ./edit.prism /usr/local/bin/ffprobe
 ```
 
-`--list-media` probes every project source reference and returns deterministic
-browser data including media kind, duration, offline state, and diagnostics.
+For automation and headless workflows, see the [CLI command
+reference](docs/CLI.md), [scripting API](docs/SCRIPTING_API.md), and
+[native workspace guide](docs/development/NATIVE_WORKSPACE.md).
 
-Inspect the same typed command registry consumed by menus, tools, and shortcut
-adapters with:
+## Demo
 
-```sh
-cargo run -p prism-studio -- --list-commands
-```
+Demo video coming soon. The planned walkthrough will cover import, timeline
+editing, save/reopen, undo/redo, scripted edits, and synchronized MP4 export.
 
-Lock or unlock a track through the same validated command engine:
+## Project status
 
-```sh
-cargo run -p prism-cli -- set-track-locked \
-  --project ./edit.prism \
-  --track 22222222-2222-4222-8222-222222222222 \
-  --locked true
-```
+Prism is under active development and is not production ready. The current
+roadmap prioritizes complete sequence export, the wedge recipe, maintainable
+module boundaries, visual editing features, editing semantics, and native audio
+before expanding the feature surface. Architecture and acceptance evidence live
+in [docs](docs/), with performance numbers in
+[PERFORMANCE_BASELINES.md](docs/PERFORMANCE_BASELINES.md).
 
-Track lock state is persisted in the project and prevents future timeline
-mutations that target the locked track.
-
-Reorder tracks by stable ID through the same command path:
-
-```sh
-cargo run -p prism-cli -- reorder-track \
-  --project ./edit.prism \
-  --track 22222222-2222-4222-8222-222222222222 \
-  --index 0
-```
-
-Track visibility and mute state are also persisted through validated commands:
-
-```sh
-cargo run -p prism-cli -- set-track-visible --project ./edit.prism \
-  --track 22222222-2222-4222-8222-222222222222 --visible false
-cargo run -p prism-cli -- set-track-muted --project ./edit.prism \
-  --track 22222222-2222-4222-8222-222222222222 --muted true
-```
-
-Add and remove exact-time sequence markers through the same command engine:
-
-```sh
-cargo run -p prism-cli -- add-marker --project ./edit.prism \
-  --sequence 11111111-1111-4111-8111-111111111111 \
-  --marker 33333333-3333-4333-8333-333333333333 \
-  --time 3/2 --label "Beat"
-cargo run -p prism-cli -- delete-marker --project ./edit.prism \
-  --sequence 11111111-1111-4111-8111-111111111111 \
-  --marker 33333333-3333-4333-8333-333333333333
-```
-
-Duplicate a video clip at an exact timeline position without altering source media:
-
-```sh
-cargo run -p prism-cli -- duplicate-video-clip --project ./edit.prism \
-  --track 22222222-2222-4222-8222-222222222222 \
-  --clip 44444444-4444-4444-8444-444444444444 \
-  --new-clip 55555555-5555-4555-8555-555555555555 \
-  --timeline-start 12/1
-```
-
-Ripple-delete a clip and close the gap on its track:
-
-```sh
-cargo run -p prism-cli -- ripple-delete-video-clip --project ./edit.prism \
-  --track 22222222-2222-4222-8222-222222222222 \
-  --clip 44444444-4444-4444-8444-444444444444
-```
-
-Audio clips use the same exact-time command path and require an inspected audio
-stream before the transaction is committed:
-
-```sh
-cargo run -p prism-cli -- add-audio-clip --project ./edit.prism \
-  --track 77777777-7777-4777-8777-777777777777 \
-  --media ./interview.wav --source-start 0/1 \
-  --timeline-start 0/1 --duration 30/1 --ffprobe /path/to/ffprobe
-```
-
-Transitions are persisted as validated sequence objects. The current CLI
-supports exact-duration dissolves between adjacent video clips:
-
-```sh
-cargo run -p prism-cli -- add-transition --project ./edit.prism \
-  --sequence 11111111-1111-4111-8111-111111111111 \
-  --transition 66666666-6666-4666-8666-666666666666 \
-  --outgoing-clip 44444444-4444-4444-8444-444444444444 \
-  --incoming-clip 55555555-5555-4555-8555-555555555555 \
-  --duration 1/2 --kind dissolve
-```
-
-Validate a recipe manifest and its inputs without starting a script worker:
-
-```sh
-cargo run -p prism-cli -- validate-recipe \
-  --manifest ./recipe.json --inputs ./recipe-inputs.json
-```
-
-Recipe validation checks the declared language, capabilities, parameter types,
-defaults, and numeric bounds before an execution plan can be created.
-
-Generate a validated proxy through an explicitly selected FFmpeg executable. The
-source is never modified and the destination must not already exist:
-
-```sh
-cargo run -p prism-cli -- generate-proxy \
-  --source ./camera.mp4 --output ./cache/camera-proxy.mp4 \
-  --width 1280 --height 720 --video-codec libx264 \
-  --audio-codec aac --ffmpeg /path/to/ffmpeg
-```
-
-The command uses the same cancellable proxy generator and profile validation as
-the media library; packaging, background scheduling, and automatic proxy
-management remain separate milestones.
-
-Create a no-clobber recovery backup of a saved project:
-
-```sh
-cargo run -p prism-cli -- backup-project \
-  --project ./edit.prism --output ./backups/edit-revision-1.prism
-```
-
-Create the deterministic autosave for the current project revision:
-
-```sh
-cargo run -p prism-cli -- autosave-project --project ./edit.prism
-```
-
-List revision-scoped autosaves and recover a selected candidate into a new
-project without replacing an existing destination:
-
-```sh
-cargo run -p prism-cli -- list-autosaves --project ./edit.prism
-cargo run -p prism-cli -- recover-autosave \
-  --source ./edit.prism.autosave.7 --output ./recovered.prism
-```
-
-The command emits deterministic, versioned JSON. Use the reported sequence and
-track IDs with the export command:
-
-The current CLI exports one video track from a validated saved project. IDs are
-the stable UUIDs stored in the project. Encoder and probe paths are explicit
-because the distributable codec configuration is not yet approved.
-
-```sh
-cargo run -p prism-cli -- export-track \
-  --project ./edit.prism \
-  --sequence 11111111-1111-4111-8111-111111111111 \
-  --track 22222222-2222-4222-8222-222222222222 \
-  --output ./finish.mp4 \
-  --width 1920 --height 1080 --fps 30000/1001 \
-  --video-bitrate-kbps 8000 \
-  --ffmpeg /path/to/ffmpeg --ffprobe /path/to/ffprobe
-```
-
-The synchronized `export-video-audio` command accepts the same video bitrate
-option plus `--audio-bitrate-kbps` for explicit AAC bitrate control.
-
-`export-track` emits H.264 High Profile video in an MP4 container. It does not
-mix audio. The synchronized `export-video-audio` command below emits the same
-H.264 video with one AAC audio track, preserving trims and explicit silence
-gaps after duration validation. Multitrack mixing, effects, overwrite, and a
-reviewed production codec bundle remain later milestones. Studio runs these
-exports in a cancellable background job; the headless CLI runs synchronously.
-
-For a synchronized single video track and audio track, use the combined CLI
-command (both tracks must have the same validated timeline duration):
-
-```sh
-cargo run -p prism-cli -- export-video-audio \
-  --project ./edit.prism \
-  --sequence 11111111-1111-4111-8111-111111111111 \
-  --video-track 22222222-2222-4222-8222-222222222222 \
-  --audio-track 33333333-3333-4333-8333-333333333333 \
-  --output ./finish-with-audio.mp4 \
-  --width 1920 --height 1080 --fps 30000/1001 \
-  --ffmpeg /path/to/ffmpeg --ffprobe /path/to/ffprobe
-```
-
-## Prerequisites
-
-Install Rust 1.94.1 with rustfmt and Clippy. Media development will additionally
-require an approved FFmpeg build; its distribution configuration is not yet
-locked because codec patent and license review remains open.
-
-```sh
-rustup toolchain install 1.94.1 --profile minimal --component rustfmt,clippy
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets
-```
-
-See [the implementation plan](docs/IMPLEMENTATION_PLAN.md) and
-[feature status](docs/FEATURE_STATUS.md). No current feature is production ready.
-
-Release qualification and portable packaging are documented in
-[`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md). Platform archives are
-built with `scripts/package-macos.sh`, `scripts/package-linux.sh`, and
-`scripts/package-windows.ps1`; unsigned artifacts are not equivalent to an
-approved public release.
-Sequence timeline markers are supported by the core command API, SQLite project format, headless inspection, and the Python, JavaScript, and TypeScript protocol SDKs.
-Validated proxy profiles, content-addressed proxy cache identities, and an
-explicit cancellable FFmpeg proxy generator are now available. The cache also
-has a bounded background write worker; eviction policy integration and
-distributable codec packaging remain separate milestones.
+Licensed under Apache-2.0.

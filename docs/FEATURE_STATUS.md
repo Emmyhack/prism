@@ -5,6 +5,7 @@ ready, Blocked. "Implemented" never implies the later states.
 
 | Feature | Status | Evidence / limitation |
 |---|---|---|
+| Project presentation | Implemented | The workspace manifest identifies the actual repository and author; the README gives a short product pitch, generated Studio screenshot, honest alpha limits, quick start and demo placeholder; the complete command catalog lives in `docs/CLI.md`. `docs/NAMING.md` records the verified Prism Pipeline collision and three rename proposals without changing the project name. |
 | Rust workspace | Tested | Builds with pinned Rust 1.94.1 |
 | Exact rational time | Tested | Exact arithmetic, explicit tick rounding, exact nearest-grid snapping with tie policy, and a commutativity/reversibility property test pass |
 | Typed IDs/project model | Tested | Domain validator covers identity, media references, time ranges, ordering, and overlap; object set remains incomplete |
