@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import math
 from typing import Any
 
 API_VERSION = "1"
@@ -252,6 +253,56 @@ class InsertClip:
             "sourceStart": self.source_start.as_dict(),
             "sourceDuration": self.source_duration.as_dict(),
         }
+
+
+@dataclass(frozen=True)
+class ClipTransform:
+    position_x: float = 0.0
+    position_y: float = 0.0
+    scale_x: float = 1.0
+    scale_y: float = 1.0
+    rotation_degrees: float = 0.0
+    anchor_x: float = 0.5
+    anchor_y: float = 0.5
+    opacity: float = 1.0
+    crop_left: float = 0.0
+    crop_top: float = 0.0
+    crop_right: float = 0.0
+    crop_bottom: float = 0.0
+
+    def as_dict(self) -> dict[str, float]:
+        values = tuple(self.__dict__.values())
+        if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in values):
+            raise ValueError("transform values must be finite numbers")
+        if self.scale_x <= 0 or self.scale_y <= 0:
+            raise ValueError("transform scale must be positive")
+        normalized = (self.anchor_x, self.anchor_y, self.opacity, self.crop_left, self.crop_top, self.crop_right, self.crop_bottom)
+        if not all(0 <= value <= 1 for value in normalized):
+            raise ValueError("anchor, opacity, and crop values must be normalized")
+        if self.crop_left + self.crop_right >= 1 or self.crop_top + self.crop_bottom >= 1:
+            raise ValueError("crop must retain a positive source area")
+        return {
+            "positionX": self.position_x, "positionY": self.position_y,
+            "scaleX": self.scale_x, "scaleY": self.scale_y,
+            "rotationDegrees": self.rotation_degrees,
+            "anchorX": self.anchor_x, "anchorY": self.anchor_y,
+            "opacity": self.opacity, "cropLeft": self.crop_left,
+            "cropTop": self.crop_top, "cropRight": self.crop_right,
+            "cropBottom": self.crop_bottom,
+        }
+
+
+@dataclass(frozen=True)
+class SetClipTransform:
+    sequence_id: str
+    track_id: str
+    clip_id: str
+    transform: ClipTransform
+
+    def as_dict(self) -> dict[str, Any]:
+        if not isinstance(self.transform, ClipTransform):
+            raise TypeError("transform must be ClipTransform")
+        return {"type": "setClipTransform", "sequenceId": self.sequence_id, "trackId": self.track_id, "clipId": self.clip_id, "transform": self.transform.as_dict()}
 
 
 @dataclass(frozen=True)

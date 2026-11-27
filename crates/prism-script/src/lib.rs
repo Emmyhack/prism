@@ -6,7 +6,7 @@
 
 use prism_commands::{Command, CommandEngine};
 use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId};
-use prism_project::{Project, ProxySourceFingerprint, TrackKind};
+use prism_project::{ClipTransform, Project, ProxySourceFingerprint, TrackKind};
 use prism_recipe::{RecipeError, RecipeLanguage, RecipeManifest, RecipePermission};
 use prism_timeline::RationalTime;
 use serde::{Deserialize, Serialize};

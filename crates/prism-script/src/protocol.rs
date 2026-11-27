@@ -1,7 +1,7 @@
 use super::{
-    API_VERSION, ClipId, Command, Deserialize, Error, MarkerId, MediaAssetId, ProtocolTransaction,
-    ProxySourceFingerprint, RationalTime, RecipeError, RecipeManifest, RecipePermission, Request,
-    SequenceId, Serialize, TrackId, TrackKind, TransactionRequest, Uuid,
+    API_VERSION, ClipId, ClipTransform, Command, Deserialize, Error, MarkerId, MediaAssetId,
+    ProtocolTransaction, ProxySourceFingerprint, RationalTime, RecipeError, RecipeManifest,
+    RecipePermission, Request, SequenceId, Serialize, TrackId, TrackKind, TransactionRequest, Uuid,
 };
 
 /// Recipe invocation received by the script worker boundary.
@@ -239,6 +239,17 @@ pub enum Operation {
         /// New source duration.
         source_duration: RationalTimeDto,
     },
+    /// Replace a clip's nondestructive visual transform.
+    SetClipTransform {
+        /// Owning sequence.
+        sequence_id: Uuid,
+        /// Owning track.
+        track_id: Uuid,
+        /// Clip identifier.
+        clip_id: Uuid,
+        /// Complete transform value.
+        transform: ClipTransformDto,
+    },
     /// Split an existing clip.
     SplitClip {
         /// Owning sequence.
@@ -280,6 +291,36 @@ pub struct RationalTimeDto {
     pub value: i64,
     /// Positive ticks per second.
     pub timescale: u32,
+}
+
+/// Serialized clip visual transform using the approved Task 6 coordinate model.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipTransformDto {
+    /// Horizontal output-pixel translation.
+    pub position_x: f32,
+    /// Vertical output-pixel translation.
+    pub position_y: f32,
+    /// Horizontal scale multiplier.
+    pub scale_x: f32,
+    /// Vertical scale multiplier.
+    pub scale_y: f32,
+    /// Clockwise rotation in degrees.
+    pub rotation_degrees: f32,
+    /// Normalized source-space horizontal anchor.
+    pub anchor_x: f32,
+    /// Normalized source-space vertical anchor.
+    pub anchor_y: f32,
+    /// Normalized opacity.
+    pub opacity: f32,
+    /// Normalized left crop.
+    pub crop_left: f32,
+    /// Normalized top crop.
+    pub crop_top: f32,
+    /// Normalized right crop.
+    pub crop_right: f32,
+    /// Normalized bottom crop.
+    pub crop_bottom: f32,
 }
 
 /// Serialized track kind.
@@ -635,6 +676,17 @@ impl Operation {
                 source_start: source_start.try_into()?,
                 source_duration: source_duration.try_into()?,
             },
+            Self::SetClipTransform {
+                sequence_id,
+                track_id,
+                clip_id,
+                transform,
+            } => Command::SetClipTransform {
+                sequence_id: SequenceId::from_uuid(sequence_id),
+                track_id: TrackId::from_uuid(track_id),
+                clip_id: ClipId::from_uuid(clip_id),
+                transform: transform.into(),
+            },
             Self::SplitClip {
                 sequence_id,
                 track_id,
@@ -683,6 +735,25 @@ impl From<TrackKindDto> for TrackKind {
         match value {
             TrackKindDto::Video => Self::Video,
             TrackKindDto::Audio => Self::Audio,
+        }
+    }
+}
+
+impl From<ClipTransformDto> for ClipTransform {
+    fn from(value: ClipTransformDto) -> Self {
+        Self {
+            position_x: value.position_x,
+            position_y: value.position_y,
+            scale_x: value.scale_x,
+            scale_y: value.scale_y,
+            rotation_degrees: value.rotation_degrees,
+            anchor_x: value.anchor_x,
+            anchor_y: value.anchor_y,
+            opacity: value.opacity,
+            crop_left: value.crop_left,
+            crop_top: value.crop_top,
+            crop_right: value.crop_right,
+            crop_bottom: value.crop_bottom,
         }
     }
 }

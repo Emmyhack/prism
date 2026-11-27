@@ -17,7 +17,7 @@ export interface RecipeRequest {
 export interface RationalTime { readonly value: number; readonly timescale: number; }
 export type Operation =
   | ImportMediaOperation | SetMediaProxyOperation | CreateSequenceOperation | CreateTrackOperation | SetTrackLockedOperation | SetTrackVisibleOperation | SetTrackMutedOperation | ReorderTrackOperation | InsertClipOperation
-  | MoveClipOperation | SlipClipOperation | RollEditOperation | SlideEditOperation | TrimClipOperation | SplitClipOperation | DeleteClipOperation | AddMarkerOperation | DeleteMarkerOperation | DuplicateClipOperation | RippleDeleteOperation | AddTransitionOperation | DeleteTransitionOperation;
+  | MoveClipOperation | SlipClipOperation | RollEditOperation | SlideEditOperation | TrimClipOperation | SetClipTransformOperation | SplitClipOperation | DeleteClipOperation | AddMarkerOperation | DeleteMarkerOperation | DuplicateClipOperation | RippleDeleteOperation | AddTransitionOperation | DeleteTransitionOperation;
 export interface AddMarkerOperation { readonly type: "addMarker"; readonly sequenceId: string; readonly id: string; readonly time: RationalTime; readonly label: string; }
 export interface DeleteMarkerOperation { readonly type: "deleteMarker"; readonly sequenceId: string; readonly markerId: string; }
 export interface DuplicateClipOperation { readonly type: "duplicateClip"; readonly sequenceId: string; readonly trackId: string; readonly clipId: string; readonly newClipId: string; readonly timelineStart: RationalTime; }
@@ -39,6 +39,8 @@ export interface SlipClipOperation { readonly type: "slipClip"; readonly sequenc
 export interface RollEditOperation { readonly type: "rollEdit"; readonly sequenceId: string; readonly trackId: string; readonly leftClipId: string; readonly rightClipId: string; readonly delta: RationalTime; }
 export interface SlideEditOperation { readonly type: "slideEdit"; readonly sequenceId: string; readonly trackId: string; readonly previousClipId: string; readonly clipId: string; readonly nextClipId: string; readonly delta: RationalTime; }
 export interface TrimClipOperation { readonly type: "trimClip"; readonly sequenceId: string; readonly trackId: string; readonly clipId: string; readonly timelineStart: RationalTime; readonly sourceStart: RationalTime; readonly sourceDuration: RationalTime; }
+export interface ClipTransform { readonly positionX: number; readonly positionY: number; readonly scaleX: number; readonly scaleY: number; readonly rotationDegrees: number; readonly anchorX: number; readonly anchorY: number; readonly opacity: number; readonly cropLeft: number; readonly cropTop: number; readonly cropRight: number; readonly cropBottom: number; }
+export interface SetClipTransformOperation { readonly type: "setClipTransform"; readonly sequenceId: string; readonly trackId: string; readonly clipId: string; readonly transform: ClipTransform; }
 export interface SplitClipOperation { readonly type: "splitClip"; readonly sequenceId: string; readonly trackId: string; readonly clipId: string; readonly rightClipId: string; readonly timelinePosition: RationalTime; }
 export interface DeleteClipOperation { readonly type: "deleteClip"; readonly sequenceId: string; readonly trackId: string; readonly clipId: string; }
 export interface TransactionRequest { readonly requestId: string; readonly apiVersion: typeof API_VERSION; readonly expectedRevision: number; readonly label: string; readonly dryRun: boolean; readonly operations: readonly Operation[]; }
@@ -105,6 +107,18 @@ export function rollEdit(sequenceId: string, trackId: string, leftClipId: string
 export function slideEdit(sequenceId: string, trackId: string, previousClipId: string, clipId: string, nextClipId: string, delta: RationalTime): SlideEditOperation { return { type: "slideEdit", sequenceId, trackId, previousClipId, clipId, nextClipId, delta }; }
 export function trimClip(sequenceId: string, trackId: string, clipId: string, timelineStart: RationalTime, sourceStart: RationalTime, sourceDuration: RationalTime): TrimClipOperation {
   return { type: "trimClip", sequenceId, trackId, clipId, timelineStart, sourceStart, sourceDuration };
+}
+export function clipTransform(value: Partial<ClipTransform> = {}): ClipTransform {
+  const transform: ClipTransform = { positionX: 0, positionY: 0, scaleX: 1, scaleY: 1, rotationDegrees: 0, anchorX: 0.5, anchorY: 0.5, opacity: 1, cropLeft: 0, cropTop: 0, cropRight: 0, cropBottom: 0, ...value };
+  const values = Object.values(transform);
+  if (!values.every(Number.isFinite)) throw new TypeError("transform values must be finite numbers");
+  if (transform.scaleX <= 0 || transform.scaleY <= 0) throw new TypeError("transform scale must be positive");
+  if (![transform.anchorX, transform.anchorY, transform.opacity, transform.cropLeft, transform.cropTop, transform.cropRight, transform.cropBottom].every((item) => item >= 0 && item <= 1)) throw new TypeError("anchor, opacity, and crop values must be normalized");
+  if (transform.cropLeft + transform.cropRight >= 1 || transform.cropTop + transform.cropBottom >= 1) throw new TypeError("crop must retain a positive source area");
+  return transform;
+}
+export function setClipTransform(sequenceId: string, trackId: string, clipId: string, transform: Partial<ClipTransform>): SetClipTransformOperation {
+  return { type: "setClipTransform", sequenceId, trackId, clipId, transform: clipTransform(transform) };
 }
 export function splitClip(sequenceId: string, trackId: string, clipId: string, rightClipId: string, timelinePosition: RationalTime): SplitClipOperation {
   return { type: "splitClip", sequenceId, trackId, clipId, rightClipId, timelinePosition };

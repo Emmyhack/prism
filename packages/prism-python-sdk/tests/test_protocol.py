@@ -1,7 +1,7 @@
 import unittest
 
 from prism import (
-    API_VERSION, AddMarker, AddTransition, CreateSequence, CreateTrack, DeleteClip, DeleteMarker, DeleteTransition, DuplicateClip, ImportMedia, InsertClip, MoveClip, SetMediaProxy,
+    API_VERSION, AddMarker, AddTransition, ClipTransform, CreateSequence, CreateTrack, DeleteClip, DeleteMarker, DeleteTransition, DuplicateClip, ImportMedia, InsertClip, MoveClip, SetClipTransform, SetMediaProxy,
     RationalTime, RecipeRequest, ReorderTrack, RippleDelete, RollEdit, SetTrackLocked, SetTrackMuted, SetTrackVisible, SlideEdit, SlipClip, SplitClip, TransactionRequest, TrimClip,
 )
 
@@ -119,6 +119,13 @@ class ProtocolTests(unittest.TestCase):
 
     def test_emits_ripple_delete_operation(self) -> None:
         self.assertEqual(RippleDelete("s", "t", "c").as_dict()["type"], "rippleDelete")
+
+    def test_emits_validated_clip_transform_operation(self) -> None:
+        operation = SetClipTransform("s", "t", "c", ClipTransform(position_x=80, opacity=0.5)).as_dict()
+        self.assertEqual(operation["type"], "setClipTransform")
+        self.assertEqual(operation["transform"]["positionX"], 80)
+        with self.assertRaises(ValueError):
+            ClipTransform(scale_x=0).as_dict()
 
     def test_emits_transition_operations(self) -> None:
         self.assertEqual(
