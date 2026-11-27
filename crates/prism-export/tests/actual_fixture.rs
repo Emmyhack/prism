@@ -112,6 +112,7 @@ fn renders_single_track_clips_and_black_gaps() -> Result<(), Box<dyn std::error:
                         timeline_start: RationalTime::new(1, 5)?,
                         source_start: RationalTime::ZERO,
                         source_duration: RationalTime::new(1, 5)?,
+                        transform: prism_project::ClipTransform::default(),
                     },
                     Clip {
                         id: ClipId::new(),
@@ -119,6 +120,7 @@ fn renders_single_track_clips_and_black_gaps() -> Result<(), Box<dyn std::error:
                         timeline_start: RationalTime::new(3, 5)?,
                         source_start: RationalTime::new(1, 2)?,
                         source_duration: RationalTime::new(1, 5)?,
+                        transform: prism_project::ClipTransform::default(),
                     },
                 ],
                 locked: false,
@@ -182,6 +184,7 @@ fn muxes_synchronized_video_and_audio_tracks() -> Result<(), Box<dyn std::error:
             timeline_start: RationalTime::ZERO,
             source_start,
             source_duration,
+            transform: prism_project::ClipTransform::default(),
         }],
         locked: false,
         visible: true,
@@ -357,6 +360,7 @@ fn exports_multitrack_dissolves_and_mixed_audio_with_golden_evidence()
         timeline_start,
         source_start,
         source_duration: RationalTime::new(1, 5).unwrap_or(RationalTime::ZERO),
+        transform: prism_project::ClipTransform::default(),
     };
     let audio_clip = || Clip {
         id: ClipId::new(),
@@ -364,6 +368,7 @@ fn exports_multitrack_dissolves_and_mixed_audio_with_golden_evidence()
         timeline_start: RationalTime::ZERO,
         source_start: RationalTime::new(1, 10).unwrap_or(RationalTime::ZERO),
         source_duration: RationalTime::new(3, 5).unwrap_or(RationalTime::ZERO),
+        transform: prism_project::ClipTransform::default(),
     };
     let mut project = Project::new("Complete sequence export");
     project.media.insert(

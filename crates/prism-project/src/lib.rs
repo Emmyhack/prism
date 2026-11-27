@@ -352,6 +352,12 @@ fn validate_track(
             }
             .into());
         }
+        if !clip.transform.is_valid() {
+            return Err(ProjectValidationError::InvalidClipTransform {
+                clip_id: clip.id.as_uuid().to_string(),
+            }
+            .into());
+        }
         if previous_end.is_some_and(|end| clip.timeline_start < end) {
             return Err(ProjectValidationError::ClipOrderOrOverlap {
                 track_id: track.id.as_uuid().to_string(),
@@ -615,6 +621,96 @@ pub struct Clip {
     pub source_start: RationalTime,
     /// Duration in source time before retiming.
     pub source_duration: RationalTime,
+    /// Nondestructive visual transform applied after the default fit operation.
+    pub transform: ClipTransform,
+}
+
+/// Nondestructive visual transform for one clip.
+///
+/// Position is measured in output pixels from the top-left output origin. Anchor
+/// and crop edges are normalized in source space. Positive rotation is clockwise.
+/// The renderer evaluates crop, anchor, scale, rotation, position and opacity in
+/// that order after Prism's default fit-with-letterbox operation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipTransform {
+    /// Horizontal translation in output pixels.
+    pub position_x: f32,
+    /// Vertical translation in output pixels.
+    pub position_y: f32,
+    /// Horizontal scale multiplier; `1.0` is identity.
+    pub scale_x: f32,
+    /// Vertical scale multiplier; `1.0` is identity.
+    pub scale_y: f32,
+    /// Clockwise rotation in degrees.
+    pub rotation_degrees: f32,
+    /// Horizontal normalized source-space anchor.
+    pub anchor_x: f32,
+    /// Vertical normalized source-space anchor.
+    pub anchor_y: f32,
+    /// Normalized opacity.
+    pub opacity: f32,
+    /// Normalized crop removed from the source's left edge.
+    pub crop_left: f32,
+    /// Normalized crop removed from the source's top edge.
+    pub crop_top: f32,
+    /// Normalized crop removed from the source's right edge.
+    pub crop_right: f32,
+    /// Normalized crop removed from the source's bottom edge.
+    pub crop_bottom: f32,
+}
+
+impl Default for ClipTransform {
+    fn default() -> Self {
+        Self {
+            position_x: 0.0,
+            position_y: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation_degrees: 0.0,
+            anchor_x: 0.5,
+            anchor_y: 0.5,
+            opacity: 1.0,
+            crop_left: 0.0,
+            crop_top: 0.0,
+            crop_right: 0.0,
+            crop_bottom: 0.0,
+        }
+    }
+}
+
+impl ClipTransform {
+    /// Returns whether every value satisfies the persisted transform contract.
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        let finite = [
+            self.position_x,
+            self.position_y,
+            self.scale_x,
+            self.scale_y,
+            self.rotation_degrees,
+            self.anchor_x,
+            self.anchor_y,
+            self.opacity,
+            self.crop_left,
+            self.crop_top,
+            self.crop_right,
+            self.crop_bottom,
+        ]
+        .into_iter()
+        .all(f32::is_finite);
+        finite
+            && self.scale_x > 0.0
+            && self.scale_y > 0.0
+            && (0.0..=1.0).contains(&self.anchor_x)
+            && (0.0..=1.0).contains(&self.anchor_y)
+            && (0.0..=1.0).contains(&self.opacity)
+            && (0.0..=1.0).contains(&self.crop_left)
+            && (0.0..=1.0).contains(&self.crop_top)
+            && (0.0..=1.0).contains(&self.crop_right)
+            && (0.0..=1.0).contains(&self.crop_bottom)
+            && self.crop_left + self.crop_right < 1.0
+            && self.crop_top + self.crop_bottom < 1.0
+    }
 }
 
 /// Project invariant failures.
@@ -696,6 +792,12 @@ pub enum ProjectValidationError {
         /// Invalid clip identifier.
         clip_id: String,
     },
+    /// A clip transform contained non-finite or out-of-range values.
+    #[error("clip {clip_id} has an invalid visual transform")]
+    InvalidClipTransform {
+        /// Invalid clip identifier.
+        clip_id: String,
+    },
     /// Track clips were not chronological or occupied intersecting ranges.
     #[error("track {track_id} clips are out of order or overlap")]
     ClipOrderOrOverlap {
@@ -734,11 +836,38 @@ pub enum ProjectValidationError {
 #[cfg(test)]
 mod tests {
     use super::{
-        Clip, Marker, MediaAsset, Project, ProjectError, ProjectValidationError, Sequence, Track,
-        TrackKind, Transition, TransitionAlignment, TransitionKind,
+        Clip, ClipTransform, Marker, MediaAsset, Project, ProjectError, ProjectValidationError,
+        Sequence, Track, TrackKind, Transition, TransitionAlignment, TransitionKind,
     };
     use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
     use prism_timeline::{RationalTime, TimeError};
+
+    #[test]
+    fn clip_transform_defaults_and_bounds_are_explicit() {
+        assert!(ClipTransform::default().is_valid());
+        assert!(
+            !ClipTransform {
+                position_x: f32::INFINITY,
+                ..ClipTransform::default()
+            }
+            .is_valid()
+        );
+        assert!(
+            !ClipTransform {
+                scale_x: 0.0,
+                ..ClipTransform::default()
+            }
+            .is_valid()
+        );
+        assert!(
+            !ClipTransform {
+                crop_left: 0.5,
+                crop_right: 0.5,
+                ..ClipTransform::default()
+            }
+            .is_valid()
+        );
+    }
 
     #[test]
     fn validator_rejects_missing_media_reference() -> Result<(), TimeError> {
@@ -760,6 +889,7 @@ mod tests {
                         timeline_start: RationalTime::ZERO,
                         source_start: RationalTime::ZERO,
                         source_duration: RationalTime::new(1, 1)?,
+                        transform: ClipTransform::default(),
                     }],
                     locked: false,
                     visible: true,
@@ -793,6 +923,7 @@ mod tests {
                     timeline_start: RationalTime::new(5, 1)?,
                     source_start: RationalTime::ZERO,
                     source_duration: RationalTime::new(2, 1)?,
+                    transform: ClipTransform::default(),
                 }],
                 locked: false,
                 visible: true,
@@ -839,6 +970,7 @@ mod tests {
                             timeline_start: RationalTime::ZERO,
                             source_start: RationalTime::ZERO,
                             source_duration: RationalTime::new(2, 1)?,
+                            transform: ClipTransform::default(),
                         },
                         Clip {
                             id: ClipId::new(),
@@ -846,6 +978,7 @@ mod tests {
                             timeline_start: RationalTime::new(1, 1)?,
                             source_start: RationalTime::ZERO,
                             source_duration: RationalTime::new(2, 1)?,
+                            transform: ClipTransform::default(),
                         },
                     ],
                     locked: false,

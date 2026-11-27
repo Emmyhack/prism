@@ -1,6 +1,6 @@
 use super::{
-    Clip, ClipId, CommandError, Event, Marker, MarkerId, MediaAsset, MediaAssetId, Project,
-    ProxySourceFingerprint, RationalTime, Sequence, SequenceId, Track, TrackId, TrackKind,
+    Clip, ClipId, ClipTransform, CommandError, Event, Marker, MarkerId, MediaAsset, MediaAssetId,
+    Project, ProxySourceFingerprint, RationalTime, Sequence, SequenceId, Track, TrackId, TrackKind,
     Transition, TransitionId,
 };
 
@@ -413,6 +413,7 @@ pub(super) fn insert_clip(
         timeline_start: location.timeline_start,
         source_start: location.source_start,
         source_duration: location.source_duration,
+        transform: ClipTransform::default(),
     });
     track.clips.sort_by_key(|clip| clip.timeline_start);
     Ok(Event::ClipInserted {
@@ -429,13 +430,20 @@ pub(super) fn duplicate_clip(
     new_clip_id: ClipId,
     timeline_start: RationalTime,
 ) -> Result<Event, CommandError> {
-    let (media_id, source_start, source_duration) = {
+    let (media_id, source_start, source_duration, transform) = {
         let track = find_track_mut(project, sequence_id, track_id)?;
         track
             .clips
             .iter()
             .find(|clip| clip.id == clip_id)
-            .map(|clip| (clip.media_id, clip.source_start, clip.source_duration))
+            .map(|clip| {
+                (
+                    clip.media_id,
+                    clip.source_start,
+                    clip.source_duration,
+                    clip.transform,
+                )
+            })
             .ok_or(CommandError::ClipNotFound)?
     };
     insert_clip(
@@ -450,6 +458,13 @@ pub(super) fn duplicate_clip(
             source_duration,
         },
     )?;
+    let track = find_track_mut(project, sequence_id, track_id)?;
+    let duplicate = track
+        .clips
+        .iter_mut()
+        .find(|clip| clip.id == new_clip_id)
+        .ok_or(CommandError::ClipNotFound)?;
+    duplicate.transform = transform;
     Ok(Event::ClipDuplicated {
         source_id: clip_id,
         id: new_clip_id,
@@ -724,6 +739,29 @@ pub(super) fn trim_clip(
     Ok(Event::ClipTrimmed { id: clip_id })
 }
 
+pub(super) fn set_clip_transform(
+    project: &mut Project,
+    sequence_id: SequenceId,
+    track_id: TrackId,
+    clip_id: ClipId,
+    transform: ClipTransform,
+) -> Result<Event, CommandError> {
+    if !transform.is_valid() {
+        return Err(CommandError::InvalidClipTransform);
+    }
+    let track = find_track_mut(project, sequence_id, track_id)?;
+    if track.locked {
+        return Err(CommandError::TrackLocked);
+    }
+    let clip = track
+        .clips
+        .iter_mut()
+        .find(|clip| clip.id == clip_id)
+        .ok_or(CommandError::ClipNotFound)?;
+    clip.transform = transform;
+    Ok(Event::ClipTransformChanged { id: clip_id })
+}
+
 pub(super) fn split_clip(
     project: &mut Project,
     sequence_id: SequenceId,
@@ -773,6 +811,7 @@ pub(super) fn split_clip(
             timeline_start: timeline_position,
             source_start: right_source_start,
             source_duration: right_duration,
+            transform: original.transform,
         },
     );
     Ok(Event::ClipSplit {

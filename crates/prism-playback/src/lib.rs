@@ -608,6 +608,7 @@ mod tests {
                                 timeline_start: RationalTime::new(1, 1)?,
                                 source_start: RationalTime::new(10, 1)?,
                                 source_duration: RationalTime::new(2, 1)?,
+                                transform: prism_project::ClipTransform::default(),
                             },
                             Clip {
                                 id: second_video_clip_id,
@@ -615,6 +616,7 @@ mod tests {
                                 timeline_start: RationalTime::new(3, 1)?,
                                 source_start: RationalTime::new(20, 1)?,
                                 source_duration: RationalTime::new(1, 1)?,
+                                transform: prism_project::ClipTransform::default(),
                             },
                         ],
                         locked: false,
@@ -630,6 +632,7 @@ mod tests {
                             timeline_start: RationalTime::ZERO,
                             source_start: RationalTime::ZERO,
                             source_duration: RationalTime::new(30, 1)?,
+                            transform: prism_project::ClipTransform::default(),
                         }],
                         locked: false,
                         visible: true,

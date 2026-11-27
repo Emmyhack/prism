@@ -1,6 +1,6 @@
 use super::{Command, CommandEngine, CommandError, CommandRegistry, Event};
 use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
-use prism_project::{Project, ProxySourceFingerprint, TrackKind, TransitionKind};
+use prism_project::{ClipTransform, Project, ProxySourceFingerprint, TrackKind, TransitionKind};
 use prism_timeline::{RationalTime, TimeError};
 
 #[test]
@@ -451,6 +451,107 @@ fn duplicate_clip_reuses_source_range_at_requested_position()
 }
 
 #[test]
+fn clip_transform_is_validated_and_undoable() -> Result<(), Box<dyn std::error::Error>> {
+    let mut project = Project::new("Transform");
+    let media_id = MediaAssetId::new();
+    let sequence_id = SequenceId::new();
+    let track_id = TrackId::new();
+    let clip_id = ClipId::new();
+    CommandEngine::execute_transaction(
+        &mut project,
+        "Build",
+        vec![
+            Command::ImportMedia {
+                id: media_id,
+                source_path: "source.mov".to_owned(),
+            },
+            Command::CreateSequence {
+                id: sequence_id,
+                name: "Main".to_owned(),
+            },
+            Command::CreateTrack {
+                sequence_id,
+                id: track_id,
+                kind: TrackKind::Video,
+            },
+            Command::InsertClip {
+                sequence_id,
+                track_id,
+                id: clip_id,
+                media_id,
+                timeline_start: RationalTime::ZERO,
+                source_start: RationalTime::ZERO,
+                source_duration: RationalTime::new(2, 1)?,
+            },
+        ],
+    )?;
+    let transform = ClipTransform {
+        position_x: 120.0,
+        position_y: -40.0,
+        scale_x: 1.25,
+        scale_y: 0.75,
+        rotation_degrees: 15.0,
+        anchor_x: 0.25,
+        anchor_y: 0.75,
+        opacity: 0.6,
+        crop_left: 0.1,
+        crop_top: 0.2,
+        crop_right: 0.15,
+        crop_bottom: 0.05,
+    };
+    let outcome = CommandEngine::execute_transaction(
+        &mut project,
+        "Transform clip",
+        vec![Command::SetClipTransform {
+            sequence_id,
+            track_id,
+            clip_id,
+            transform,
+        }],
+    )?;
+    assert_eq!(
+        outcome.events,
+        vec![Event::ClipTransformChanged { id: clip_id }]
+    );
+    assert_eq!(
+        project.sequences[&sequence_id].tracks[0].clips[0].transform,
+        transform
+    );
+    let redo = outcome.undo.apply(&mut project)?;
+    assert_eq!(
+        project.sequences[&sequence_id].tracks[0].clips[0].transform,
+        ClipTransform::default()
+    );
+    let _undo = redo.apply(&mut project)?;
+    assert_eq!(
+        project.sequences[&sequence_id].tracks[0].clips[0].transform,
+        transform
+    );
+
+    let invalid = ClipTransform {
+        opacity: f32::NAN,
+        ..transform
+    };
+    assert_eq!(
+        CommandEngine::execute(
+            &mut project,
+            Command::SetClipTransform {
+                sequence_id,
+                track_id,
+                clip_id,
+                transform: invalid,
+            }
+        ),
+        Err(CommandError::InvalidClipTransform)
+    );
+    assert_eq!(
+        project.sequences[&sequence_id].tracks[0].clips[0].transform,
+        transform
+    );
+    Ok(())
+}
+
+#[test]
 fn ripple_delete_closes_gap_without_touching_source_ranges()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut project = Project::new("Test");
@@ -812,6 +913,15 @@ fn locked_tracks_reject_all_clip_mutations() -> Result<(), Box<dyn std::error::E
             timeline_start: RationalTime::ZERO,
             source_start: RationalTime::ZERO,
             source_duration: RationalTime::new(2, 1)?,
+        },
+        Command::SetClipTransform {
+            sequence_id,
+            track_id,
+            clip_id,
+            transform: ClipTransform {
+                opacity: 0.5,
+                ..ClipTransform::default()
+            },
         },
         Command::SplitClip {
             sequence_id,

@@ -301,6 +301,7 @@ fn inspection_json_preserves_ids_order_and_exact_times() -> Result<(), Box<dyn s
                     timeline_start: RationalTime::new(1_001, 30_000)?,
                     source_start: RationalTime::new(1, 2)?,
                     source_duration: RationalTime::new(3, 4)?,
+                    transform: prism_project::ClipTransform::default(),
                 }],
             }],
         },

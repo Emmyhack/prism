@@ -5,7 +5,7 @@ use super::{
 };
 use prism_commands::{Command, CommandEngine};
 use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
-use prism_project::{Project, ProxySourceFingerprint, TrackKind, TransitionKind};
+use prism_project::{ClipTransform, Project, ProxySourceFingerprint, TrackKind, TransitionKind};
 use prism_timeline::RationalTime;
 use rusqlite::Connection;
 use std::time::Duration;
@@ -81,6 +81,29 @@ fn sqlite_round_trip_preserves_domain_state() -> Result<(), Box<dyn std::error::
         byte_length: 42,
     });
     let first_clip_id = project.sequences[&sequence_id].tracks[0].clips[0].id;
+    let transform = ClipTransform {
+        position_x: 80.0,
+        position_y: -24.0,
+        scale_x: 1.2,
+        scale_y: 0.8,
+        rotation_degrees: 12.5,
+        anchor_x: 0.25,
+        anchor_y: 0.75,
+        opacity: 0.65,
+        crop_left: 0.1,
+        crop_top: 0.05,
+        crop_right: 0.2,
+        crop_bottom: 0.15,
+    };
+    CommandEngine::execute(
+        &mut project,
+        Command::SetClipTransform {
+            sequence_id,
+            track_id,
+            clip_id: first_clip_id,
+            transform,
+        },
+    )?;
     let second_clip_id = ClipId::new();
     CommandEngine::execute(
         &mut project,
@@ -163,6 +186,7 @@ fn sqlite_round_trip_preserves_domain_state() -> Result<(), Box<dyn std::error::
         loaded_sequence.tracks[0].clips[0].source_duration,
         RationalTime::new(5, 1)?
     );
+    assert_eq!(loaded_sequence.tracks[0].clips[0].transform, transform);
     Ok(())
 }
 
@@ -195,7 +219,7 @@ fn migrates_v1_track_state_with_safe_defaults() -> Result<(), Box<dyn std::error
         Some(RationalTime::from_integer(30))
     );
     let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
     Ok(())
 }
 
@@ -213,6 +237,7 @@ fn migrates_v7_transitions_to_centered_alignment() -> Result<(), Box<dyn std::er
                  duration_scale INTEGER NOT NULL,
                  kind TEXT NOT NULL
              );
+             CREATE TABLE clip (id TEXT PRIMARY KEY);
              INSERT INTO transition VALUES(
                  '00000000-0000-0000-0000-000000000001',
                  '00000000-0000-0000-0000-000000000002', 0,
@@ -226,7 +251,55 @@ fn migrates_v7_transitions_to_centered_alignment() -> Result<(), Box<dyn std::er
         connection.query_row("SELECT alignment FROM transition", [], |row| row.get(0))?;
     let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     assert_eq!(alignment, "centered");
-    assert_eq!(version, 8);
+    assert_eq!(version, 9);
+    Ok(())
+}
+
+#[test]
+fn migrates_v8_clips_to_identity_transform() -> Result<(), Box<dyn std::error::Error>> {
+    let connection = Connection::open_in_memory()?;
+    connection.execute_batch(
+        "CREATE TABLE clip (
+             id TEXT PRIMARY KEY,
+             track_id TEXT NOT NULL,
+             position INTEGER NOT NULL,
+             media_id TEXT NOT NULL,
+             timeline_value INTEGER NOT NULL,
+             timeline_scale INTEGER NOT NULL,
+             source_value INTEGER NOT NULL,
+             source_scale INTEGER NOT NULL,
+             duration_value INTEGER NOT NULL,
+             duration_scale INTEGER NOT NULL
+         );
+         INSERT INTO clip VALUES('clip', 'track', 0, 'media', 0, 1, 0, 1, 1, 1);
+         PRAGMA user_version = 8;",
+    )?;
+    upgrade_storage_schema(&connection)?;
+    let transform = connection.query_row(
+        "SELECT position_x, position_y, scale_x, scale_y, rotation_degrees,
+                anchor_x, anchor_y, opacity, crop_left, crop_top, crop_right, crop_bottom
+         FROM clip",
+        [],
+        |row| {
+            Ok(ClipTransform {
+                position_x: row.get(0)?,
+                position_y: row.get(1)?,
+                scale_x: row.get(2)?,
+                scale_y: row.get(3)?,
+                rotation_degrees: row.get(4)?,
+                anchor_x: row.get(5)?,
+                anchor_y: row.get(6)?,
+                opacity: row.get(7)?,
+                crop_left: row.get(8)?,
+                crop_top: row.get(9)?,
+                crop_right: row.get(10)?,
+                crop_bottom: row.get(11)?,
+            })
+        },
+    )?;
+    assert_eq!(transform, ClipTransform::default());
+    let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    assert_eq!(version, 9);
     Ok(())
 }
 

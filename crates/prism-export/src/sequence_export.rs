@@ -736,6 +736,7 @@ mod tests {
             timeline_start: RationalTime::from_integer(start),
             source_start: RationalTime::from_integer(source_start),
             source_duration: RationalTime::from_integer(duration),
+            transform: prism_project::ClipTransform::default(),
         };
         project.sequences.insert(
             sequence_id,
