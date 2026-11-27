@@ -1,5 +1,34 @@
 # Open questions
 
+## Task 6 clip-transform semantics
+
+Which coordinate and evaluation model should be authoritative for persisted clip
+transforms and shared preview/export rendering?
+
+Task 6 requires position, scale, rotation, anchor point, opacity and crop, but the
+brief and current architecture do not define the following compatibility-critical
+semantics:
+
+- whether position and anchor use output pixels, source pixels or normalized
+  coordinates, and where their origins lie;
+- whether scale is uniform or two-axis, whether `1` or `100` is identity, and
+  whether aspect ratio is locked by default;
+- whether positive rotation is clockwise or counterclockwise and which coordinate
+  system it uses;
+- whether crop values use pixels, percentages or normalized edges, and whether crop
+  occurs before or after anchor/scale/rotation;
+- the complete transform order and sampling/border policy; and
+- whether an untouched clip defaults to fit, fill or source-size presentation when
+  source and sequence dimensions differ.
+
+These choices must be fixed before adding the domain object or schema migration:
+changing them later would silently alter saved projects and could make preview and
+export disagree. A proposed default for approval is output-pixel position with a
+top-left origin; normalized source-space anchor and crop edges; two-axis scale with
+`1.0` identity and aspect lock in the UI only; clockwise degrees; crop, anchor,
+scale, rotation, then position; transparent borders with bilinear sampling; and the
+existing fit-with-letterbox behavior for untouched clips.
+
 ## GitHub Actions billing lock
 
 Can the repository owner clear the GitHub Actions billing lock so the Linux,
