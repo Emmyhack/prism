@@ -10,8 +10,8 @@ use prism_export::{
 use prism_media::{FfmpegReferenceDecoder, FfprobeInspector, StreamKind};
 use prism_persistence::{load, save_atomic};
 use prism_project::{
-    Clip, MediaAsset, Project, Sequence, Track, TrackKind, Transition, TransitionAlignment,
-    TransitionKind,
+    Clip, ClipTransform, MediaAsset, Project, Sequence, Track, TrackKind, Transition,
+    TransitionAlignment, TransitionKind,
 };
 use prism_timeline::RationalTime;
 use std::{fs, path::PathBuf};
@@ -491,6 +491,98 @@ fn exports_multitrack_dissolves_and_mixed_audio_with_golden_evidence()
     );
     assert!((analysis.peak - 0.184_210).abs() <= 0.000_010);
     assert!((loudness.lufs - -15.039).abs() <= 0.010);
+    fs::remove_file(&output)?;
+    fs::remove_dir(&test_directory)?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires PRISM_FFMPEG, PRISM_FFPROBE, and the generated media fixture"]
+fn exports_command_applied_clip_transform_with_golden_frame()
+-> Result<(), Box<dyn std::error::Error>> {
+    let ffmpeg = PathBuf::from(std::env::var_os("PRISM_FFMPEG").ok_or("PRISM_FFMPEG is not set")?);
+    let ffprobe =
+        PathBuf::from(std::env::var_os("PRISM_FFPROBE").ok_or("PRISM_FFPROBE is not set")?);
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/media/av-ntsc-48k.mp4");
+    let test_directory =
+        std::env::temp_dir().join(format!("prism-transform-export-test-{}", Uuid::new_v4()));
+    fs::create_dir(&test_directory)?;
+    let output = test_directory.join("transformed.mp4");
+    let media_id = MediaAssetId::new();
+    let sequence_id = SequenceId::new();
+    let track_id = TrackId::new();
+    let clip_id = ClipId::new();
+    let mut project = Project::new("Transformed export");
+    CommandEngine::execute_transaction(
+        &mut project,
+        "Build transformed timeline",
+        vec![
+            Command::ImportMedia {
+                id: media_id,
+                source_path: fixture.to_string_lossy().into_owned(),
+            },
+            Command::CreateSequence {
+                id: sequence_id,
+                name: "Main".to_owned(),
+            },
+            Command::CreateTrack {
+                sequence_id,
+                id: track_id,
+                kind: TrackKind::Video,
+            },
+            Command::InsertClip {
+                sequence_id,
+                track_id,
+                id: clip_id,
+                media_id,
+                timeline_start: RationalTime::ZERO,
+                source_start: RationalTime::new(1, 10)?,
+                source_duration: RationalTime::new(1, 2)?,
+            },
+            Command::SetClipTransform {
+                sequence_id,
+                track_id,
+                clip_id,
+                transform: ClipTransform {
+                    position_x: 24.0,
+                    position_y: -12.0,
+                    scale_x: 0.75,
+                    scale_y: 0.75,
+                    rotation_degrees: 12.0,
+                    opacity: 0.65,
+                    crop_left: 0.1,
+                    crop_top: 0.05,
+                    crop_right: 0.15,
+                    crop_bottom: 0.1,
+                    ..ClipTransform::default()
+                },
+            },
+        ],
+    )?;
+    BasicMp4Exporter::new(&ffmpeg, ffprobe).export_sequence(
+        &project,
+        sequence_id,
+        &SequenceMp4ExportRequest {
+            width: 320,
+            height: 180,
+            frame_rate: RationalTime::new(30, 1)?,
+            video_bitrate_kbps: 1_000,
+            audio_bitrate_kbps: 192,
+            output: output.clone(),
+        },
+    )?;
+    let frame = FfmpegReferenceDecoder::new(ffmpeg).decode_video_frame_rgba(
+        &output,
+        0,
+        RationalTime::new(1, 4)?,
+        320,
+        180,
+    )?;
+    assert_eq!(
+        frame.sha256(),
+        "3b169138e25047078ccf7185f5db63c5ee67e59fcb21e203eedc6637fc797bbb"
+    );
     fs::remove_file(&output)?;
     fs::remove_dir(&test_directory)?;
     Ok(())

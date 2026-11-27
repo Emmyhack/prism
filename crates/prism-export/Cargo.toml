@@ -10,6 +10,7 @@ prism-audio = { path = "../prism-audio" }
 prism-core = { path = "../prism-core" }
 prism-media = { path = "../prism-media" }
 prism-project = { path = "../prism-project" }
+prism-render = { path = "../prism-render" }
 prism-timeline = { path = "../prism-timeline" }
 thiserror.workspace = true
 uuid.workspace = true

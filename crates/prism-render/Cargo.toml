@@ -10,4 +10,5 @@ workspace = true
 
 [dependencies]
 prism-compositor = { path = "../prism-compositor" }
+prism-project = { path = "../prism-project" }
 thiserror.workspace = true
