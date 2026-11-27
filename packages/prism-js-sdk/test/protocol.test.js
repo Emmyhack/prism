@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RationalTime, addMarker, addTransition, createSequence, createTrack, deleteClip, deleteMarker, deleteTransition, duplicateClip, importMedia, insertClip, moveClip, recipeRequest, reorderTrack, rippleDelete, rollEdit, setMediaProxy, setTrackLocked, setTrackMuted, setTrackVisible, slideEdit, slipClip, splitClip, transaction, trimClip } from "../src/index.js";
+import { RationalTime, addMarker, addTransition, clipTransform, createSequence, createTrack, deleteClip, deleteMarker, deleteTransition, duplicateClip, importMedia, insertClip, moveClip, recipeRequest, reorderTrack, rippleDelete, rollEdit, setClipTransform, setMediaProxy, setTrackLocked, setTrackMuted, setTrackVisible, slideEdit, slipClip, splitClip, transaction, trimClip } from "../src/index.js";
 
 test("emits the shared exact-time transaction shape", () => {
   const request = transaction({
@@ -93,6 +93,13 @@ test("emits duplicate clip operation", () => {
 
 test("emits ripple delete operation", () => {
   assert.deepEqual(rippleDelete({ sequenceId: "s", trackId: "t", clipId: "c" }), { type: "rippleDelete", sequenceId: "s", trackId: "t", clipId: "c" });
+});
+
+test("emits validated clip transform operation", () => {
+  const operation = setClipTransform({ sequenceId: "s", trackId: "t", clipId: "c", transform: { positionX: 80, opacity: 0.5 } });
+  assert.equal(operation.type, "setClipTransform");
+  assert.equal(operation.transform.scaleX, 1);
+  assert.throws(() => clipTransform({ cropLeft: 0.5, cropRight: 0.5 }), /crop/);
 });
 
 test("emits transition operations", () => {

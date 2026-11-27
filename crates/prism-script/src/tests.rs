@@ -124,6 +124,29 @@ fn converts_duplicate_clip_operation() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
+fn converts_clip_transform_operation() -> Result<(), Box<dyn std::error::Error>> {
+    let request: Request = serde_json::from_value(serde_json::json!({
+        "requestId": "transform",
+        "apiVersion": API_VERSION,
+        "operation": {
+            "type": "setClipTransform",
+            "sequenceId": "00000000-0000-0000-0000-000000000001",
+            "trackId": "00000000-0000-0000-0000-000000000002",
+            "clipId": "00000000-0000-0000-0000-000000000003",
+            "transform": {
+                "positionX": 80.0, "positionY": -20.0,
+                "scaleX": 1.2, "scaleY": 0.8,
+                "rotationDegrees": 15.0, "anchorX": 0.5, "anchorY": 0.5,
+                "opacity": 0.75, "cropLeft": 0.1, "cropTop": 0.0,
+                "cropRight": 0.0, "cropBottom": 0.0
+            }
+        }
+    }))?;
+    assert!(request.into_command().is_ok());
+    Ok(())
+}
+
+#[test]
 fn converts_ripple_delete_operation() -> Result<(), Box<dyn std::error::Error>> {
     let request: Request = serde_json::from_value(serde_json::json!({
         "requestId": "ripple",

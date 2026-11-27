@@ -99,6 +99,20 @@ export function insertClip({ sequenceId, trackId, id, mediaId, timelineStart, so
   };
 }
 
+export function clipTransform({ positionX = 0, positionY = 0, scaleX = 1, scaleY = 1, rotationDegrees = 0, anchorX = 0.5, anchorY = 0.5, opacity = 1, cropLeft = 0, cropTop = 0, cropRight = 0, cropBottom = 0 } = {}) {
+  const values = [positionX, positionY, scaleX, scaleY, rotationDegrees, anchorX, anchorY, opacity, cropLeft, cropTop, cropRight, cropBottom];
+  if (!values.every(Number.isFinite)) throw new TypeError("transform values must be finite numbers");
+  if (scaleX <= 0 || scaleY <= 0) throw new TypeError("transform scale must be positive");
+  if (![anchorX, anchorY, opacity, cropLeft, cropTop, cropRight, cropBottom].every((value) => value >= 0 && value <= 1)) throw new TypeError("anchor, opacity, and crop values must be normalized");
+  if (cropLeft + cropRight >= 1 || cropTop + cropBottom >= 1) throw new TypeError("crop must retain a positive source area");
+  return { positionX, positionY, scaleX, scaleY, rotationDegrees, anchorX, anchorY, opacity, cropLeft, cropTop, cropRight, cropBottom };
+}
+
+export function setClipTransform({ sequenceId, trackId, clipId, transform }) {
+  const validated = clipTransform(transform);
+  return { type: "setClipTransform", sequenceId, trackId, clipId, transform: validated };
+}
+
 export class RationalTime {
   constructor(value, timescale) {
     if (!Number.isInteger(value) || !Number.isInteger(timescale) || timescale <= 0) {
