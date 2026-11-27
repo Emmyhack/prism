@@ -2,8 +2,8 @@
 
 use prism_core::{ClipId, MarkerId, MediaAssetId, ProjectId, SequenceId, TrackId, TransitionId};
 use prism_project::{
-    Clip, Marker, MediaAsset, Project, ProjectError, ProxySourceFingerprint, RestoredProject,
-    Sequence, Track, TrackKind, Transition, TransitionAlignment, TransitionKind,
+    Clip, ClipTransform, Marker, MediaAsset, Project, ProjectError, ProxySourceFingerprint,
+    RestoredProject, Sequence, Track, TrackKind, Transition, TransitionAlignment, TransitionKind,
 };
 use prism_timeline::{RationalTime, TimeError};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -18,7 +18,7 @@ use std::{
 use thiserror::Error;
 use uuid::Uuid;
 
-const STORAGE_SCHEMA_VERSION: u32 = 8;
+const STORAGE_SCHEMA_VERSION: u32 = 9;
 type StoredSequences = (
     BTreeMap<SequenceId, Sequence>,
     BTreeMap<SequenceId, RationalTime>,
@@ -576,9 +576,21 @@ fn initialize(connection: &Connection) -> Result<(), PersistenceError> {
              source_scale INTEGER NOT NULL CHECK(source_scale > 0),
              duration_value INTEGER NOT NULL CHECK(duration_value > 0),
              duration_scale INTEGER NOT NULL CHECK(duration_scale > 0),
+             position_x REAL NOT NULL DEFAULT 0,
+             position_y REAL NOT NULL DEFAULT 0,
+             scale_x REAL NOT NULL DEFAULT 1 CHECK(scale_x > 0),
+             scale_y REAL NOT NULL DEFAULT 1 CHECK(scale_y > 0),
+             rotation_degrees REAL NOT NULL DEFAULT 0,
+             anchor_x REAL NOT NULL DEFAULT 0.5 CHECK(anchor_x >= 0 AND anchor_x <= 1),
+             anchor_y REAL NOT NULL DEFAULT 0.5 CHECK(anchor_y >= 0 AND anchor_y <= 1),
+             opacity REAL NOT NULL DEFAULT 1 CHECK(opacity >= 0 AND opacity <= 1),
+             crop_left REAL NOT NULL DEFAULT 0 CHECK(crop_left >= 0 AND crop_left <= 1),
+             crop_top REAL NOT NULL DEFAULT 0 CHECK(crop_top >= 0 AND crop_top <= 1),
+             crop_right REAL NOT NULL DEFAULT 0 CHECK(crop_right >= 0 AND crop_right <= 1),
+             crop_bottom REAL NOT NULL DEFAULT 0 CHECK(crop_bottom >= 0 AND crop_bottom <= 1),
              UNIQUE(track_id, position)
          );
-         PRAGMA user_version = 8;",
+         PRAGMA user_version = 9;",
     )?;
     Ok(())
 }
@@ -652,6 +664,24 @@ fn upgrade_storage_schema(connection: &Connection) -> Result<(), PersistenceErro
         connection.execute_batch(
             "ALTER TABLE transition ADD COLUMN alignment TEXT NOT NULL DEFAULT 'centered' CHECK(alignment IN ('start_at_cut', 'centered', 'end_at_cut'));
              PRAGMA user_version = 8;",
+        )?;
+    }
+    let version: u32 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if version == 8 {
+        connection.execute_batch(
+            "ALTER TABLE clip ADD COLUMN position_x REAL NOT NULL DEFAULT 0;
+             ALTER TABLE clip ADD COLUMN position_y REAL NOT NULL DEFAULT 0;
+             ALTER TABLE clip ADD COLUMN scale_x REAL NOT NULL DEFAULT 1 CHECK(scale_x > 0);
+             ALTER TABLE clip ADD COLUMN scale_y REAL NOT NULL DEFAULT 1 CHECK(scale_y > 0);
+             ALTER TABLE clip ADD COLUMN rotation_degrees REAL NOT NULL DEFAULT 0;
+             ALTER TABLE clip ADD COLUMN anchor_x REAL NOT NULL DEFAULT 0.5 CHECK(anchor_x >= 0 AND anchor_x <= 1);
+             ALTER TABLE clip ADD COLUMN anchor_y REAL NOT NULL DEFAULT 0.5 CHECK(anchor_y >= 0 AND anchor_y <= 1);
+             ALTER TABLE clip ADD COLUMN opacity REAL NOT NULL DEFAULT 1 CHECK(opacity >= 0 AND opacity <= 1);
+             ALTER TABLE clip ADD COLUMN crop_left REAL NOT NULL DEFAULT 0 CHECK(crop_left >= 0 AND crop_left <= 1);
+             ALTER TABLE clip ADD COLUMN crop_top REAL NOT NULL DEFAULT 0 CHECK(crop_top >= 0 AND crop_top <= 1);
+             ALTER TABLE clip ADD COLUMN crop_right REAL NOT NULL DEFAULT 0 CHECK(crop_right >= 0 AND crop_right <= 1);
+             ALTER TABLE clip ADD COLUMN crop_bottom REAL NOT NULL DEFAULT 0 CHECK(crop_bottom >= 0 AND crop_bottom <= 1);
+             PRAGMA user_version = 9;",
         )?;
     }
     Ok(())
@@ -859,8 +889,13 @@ fn write_clip(
         "INSERT INTO clip(
             id, track_id, position, media_id,
             timeline_value, timeline_scale, source_value, source_scale,
-            duration_value, duration_scale
-         ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            duration_value, duration_scale, position_x, position_y, scale_x, scale_y,
+            rotation_degrees, anchor_x, anchor_y, opacity, crop_left, crop_top,
+            crop_right, crop_bottom
+         ) VALUES(
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+            ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+         )",
         params![
             clip.id.as_uuid().to_string(),
             track_id.as_uuid().to_string(),
@@ -871,7 +906,19 @@ fn write_clip(
             clip.source_start.value(),
             i64::from(clip.source_start.timescale()),
             clip.source_duration.value(),
-            i64::from(clip.source_duration.timescale())
+            i64::from(clip.source_duration.timescale()),
+            clip.transform.position_x,
+            clip.transform.position_y,
+            clip.transform.scale_x,
+            clip.transform.scale_y,
+            clip.transform.rotation_degrees,
+            clip.transform.anchor_x,
+            clip.transform.anchor_y,
+            clip.transform.opacity,
+            clip.transform.crop_left,
+            clip.transform.crop_top,
+            clip.transform.crop_right,
+            clip.transform.crop_bottom
         ],
     )?;
     Ok(())
@@ -1122,6 +1169,19 @@ fn read_tracks(
     Ok(())
 }
 
+struct StoredClipRow {
+    id: String,
+    track_id: String,
+    media_id: String,
+    timeline_value: i64,
+    timeline_scale: i64,
+    source_value: i64,
+    source_scale: i64,
+    duration_value: i64,
+    duration_scale: i64,
+    transform: ClipTransform,
+}
+
 fn read_clips(
     connection: &Connection,
     sequences: &mut BTreeMap<SequenceId, Sequence>,
@@ -1129,44 +1189,69 @@ fn read_clips(
 ) -> Result<(), PersistenceError> {
     let mut statement = connection.prepare(
         "SELECT id, track_id, media_id, timeline_value, timeline_scale,
-                source_value, source_scale, duration_value, duration_scale
+                source_value, source_scale, duration_value, duration_scale,
+                position_x, position_y, scale_x, scale_y, rotation_degrees,
+                anchor_x, anchor_y, opacity, crop_left, crop_top, crop_right, crop_bottom
          FROM clip ORDER BY track_id, position",
     )?;
     let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, i64>(3)?,
-            row.get::<_, i64>(4)?,
-            row.get::<_, i64>(5)?,
-            row.get::<_, i64>(6)?,
-            row.get::<_, i64>(7)?,
-            row.get::<_, i64>(8)?,
-        ))
+        Ok(StoredClipRow {
+            id: row.get(0)?,
+            track_id: row.get(1)?,
+            media_id: row.get(2)?,
+            timeline_value: row.get(3)?,
+            timeline_scale: row.get(4)?,
+            source_value: row.get(5)?,
+            source_scale: row.get(6)?,
+            duration_value: row.get(7)?,
+            duration_scale: row.get(8)?,
+            transform: ClipTransform {
+                position_x: row.get(9)?,
+                position_y: row.get(10)?,
+                scale_x: row.get(11)?,
+                scale_y: row.get(12)?,
+                rotation_degrees: row.get(13)?,
+                anchor_x: row.get(14)?,
+                anchor_y: row.get(15)?,
+                opacity: row.get(16)?,
+                crop_left: row.get(17)?,
+                crop_top: row.get(18)?,
+                crop_right: row.get(19)?,
+                crop_bottom: row.get(20)?,
+            },
+        })
     })?;
     for row in rows {
         let raw = row?;
-        let track_id = TrackId::from_uuid(parse_uuid("clip.track_id", &raw.1)?);
+        let track_id = TrackId::from_uuid(parse_uuid("clip.track_id", &raw.track_id)?);
         let track = find_track(sequences, track_id).ok_or(PersistenceError::Orphan {
             child: "clip",
             parent: "track",
-            id: raw.1,
+            id: raw.track_id,
         })?;
-        let media_id = MediaAssetId::from_uuid(parse_uuid("clip.media_id", &raw.2)?);
+        let media_id = MediaAssetId::from_uuid(parse_uuid("clip.media_id", &raw.media_id)?);
         if !media.contains_key(&media_id) {
             return Err(PersistenceError::Orphan {
                 child: "clip",
                 parent: "media",
-                id: raw.2,
+                id: raw.media_id,
             });
         }
         track.clips.push(Clip {
-            id: ClipId::from_uuid(parse_uuid("clip.id", &raw.0)?),
+            id: ClipId::from_uuid(parse_uuid("clip.id", &raw.id)?),
             media_id,
-            timeline_start: read_time(raw.3, raw.4, "clip.timeline_scale")?,
-            source_start: read_time(raw.5, raw.6, "clip.source_scale")?,
-            source_duration: read_time(raw.7, raw.8, "clip.duration_scale")?,
+            timeline_start: read_time(
+                raw.timeline_value,
+                raw.timeline_scale,
+                "clip.timeline_scale",
+            )?,
+            source_start: read_time(raw.source_value, raw.source_scale, "clip.source_scale")?,
+            source_duration: read_time(
+                raw.duration_value,
+                raw.duration_scale,
+                "clip.duration_scale",
+            )?,
+            transform: raw.transform,
         });
     }
     Ok(())

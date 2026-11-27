@@ -2,8 +2,8 @@
 
 use prism_core::{ClipId, MarkerId, MediaAssetId, SequenceId, TrackId, TransitionId};
 use prism_project::{
-    Clip, Marker, MediaAsset, Project, ProxySourceFingerprint, Sequence, Track, TrackKind,
-    Transition, TransitionAlignment, TransitionKind,
+    Clip, ClipTransform, Marker, MediaAsset, Project, ProxySourceFingerprint, Sequence, Track,
+    TrackKind, Transition, TransitionAlignment, TransitionKind,
 };
 use prism_timeline::RationalTime;
 use thiserror::Error;
@@ -589,6 +589,17 @@ pub enum Command {
         /// New positive source duration.
         source_duration: RationalTime,
     },
+    /// Replaces a clip's nondestructive visual transform.
+    SetClipTransform {
+        /// Owning sequence.
+        sequence_id: SequenceId,
+        /// Owning track.
+        track_id: TrackId,
+        /// Clip to update.
+        clip_id: ClipId,
+        /// Complete validated transform value.
+        transform: ClipTransform,
+    },
     /// Splits one clip into adjacent left and right clips.
     SplitClip {
         /// Owning sequence.
@@ -743,6 +754,11 @@ pub enum Event {
         /// Trimmed clip.
         id: ClipId,
     },
+    /// A clip visual transform changed.
+    ClipTransformChanged {
+        /// Updated clip.
+        id: ClipId,
+    },
     /// One clip was divided into two adjacent clips.
     ClipSplit {
         /// Existing left clip.
@@ -842,6 +858,9 @@ pub enum CommandError {
         /// Required range description.
         constraint: &'static str,
     },
+    /// A clip visual transform contained non-finite or out-of-range values.
+    #[error("clip transform contains invalid values")]
+    InvalidClipTransform,
     /// Two clips would occupy intersecting ranges on one track.
     #[error("clip overlaps another clip on the track")]
     ClipOverlap,
@@ -1179,6 +1198,12 @@ impl CommandEngine {
                 source_start,
                 source_duration,
             ),
+            Command::SetClipTransform {
+                sequence_id,
+                track_id,
+                clip_id,
+                transform,
+            } => set_clip_transform(project, sequence_id, track_id, clip_id, transform),
             Command::SplitClip {
                 sequence_id,
                 track_id,
@@ -1212,7 +1237,7 @@ mod operations;
 use operations::{
     ClipLocation, add_marker, add_transition, create_sequence, create_track, delete_clip,
     delete_marker, delete_transition, duplicate_clip, import_media, insert_clip, move_clip,
-    relink_media, reorder_track, ripple_delete, roll_edit, set_media_proxy,
+    relink_media, reorder_track, ripple_delete, roll_edit, set_clip_transform, set_media_proxy,
     set_sequence_frame_rate, set_track_locked, set_track_muted, set_track_visible, slide_edit,
     slip_clip, split_clip, trim_clip,
 };

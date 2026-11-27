@@ -2,6 +2,9 @@
 
 ## Task 6 clip-transform semantics
 
+Resolved 2026-11-27: the proposed model below was approved. It is now the
+authoritative compatibility contract for Task 6 transforms.
+
 Which coordinate and evaluation model should be authoritative for persisted clip
 transforms and shared preview/export rendering?
 
