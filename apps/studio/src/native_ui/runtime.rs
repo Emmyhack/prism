@@ -206,6 +206,9 @@ impl NativeExportRuntime {
             "project.save_as" => self.save_as(ui),
             "edit.undo" | "edit.redo" => self.apply_history(ui, command == "edit.redo"),
             "timeline.apply_timing" => self.apply_timing(ui),
+            "timeline.apply_transform" | "timeline.reset_transform" => {
+                self.apply_transform(ui, command == "timeline.reset_transform")
+            }
             "timeline.move_left"
             | "timeline.move_right"
             | "timeline.trim_in_left"

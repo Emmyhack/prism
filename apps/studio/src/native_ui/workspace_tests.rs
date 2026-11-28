@@ -468,6 +468,75 @@ fn native_workspace_renders_and_edits_are_persisted() -> Result<(), Box<dyn std:
     runtime.apply_history(&ui, false)?;
     assert_eq!(ui.get_duration_label(), "00:00:01:00");
 
+    // Visual transforms are validated, persisted, and participate in history.
+    ui.set_selected_clip_index(0);
+    runtime.update_inspector(&ui);
+    assert_eq!(ui.get_clip_transform_scale_x(), "1");
+    ui.set_clip_transform_position_x("24".into());
+    ui.set_clip_transform_position_y("-12".into());
+    ui.set_clip_transform_scale_x("0.75".into());
+    ui.set_clip_transform_scale_y("0.8".into());
+    ui.set_clip_transform_rotation("12".into());
+    ui.set_clip_transform_anchor_x("0.4".into());
+    ui.set_clip_transform_anchor_y("0.6".into());
+    ui.set_clip_transform_opacity("0.65".into());
+    ui.set_clip_transform_crop_left("0.1".into());
+    ui.set_clip_transform_crop_top("0.05".into());
+    ui.set_clip_transform_crop_right("0.15".into());
+    ui.set_clip_transform_crop_bottom("0.1".into());
+    runtime.apply_transform(&ui, false)?;
+    let transformed = prism_persistence::load(&path)?
+        .sequences
+        .values()
+        .next()
+        .and_then(|sequence| sequence.tracks[0].clips.first())
+        .map(|clip| clip.transform)
+        .ok_or("persisted transformed clip missing")?;
+    assert_eq!(transformed.position_x, 24.0);
+    assert_eq!(transformed.position_y, -12.0);
+    assert_eq!(transformed.scale_x, 0.75);
+    assert_eq!(transformed.scale_y, 0.8);
+    assert_eq!(transformed.rotation_degrees, 12.0);
+    assert_eq!(transformed.anchor_x, 0.4);
+    assert_eq!(transformed.anchor_y, 0.6);
+    assert_eq!(transformed.opacity, 0.65);
+    assert_eq!(transformed.crop_left, 0.1);
+    assert_eq!(transformed.crop_top, 0.05);
+    assert_eq!(transformed.crop_right, 0.15);
+    assert_eq!(transformed.crop_bottom, 0.1);
+    runtime.apply_history(&ui, false)?;
+    ui.set_selected_clip_index(0);
+    runtime.update_inspector(&ui);
+    assert_eq!(ui.get_clip_transform_scale_x(), "1");
+    runtime.apply_history(&ui, true)?;
+    ui.set_selected_clip_index(0);
+    runtime.update_inspector(&ui);
+    assert_eq!(ui.get_clip_transform_position_x(), "24");
+    runtime.apply_transform(&ui, true)?;
+    assert_eq!(
+        prism_persistence::load(&path)?
+            .sequences
+            .values()
+            .next()
+            .and_then(|sequence| sequence.tracks[0].clips.first())
+            .map(|clip| clip.transform),
+        Some(prism_project::ClipTransform::default())
+    );
+    let revision_before_invalid_transform = runtime
+        .project
+        .borrow()
+        .as_ref()
+        .map(Project::revision)
+        .ok_or("missing project")?;
+    ui.set_clip_transform_scale_x("0".into());
+    assert!(runtime.apply_transform(&ui, false).is_err());
+    ui.set_clip_transform_scale_x("not-a-number".into());
+    assert!(runtime.apply_transform(&ui, false).is_err());
+    assert_eq!(
+        runtime.project.borrow().as_ref().map(Project::revision),
+        Some(revision_before_invalid_transform)
+    );
+
     ui.set_selected_clip_index(0);
     runtime.update_inspector(&ui);
     runtime.adjust_clip_frame(&ui, "timeline.move_right")?;

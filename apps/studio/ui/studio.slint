@@ -268,6 +268,18 @@ export component PrismStudio inherits Window {
     in-out property <string> paired-duration: "0";
     in-out property <string> clip-source-in: "0";
     in-out property <string> clip-duration: "0";
+    in-out property <string> clip-transform-position-x: "0";
+    in-out property <string> clip-transform-position-y: "0";
+    in-out property <string> clip-transform-scale-x: "1";
+    in-out property <string> clip-transform-scale-y: "1";
+    in-out property <string> clip-transform-rotation: "0";
+    in-out property <string> clip-transform-anchor-x: "0.5";
+    in-out property <string> clip-transform-anchor-y: "0.5";
+    in-out property <string> clip-transform-opacity: "1";
+    in-out property <string> clip-transform-crop-left: "0";
+    in-out property <string> clip-transform-crop-top: "0";
+    in-out property <string> clip-transform-crop-right: "0";
+    in-out property <string> clip-transform-crop-bottom: "0";
     in property <string> source-timecode: "00:00:00:00";
     in property <string> source-duration-label: "00:00:00:00";
     in property <string> source-in-label: "—";
@@ -698,6 +710,22 @@ export component PrismStudio inherits Window {
                                 if root.selected-clip-index >= 0 : HorizontalLayout { height: 28px; spacing: 6px; Action { label: "Out −1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.trim_out_left"); } } Action { label: "Out +1f"; height: 27px; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.trim_out_right"); } } }
                                 if root.selected-clip-index >= 0 : Text { text: "Use seconds or an exact fraction, e.g. 1.5 or 3/2."; color: #6e6b7e; font-size: 10px; wrap: word-wrap; }
                                 if root.selected-clip-index >= 0 : Action { label: "Apply timing"; primary: true; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.apply_timing"); } }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : Text { text: "VISUAL TRANSFORM"; color: #a69ac1; font-size: 9px; height: 18px; }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : Text { text: "Position X / Y · output pixels"; color: #9994a8; font-size: 10px; }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : HorizontalLayout { height: 30px; spacing: 6px; Field { text <=> root.clip-transform-position-x; enabled: !root.inspector-locked; } Field { text <=> root.clip-transform-position-y; enabled: !root.inspector-locked; } }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : Text { text: "Scale X / Y · 1 is original"; color: #9994a8; font-size: 10px; }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : HorizontalLayout { height: 30px; spacing: 6px; Field { text <=> root.clip-transform-scale-x; enabled: !root.inspector-locked; } Field { text <=> root.clip-transform-scale-y; enabled: !root.inspector-locked; } }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : Text { text: "Rotation · clockwise degrees"; color: #9994a8; font-size: 10px; }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : Field { text <=> root.clip-transform-rotation; enabled: !root.inspector-locked; }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : Text { text: "Anchor X / Y · normalized 0–1"; color: #9994a8; font-size: 10px; }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : HorizontalLayout { height: 30px; spacing: 6px; Field { text <=> root.clip-transform-anchor-x; enabled: !root.inspector-locked; } Field { text <=> root.clip-transform-anchor-y; enabled: !root.inspector-locked; } }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : Text { text: "Opacity · normalized 0–1"; color: #9994a8; font-size: 10px; }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : Field { text <=> root.clip-transform-opacity; enabled: !root.inspector-locked; }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : Text { text: "Crop L / T · normalized edges"; color: #9994a8; font-size: 10px; }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : HorizontalLayout { height: 30px; spacing: 6px; Field { text <=> root.clip-transform-crop-left; enabled: !root.inspector-locked; } Field { text <=> root.clip-transform-crop-top; enabled: !root.inspector-locked; } }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : Text { text: "Crop R / B · opposite sums must stay below 1"; color: #9994a8; font-size: 10px; wrap: word-wrap; }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : HorizontalLayout { height: 30px; spacing: 6px; Field { text <=> root.clip-transform-crop-right; enabled: !root.inspector-locked; } Field { text <=> root.clip-transform-crop-bottom; enabled: !root.inspector-locked; } }
+                                if root.selected-clip-index >= 0 && !root.selected-is-audio : HorizontalLayout { height: 30px; spacing: 6px; Action { label: "Apply transform"; primary: true; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.apply_transform"); } } Action { label: "Reset"; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.reset_transform"); } } }
                                 if root.selected-clip-index >= 0 : Action { label: root.selected-has-transition ? "Remove dissolve" : "Add dissolve at clip end"; enabled: !root.inspector-locked && root.selected-has-next; clicked => { root.command-invoked("timeline.toggle_dissolve"); } }
                                 if root.selected-clip-index >= 0 : Action { with-icon: true; icon: @image-url("../../../assets/icons/duplicate.svg"); label: "Duplicate to track end"; enabled: !root.inspector-locked; clicked => { root.command-invoked("timeline.duplicate"); } }
                                 if root.selected-clip-index >= 0 : HorizontalLayout { height: 29px; spacing: 6px;
