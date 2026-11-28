@@ -90,6 +90,7 @@ pub(crate) struct StreamPreview {
     width: u32,
     height: u32,
     frame_rate: RationalTime,
+    transform: prism_project::ClipTransform,
     catch_up_frames: usize,
     next_index: usize,
     epoch: u64,
@@ -113,10 +114,12 @@ fn preview_size(width: u32, height: u32) -> Result<(u32, u32), String> {
     ))
 }
 impl StreamPreview {
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         path: &Path,
         base: RationalTime,
         frame_rate: RationalTime,
+        transform: prism_project::ClipTransform,
         ffmpeg: &Path,
         ffprobe: &Path,
         control: StreamControl,
@@ -157,28 +160,34 @@ impl StreamPreview {
         if cancelled.load(Ordering::Acquire) {
             return Err("Video playback stopped".into());
         }
-        let mut child = Command::new(ffmpeg)
+        let mut command = Command::new(ffmpeg);
+        command
             .args(["-nostdin", "-v", "error", "-ss"])
             .arg(format!("{:.9}", base.as_seconds_f64()))
             .arg("-i")
             .arg(path)
-            .args([
-                "-map",
-                "0:v:0",
-                "-an",
-                "-sn",
-                "-dn",
-                "-threads",
-                "1",
-                "-filter_threads",
-                "1",
-                "-vf",
-            ])
-            .arg(format!(
+            .args(["-an", "-sn", "-dn", "-threads", "1", "-filter_threads", "1"]);
+        if transform == prism_project::ClipTransform::default() {
+            command.args(["-map", "0:v:0", "-vf"]).arg(format!(
                 "fps={}/{},scale={width}:{height}",
                 frame_rate.value(),
                 frame_rate.timescale()
-            ))
+            ));
+        } else {
+            let mut graph = format!(
+                "[0:v:0]fps={}/{},setpts=PTS-STARTPTS[rate];",
+                frame_rate.value(),
+                frame_rate.timescale()
+            );
+            graph.push_str(
+                &prism_render::ffmpeg_composited_clip_transform_filter(
+                    "rate", "program", width, height, transform,
+                )
+                .map_err(|error| error.to_string())?,
+            );
+            command.args(["-filter_complex", &graph, "-map", "[program]"]);
+        }
+        let mut child = command
             .args(["-pix_fmt", "rgba", "-f", "rawvideo", "pipe:1"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -199,6 +208,7 @@ impl StreamPreview {
             width,
             height,
             frame_rate,
+            transform,
             catch_up_frames,
             next_index: 0,
             epoch,
@@ -220,11 +230,18 @@ impl StreamPreview {
             .ok()?;
         usize::try_from(ticks.checked_div(i64::from(self.frame_rate.timescale()))?).ok()
     }
-    pub fn reusable(&self, path: &Path, time: RationalTime, frame_rate: RationalTime) -> bool {
+    pub fn reusable(
+        &self,
+        path: &Path,
+        time: RationalTime,
+        frame_rate: RationalTime,
+        transform: prism_project::ClipTransform,
+    ) -> bool {
         self.control.active()
             && self.epoch == self.control.epoch.load(Ordering::Acquire)
             && self.path == path
             && self.frame_rate == frame_rate
+            && self.transform == transform
             && self.index(time).is_some_and(|index| {
                 index.saturating_add(1) >= self.next_index
                     && index < self.next_index.saturating_add(self.catch_up_frames)
@@ -290,6 +307,7 @@ mod tests {
                 Path::new("source.mp4"),
                 RationalTime::ZERO,
                 RationalTime::from_integer(30),
+                prism_project::ClipTransform::default(),
                 Path::new("/nonexistent/ffmpeg"),
                 Path::new("/nonexistent/ffprobe"),
                 control,
@@ -328,6 +346,7 @@ mod tests {
             &path,
             RationalTime::ZERO,
             RationalTime::new(30_000, 1_001)?,
+            prism_project::ClipTransform::default(),
             &ffmpeg,
             &ffprobe,
             control.clone(),
@@ -337,18 +356,57 @@ mod tests {
         let (first, _) = preview.frame(RationalTime::ZERO)?;
         let position = RationalTime::new(1, 2)?;
         let frame_rate = RationalTime::new(30_000, 1_001)?;
-        assert!(preview.reusable(&path, position, frame_rate));
+        assert!(preview.reusable(
+            &path,
+            position,
+            frame_rate,
+            prism_project::ClipTransform::default()
+        ));
+        assert!(!preview.reusable(
+            &path,
+            position,
+            frame_rate,
+            prism_project::ClipTransform {
+                opacity: 0.5,
+                ..prism_project::ClipTransform::default()
+            }
+        ));
         let (later, _) = preview.frame(position)?;
         assert_eq!(control.pid(), Some(pid));
         assert_ne!(first.rgba, later.rgba);
-        assert!(!preview.reusable(&path, RationalTime::ZERO, frame_rate));
-        assert!(!preview.reusable(Path::new("other.mp4"), position, frame_rate));
-        assert!(!preview.reusable(&path, RationalTime::new(5, 1)?, frame_rate));
-        assert!(!preview.reusable(&path, position, RationalTime::from_integer(25)));
+        assert!(!preview.reusable(
+            &path,
+            RationalTime::ZERO,
+            frame_rate,
+            prism_project::ClipTransform::default()
+        ));
+        assert!(!preview.reusable(
+            Path::new("other.mp4"),
+            position,
+            frame_rate,
+            prism_project::ClipTransform::default()
+        ));
+        assert!(!preview.reusable(
+            &path,
+            RationalTime::new(5, 1)?,
+            frame_rate,
+            prism_project::ClipTransform::default()
+        ));
+        assert!(!preview.reusable(
+            &path,
+            position,
+            RationalTime::from_integer(25),
+            prism_project::ClipTransform::default()
+        ));
         control.stop();
         assert!(control.pid().is_none());
         control.activate();
-        assert!(!preview.reusable(&path, position, frame_rate));
+        assert!(!preview.reusable(
+            &path,
+            position,
+            frame_rate,
+            prism_project::ClipTransform::default()
+        ));
         assert!(preview.frame(RationalTime::new(3, 4)?).is_err());
         assert!(
             started.elapsed() < std::time::Duration::from_secs(10),

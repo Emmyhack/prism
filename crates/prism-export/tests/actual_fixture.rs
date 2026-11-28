@@ -498,6 +498,7 @@ fn exports_multitrack_dissolves_and_mixed_audio_with_golden_evidence()
 
 #[test]
 #[ignore = "requires PRISM_FFMPEG, PRISM_FFPROBE, and the generated media fixture"]
+#[allow(clippy::too_many_lines)]
 fn exports_command_applied_clip_transform_with_golden_frame()
 -> Result<(), Box<dyn std::error::Error>> {
     let ffmpeg = PathBuf::from(std::env::var_os("PRISM_FFMPEG").ok_or("PRISM_FFMPEG is not set")?);
@@ -513,6 +514,19 @@ fn exports_command_applied_clip_transform_with_golden_frame()
     let sequence_id = SequenceId::new();
     let track_id = TrackId::new();
     let clip_id = ClipId::new();
+    let transform = ClipTransform {
+        position_x: 24.0,
+        position_y: -12.0,
+        scale_x: 0.75,
+        scale_y: 0.75,
+        rotation_degrees: 12.0,
+        opacity: 0.65,
+        crop_left: 0.1,
+        crop_top: 0.05,
+        crop_right: 0.15,
+        crop_bottom: 0.1,
+        ..ClipTransform::default()
+    };
     let mut project = Project::new("Transformed export");
     CommandEngine::execute_transaction(
         &mut project,
@@ -544,19 +558,7 @@ fn exports_command_applied_clip_transform_with_golden_frame()
                 sequence_id,
                 track_id,
                 clip_id,
-                transform: ClipTransform {
-                    position_x: 24.0,
-                    position_y: -12.0,
-                    scale_x: 0.75,
-                    scale_y: 0.75,
-                    rotation_degrees: 12.0,
-                    opacity: 0.65,
-                    crop_left: 0.1,
-                    crop_top: 0.05,
-                    crop_right: 0.15,
-                    crop_bottom: 0.1,
-                    ..ClipTransform::default()
-                },
+                transform,
             },
         ],
     )?;
@@ -572,16 +574,52 @@ fn exports_command_applied_clip_transform_with_golden_frame()
             output: output.clone(),
         },
     )?;
-    let frame = FfmpegReferenceDecoder::new(ffmpeg).decode_video_frame_rgba(
-        &output,
-        0,
-        RationalTime::new(1, 4)?,
-        320,
-        180,
-    )?;
+    let decoder = FfmpegReferenceDecoder::new(ffmpeg);
+    let frame = decoder.decode_video_frame_rgba(&output, 0, RationalTime::new(1, 4)?, 320, 180)?;
     assert_eq!(
         frame.sha256(),
         "3b169138e25047078ccf7185f5db63c5ee67e59fcb21e203eedc6637fc797bbb"
+    );
+    let mut preview_graph = "[0:v:0]setpts=PTS-STARTPTS[program_raw];".to_owned();
+    preview_graph.push_str(&prism_render::ffmpeg_composited_clip_transform_filter(
+        "program_raw",
+        "program",
+        320,
+        180,
+        transform,
+    )?);
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let preview = decoder.decode_video_frame_rgba_filtered_with_control(
+        &fixture,
+        RationalTime::new(1, 10)?,
+        320,
+        180,
+        &preview_graph,
+        "program",
+        prism_media::MediaProcessControl {
+            timeout: std::time::Duration::from_secs(5),
+            cancelled: &cancelled,
+        },
+    )?;
+    assert_eq!(
+        preview.sha256(),
+        "1b74382aaeab6d9c6177c19855e54a61c3ca9996e0a9151c8fbb70b24a7289c2"
+    );
+    let absolute_error: u64 = frame
+        .rgba
+        .iter()
+        .zip(&preview.rgba)
+        .map(|(exported, previewed)| u64::from(exported.abs_diff(*previewed)))
+        .sum();
+    let mut channel_error = [0_u64; 4];
+    for (index, (exported, previewed)) in frame.rgba.iter().zip(&preview.rgba).enumerate() {
+        channel_error[index % 4] += u64::from(exported.abs_diff(*previewed));
+    }
+    assert!(
+        absolute_error <= u64::try_from(frame.rgba.len())?.saturating_mul(6),
+        "preview/export mean absolute pixel error exceeded 6; total={absolute_error}; channels={channel_error:?}; exported_center={:?}; preview_center={:?}",
+        &frame.rgba[115_840..115_844],
+        &preview.rgba[115_840..115_844]
     );
     fs::remove_file(&output)?;
     fs::remove_dir(&test_directory)?;

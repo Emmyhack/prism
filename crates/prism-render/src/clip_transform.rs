@@ -58,6 +58,31 @@ pub fn ffmpeg_clip_transform_filter(
     Ok(filter)
 }
 
+/// Compiles a clip transform and composites its transparent result over the
+/// sequence's black program canvas. This is the terminal program-preview form;
+/// multitrack export performs its sequence composition afterward.
+///
+/// # Errors
+///
+/// Returns the same validation failures as [`ffmpeg_clip_transform_filter`].
+pub fn ffmpeg_composited_clip_transform_filter(
+    input_label: &str,
+    output_label: &str,
+    width: u32,
+    height: u32,
+    transform: ClipTransform,
+) -> Result<String, ClipTransformFilterError> {
+    let layer_label = format!("{output_label}_layer");
+    let canvas_label = format!("{output_label}_background");
+    let mut filter =
+        ffmpeg_clip_transform_filter(input_label, &layer_label, width, height, transform)?;
+    let _ = write!(
+        filter,
+        ";color=c=black:s={width}x{height},format=rgba[{canvas_label}];[{canvas_label}][{layer_label}]overlay=shortest=1:format=auto[{output_label}]"
+    );
+    Ok(filter)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ClipTransformFilterError, ffmpeg_clip_transform_filter};
@@ -127,6 +152,24 @@ mod tests {
             ),
             Err(ClipTransformFilterError::InvalidTransform)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn composited_filter_terminates_on_black_program_canvas() -> Result<(), ClipTransformFilterError>
+    {
+        let filter = super::ffmpeg_composited_clip_transform_filter(
+            "in",
+            "program",
+            320,
+            180,
+            ClipTransform {
+                opacity: 0.5,
+                ..ClipTransform::default()
+            },
+        )?;
+        assert!(filter.contains("color=c=black:s=320x180"));
+        assert!(filter.ends_with("[program]"));
         Ok(())
     }
 }

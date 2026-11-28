@@ -336,6 +336,62 @@ impl FfmpegReferenceDecoder {
         })
     }
 
+    /// Decodes one reference frame through an explicitly supplied complex
+    /// video-filter graph. The graph must expose `output_label` without square
+    /// brackets and produce exactly the requested RGBA dimensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaError`] under the same bounded process and frame
+    /// validation rules as [`Self::decode_video_frame_rgba_with_control`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_video_frame_rgba_filtered_with_control(
+        &self,
+        path: &Path,
+        timestamp: RationalTime,
+        width: u32,
+        height: u32,
+        filter_graph: &str,
+        output_label: &str,
+        control: MediaProcessControl<'_>,
+    ) -> Result<DecodedVideoFrame, MediaError> {
+        let expected = checked_rgba_length(width, height)?;
+        let seek = format_seek_timestamp(timestamp)?;
+        let selection = format!("[{output_label}]");
+        let mut command = Command::new(&self.executable);
+        command
+            .args(["-v", "error", "-ss", &seek, "-i"])
+            .arg(path)
+            .args(["-filter_complex", filter_graph, "-map", &selection])
+            .args([
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgba",
+                "pipe:1",
+            ]);
+        let output = supervised_process::capture(&mut command, expected, 65_536, control)?;
+        if !output.status.success() {
+            return Err(MediaError::Decoder {
+                status: output.status.code().unwrap_or(-1),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+        if output.stdout.len() != expected {
+            return Err(MediaError::InvalidFrameLength {
+                expected,
+                actual: output.stdout.len(),
+            });
+        }
+        Ok(DecodedVideoFrame {
+            width,
+            height,
+            rgba: output.stdout,
+        })
+    }
+
     /// Decodes a bounded mono `f32` sample window from the start of an audio stream.
     ///
     /// `audio_ordinal` is zero-based among audio streams. `FFmpeg` resamples to the

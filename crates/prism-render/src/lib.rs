@@ -5,7 +5,9 @@
 
 mod clip_transform;
 
-pub use clip_transform::{ClipTransformFilterError, ffmpeg_clip_transform_filter};
+pub use clip_transform::{
+    ClipTransformFilterError, ffmpeg_clip_transform_filter, ffmpeg_composited_clip_transform_filter,
+};
 
 use prism_compositor::{
     BlendMode, CompositorError, Rgba, TransitionKind, composite_over, transition_pixel,

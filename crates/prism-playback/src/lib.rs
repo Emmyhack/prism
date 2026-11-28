@@ -5,7 +5,7 @@
 
 use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
 use prism_media::{DecodedVideoFrame, FfmpegReferenceDecoder};
-use prism_project::{Project, TrackKind};
+use prism_project::{ClipTransform, Project, TrackKind};
 use prism_timeline::{RationalTime, TimeError};
 use std::{
     collections::BTreeMap,
@@ -24,7 +24,7 @@ use thiserror::Error;
 pub mod library_decoder_spike;
 
 /// A visible source selected for one sequence timestamp.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct VideoSourceRequest {
     /// Track containing the selected clip.
     pub track_id: TrackId,
@@ -34,6 +34,8 @@ pub struct VideoSourceRequest {
     pub media_id: MediaAssetId,
     /// Exact timestamp to request from the source decoder.
     pub source_time: RationalTime,
+    /// Nondestructive visual transform evaluated for this clip.
+    pub transform: ClipTransform,
 }
 
 /// Evaluation result in the sequence's stored video-track order.
@@ -41,7 +43,7 @@ pub struct VideoSourceRequest {
 /// Layer ordering and blend semantics will be finalized by the compositor. The
 /// planner deliberately preserves authoritative track order without reversing
 /// it or assigning an undocumented top/bottom interpretation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct VideoFramePlan {
     /// Requested sequence timestamp.
     pub sequence_time: RationalTime,
@@ -72,7 +74,7 @@ pub struct AudioFramePlan {
 }
 
 /// One scheduled decode operation derived from timeline evaluation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DecodeRequest {
     /// Caller-assigned identifier used to match asynchronous results.
     pub request_id: u64,
@@ -83,7 +85,7 @@ pub struct DecodeRequest {
 }
 
 /// Result delivered by an asynchronous decode worker.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum DecodeResult<Frame> {
     /// A current request completed successfully.
     Ready {
@@ -489,6 +491,7 @@ pub fn evaluate_video_frame(
                 clip_id: clip.id,
                 media_id: clip.media_id,
                 source_time: clip.source_start.checked_add(offset)?,
+                transform: clip.transform,
             });
             break;
         }
@@ -608,7 +611,10 @@ mod tests {
                                 timeline_start: RationalTime::new(1, 1)?,
                                 source_start: RationalTime::new(10, 1)?,
                                 source_duration: RationalTime::new(2, 1)?,
-                                transform: prism_project::ClipTransform::default(),
+                                transform: prism_project::ClipTransform {
+                                    position_x: 24.0,
+                                    ..prism_project::ClipTransform::default()
+                                },
                             },
                             Clip {
                                 id: second_video_clip_id,
@@ -660,6 +666,7 @@ mod tests {
                 clip_id: ClipId::new(),
                 media_id: MediaAssetId::new(),
                 source_time: RationalTime::ZERO,
+                transform: prism_project::ClipTransform::default(),
             },
         }
     }
@@ -676,6 +683,7 @@ mod tests {
         assert_eq!(plan.sources[0].clip_id, fixture.video_clip_id);
         assert_eq!(plan.sources[0].media_id, fixture.video_media_id);
         assert_eq!(plan.sources[0].source_time, RationalTime::new(21, 2)?);
+        assert!((plan.sources[0].transform.position_x - 24.0).abs() <= f32::EPSILON);
         Ok(())
     }
 
