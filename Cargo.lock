@@ -3745,6 +3745,7 @@ dependencies = [
  "prism-media",
  "prism-persistence",
  "prism-project",
+ "prism-render",
  "prism-timeline",
  "thiserror 2.0.21",
  "uuid",
@@ -3832,6 +3833,7 @@ name = "prism-render"
 version = "0.1.0"
 dependencies = [
  "prism-compositor",
+ "prism-project",
  "thiserror 2.0.21",
 ]
 

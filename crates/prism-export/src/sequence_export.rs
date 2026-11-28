@@ -8,7 +8,8 @@ use super::{
 };
 use prism_audio::StereoGainPan;
 use prism_core::{ClipId, MediaAssetId, SequenceId, TrackId};
-use prism_project::{Project, Sequence, Track, TrackKind, Transition};
+use prism_project::{ClipTransform, Project, Sequence, Track, TrackKind, Transition};
+use prism_render::ffmpeg_clip_transform_filter;
 use prism_timeline::RationalTime;
 use std::{ffi::OsString, fmt::Write as _, path::PathBuf, process::Command};
 
@@ -80,7 +81,7 @@ impl SequenceMp4ExportRequest {
 }
 
 /// One contiguous visual segment in a composed video track.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SequenceVideoSegment {
     /// Transparent track time with no active clip.
     Gap {
@@ -101,6 +102,8 @@ pub enum SequenceVideoSegment {
         source_start: RationalTime,
         /// Exact positive duration.
         duration: RationalTime,
+        /// Nondestructive visual transform.
+        transform: ClipTransform,
     },
     /// Linear dissolve rendered from two source ranges and their handles.
     Dissolve {
@@ -122,11 +125,15 @@ pub enum SequenceVideoSegment {
         duration: RationalTime,
         /// Required outgoing media after its visible range.
         outgoing_postroll: RationalTime,
+        /// Outgoing clip visual transform.
+        outgoing_transform: ClipTransform,
+        /// Incoming clip visual transform.
+        incoming_transform: ClipTransform,
     },
 }
 
 /// Deterministic visual plan for one visible video track.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SequenceVideoTrackPlan {
     /// Authoritative track identifier.
     pub track_id: TrackId,
@@ -144,7 +151,7 @@ pub struct SequenceAudioTrackPlan {
 }
 
 /// Complete active-track interpretation of a sequence.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SequenceExportPlan {
     /// Authoritative sequence identifier.
     pub sequence_id: SequenceId,
@@ -238,6 +245,7 @@ fn plan_video_track(
                 timeline_start: normal_start,
                 source_start,
                 duration: normal_end.checked_sub(normal_start)?,
+                transform: clip.transform,
             });
         }
         if let Some(transition) = outgoing {
@@ -263,6 +271,8 @@ fn plan_video_track(
                 incoming_source_start,
                 duration: transition.duration,
                 outgoing_postroll: handles.outgoing_postroll,
+                outgoing_transform: clip.transform,
+                incoming_transform: next.transform,
             });
             cursor = normal_end.checked_add(transition.duration)?;
         } else {
@@ -602,19 +612,85 @@ fn build_filter(
                         format_timestamp(*duration)?
                     );
                 }
-                SequenceVideoSegment::Clip { .. } => {
+                SequenceVideoSegment::Clip { transform, .. } => {
                     let input = video_inputs[track_index][segment_index][0];
+                    if *transform == ClipTransform::default() {
+                        let _ = write!(
+                            filter,
+                            "[{input}:v:0]fps={frame_rate}:round=near,scale={dimensions}:force_original_aspect_ratio=decrease,pad={dimensions}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=rgba,setpts=PTS-STARTPTS[{label}];"
+                        );
+                        continue;
+                    }
                     let _ = write!(
                         filter,
-                        "[{input}:v:0]fps={frame_rate}:round=near,scale={dimensions}:force_original_aspect_ratio=decrease,pad={dimensions}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,format=rgba,setpts=PTS-STARTPTS[{label}];"
+                        "[{input}:v:0]fps={frame_rate}:round=near[{label}_raw];"
+                    );
+                    filter.push_str(
+                        &ffmpeg_clip_transform_filter(
+                            &format!("{label}_raw"),
+                            &format!("{label}_transformed"),
+                            request.width,
+                            request.height,
+                            *transform,
+                        )
+                        .map_err(|_| ExportError::InvalidVideoSettings)?,
+                    );
+                    let _ = write!(
+                        filter,
+                        ";[{label}_transformed]setsar=1,format=rgba,setpts=PTS-STARTPTS[{label}];"
                     );
                 }
-                SequenceVideoSegment::Dissolve { duration, .. } => {
+                SequenceVideoSegment::Dissolve {
+                    duration,
+                    outgoing_transform,
+                    incoming_transform,
+                    ..
+                } => {
                     let outgoing = video_inputs[track_index][segment_index][0];
                     let incoming = video_inputs[track_index][segment_index][1];
+                    if *outgoing_transform == ClipTransform::default()
+                        && *incoming_transform == ClipTransform::default()
+                    {
+                        let _ = write!(
+                            filter,
+                            "[{outgoing}:v:0]fps={frame_rate}:round=near,scale={dimensions}:force_original_aspect_ratio=decrease,pad={dimensions}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,setpts=PTS-STARTPTS[vo{track_index}_{segment_index}];[{incoming}:v:0]fps={frame_rate}:round=near,scale={dimensions}:force_original_aspect_ratio=decrease,pad={dimensions}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,setpts=PTS-STARTPTS[vi{track_index}_{segment_index}];[vo{track_index}_{segment_index}][vi{track_index}_{segment_index}]xfade=transition=fade:duration={}:offset=0,format=rgba[{label}];",
+                            format_timestamp(*duration)?
+                        );
+                        continue;
+                    }
                     let _ = write!(
                         filter,
-                        "[{outgoing}:v:0]fps={frame_rate}:round=near,scale={dimensions}:force_original_aspect_ratio=decrease,pad={dimensions}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,setpts=PTS-STARTPTS[vo{track_index}_{segment_index}];[{incoming}:v:0]fps={frame_rate}:round=near,scale={dimensions}:force_original_aspect_ratio=decrease,pad={dimensions}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,setpts=PTS-STARTPTS[vi{track_index}_{segment_index}];[vo{track_index}_{segment_index}][vi{track_index}_{segment_index}]xfade=transition=fade:duration={}:offset=0,format=rgba[{label}];",
+                        "[{outgoing}:v:0]fps={frame_rate}:round=near[vo{track_index}_{segment_index}_raw];[{incoming}:v:0]fps={frame_rate}:round=near[vi{track_index}_{segment_index}_raw];"
+                    );
+                    let outgoing_label = format!("vo{track_index}_{segment_index}");
+                    let incoming_label = format!("vi{track_index}_{segment_index}");
+                    filter.push_str(
+                        &ffmpeg_clip_transform_filter(
+                            &format!("{outgoing_label}_raw"),
+                            &format!("{outgoing_label}_transformed"),
+                            request.width,
+                            request.height,
+                            *outgoing_transform,
+                        )
+                        .map_err(|_| ExportError::InvalidVideoSettings)?,
+                    );
+                    let _ = write!(
+                        filter,
+                        ";[{outgoing_label}_transformed]setsar=1,format=rgba,setpts=PTS-STARTPTS[{outgoing_label}];"
+                    );
+                    filter.push_str(
+                        &ffmpeg_clip_transform_filter(
+                            &format!("{incoming_label}_raw"),
+                            &format!("{incoming_label}_transformed"),
+                            request.width,
+                            request.height,
+                            *incoming_transform,
+                        )
+                        .map_err(|_| ExportError::InvalidVideoSettings)?,
+                    );
+                    let _ = write!(
+                        filter,
+                        ";[{incoming_label}_transformed]setsar=1,format=rgba,setpts=PTS-STARTPTS[{incoming_label}];[{outgoing_label}][{incoming_label}]xfade=transition=fade:duration={}:offset=0,format=rgba[{label}];",
                         format_timestamp(*duration)?
                     );
                 }
