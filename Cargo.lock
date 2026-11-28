@@ -3865,6 +3865,7 @@ dependencies = [
  "prism-persistence",
  "prism-project",
  "prism-recipe",
+ "prism-render",
  "prism-script",
  "prism-timeline",
  "rfd",

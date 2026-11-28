@@ -24,6 +24,7 @@ fn real_video_frames_complete_under_repeated_playback_ticks()
             fixture.clone(),
             RationalTime::new(1, 2)?,
             RationalTime::from_integer(30),
+            prism_project::ClipTransform::default(),
         );
         if let Some(frame) = worker.poll_decoded() {
             let (frame, _, _, _) = frame?;
@@ -36,6 +37,49 @@ fn real_video_frames_complete_under_repeated_playback_ticks()
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     assert_eq!(completed, 2, "Playback timer starved video decoding");
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires PRISM_FFMPEG, PRISM_FFPROBE, and the generated media fixture"]
+fn transformed_program_preview_matches_golden_frame() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::var_os("PRISM_TEST_FFMPEG").is_none() {
+        return Ok(());
+    }
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/media/av-ntsc-48k.mp4");
+    let worker = PreviewWorker::new();
+    worker.request_program(
+        fixture,
+        RationalTime::new(1, 10)?,
+        prism_project::ClipTransform {
+            position_x: 24.0,
+            position_y: -12.0,
+            scale_x: 0.75,
+            scale_y: 0.75,
+            rotation_degrees: 12.0,
+            opacity: 0.65,
+            crop_left: 0.1,
+            crop_top: 0.05,
+            crop_right: 0.15,
+            crop_bottom: 0.1,
+            ..prism_project::ClipTransform::default()
+        },
+    );
+    let started = std::time::Instant::now();
+    let frame = loop {
+        if let Some(result) = worker.poll_decoded() {
+            break result?.0;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(5) {
+            return Err("transformed program preview exceeded five seconds".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(
+        frame.sha256(),
+        "1b74382aaeab6d9c6177c19855e54a61c3ca9996e0a9151c8fbb70b24a7289c2"
+    );
     Ok(())
 }
 
@@ -91,6 +135,7 @@ fn playback_waits_for_decoder_but_scrubbing_supersedes_stale_frames() {
         path.clone(),
         RationalTime::ZERO,
         RationalTime::from_integer(30),
+        prism_project::ClipTransform::default(),
     );
     let first = requests.recv().unwrap();
     // Simulate a decode taking longer than multiple playback timer ticks.
@@ -99,6 +144,7 @@ fn playback_waits_for_decoder_but_scrubbing_supersedes_stale_frames() {
             path.clone(),
             RationalTime::new(tick, 20).unwrap(),
             RationalTime::from_integer(30),
+            prism_project::ClipTransform::default(),
         );
         assert_eq!(worker.generation.get(), first.generation);
     }
@@ -129,6 +175,7 @@ fn playback_waits_for_decoder_but_scrubbing_supersedes_stale_frames() {
         path.clone(),
         RationalTime::new(1, 1).unwrap(),
         RationalTime::from_integer(30),
+        prism_project::ClipTransform::default(),
     );
     let second = requests.recv().unwrap();
     worker.request(path, RationalTime::new(2, 1).unwrap());

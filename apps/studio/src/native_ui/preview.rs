@@ -21,6 +21,7 @@ pub(super) struct PreviewRequest {
     pub(super) cache_root: Option<PathBuf>,
     pub(super) playback: bool,
     pub(super) frame_rate: RationalTime,
+    pub(super) transform: Option<prism_project::ClipTransform>,
     pub(super) cancelled: Arc<AtomicBool>,
 }
 
@@ -122,13 +123,19 @@ impl PreviewWorker {
                             return Err("Video playback stopped".to_owned());
                         }
                         if !stream.as_ref().is_some_and(|stream| {
-                            stream.reusable(&request.path, request.time, request.frame_rate)
+                            stream.reusable(
+                                &request.path,
+                                request.time,
+                                request.frame_rate,
+                                request.transform.unwrap_or_default(),
+                            )
                         }) {
                             stream.take();
                             stream = Some(StreamPreview::open(
                                 &request.path,
                                 request.time,
                                 request.frame_rate,
+                                request.transform.unwrap_or_default(),
                                 &media_tool("ffmpeg"),
                                 &media_tool("ffprobe"),
                                 decode_control.clone(),
@@ -142,25 +149,29 @@ impl PreviewWorker {
                         Ok((frame, duration, None, false))
                     })()
                 } else {
-                    decode_preview(&request.path, request.time, &request.cancelled).and_then(
-                        |(frame, duration)| {
-                            if thumbnails {
-                                let longest = u64::from(frame.width.max(frame.height)).max(1);
-                                let width = u32::try_from(u64::from(frame.width) * 160 / longest)
-                                    .unwrap_or(1)
-                                    .max(1);
-                                let height = u32::try_from(u64::from(frame.height) * 160 / longest)
-                                    .unwrap_or(1)
-                                    .max(1);
-                                frame
-                                    .thumbnail(width, height)
-                                    .map(|frame| (frame, duration, source_fingerprint, false))
-                                    .map_err(|e| e.to_string())
-                            } else {
-                                Ok((frame, duration, None, false))
-                            }
-                        },
+                    decode_preview(
+                        &request.path,
+                        request.time,
+                        request.transform,
+                        &request.cancelled,
                     )
+                    .and_then(|(frame, duration)| {
+                        if thumbnails {
+                            let longest = u64::from(frame.width.max(frame.height)).max(1);
+                            let width = u32::try_from(u64::from(frame.width) * 160 / longest)
+                                .unwrap_or(1)
+                                .max(1);
+                            let height = u32::try_from(u64::from(frame.height) * 160 / longest)
+                                .unwrap_or(1)
+                                .max(1);
+                            frame
+                                .thumbnail(width, height)
+                                .map(|frame| (frame, duration, source_fingerprint, false))
+                                .map_err(|e| e.to_string())
+                        } else {
+                            Ok((frame, duration, None, false))
+                        }
+                    })
                 };
                 if request.playback && result.is_err() {
                     stream.take();
@@ -200,6 +211,29 @@ impl PreviewWorker {
             cache_root: None,
             playback: false,
             frame_rate: RationalTime::from_integer(30),
+            transform: None,
+            cancelled: self.stream_control.request_token(),
+        });
+        self.flush();
+    }
+
+    pub(super) fn request_program(
+        &self,
+        path: PathBuf,
+        time: RationalTime,
+        transform: prism_project::ClipTransform,
+    ) {
+        self.invalidate();
+        self.busy.set(true);
+        self.requested_at.set(Some(Instant::now()));
+        *self.pending.borrow_mut() = Some(PreviewRequest {
+            generation: self.generation.get(),
+            path,
+            time,
+            cache_root: None,
+            playback: false,
+            frame_rate: RationalTime::from_integer(30),
+            transform: Some(transform),
             cancelled: self.stream_control.request_token(),
         });
         self.flush();
@@ -211,6 +245,7 @@ impl PreviewWorker {
         path: PathBuf,
         time: RationalTime,
         frame_rate: RationalTime,
+        transform: prism_project::ClipTransform,
     ) {
         if !self.busy.get() {
             self.stream_control.activate();
@@ -224,6 +259,7 @@ impl PreviewWorker {
                 cache_root: None,
                 playback: true,
                 frame_rate,
+                transform: Some(transform),
                 cancelled: self.stream_control.request_token(),
             });
             self.flush();
@@ -241,6 +277,7 @@ impl PreviewWorker {
             cache_root,
             playback: false,
             frame_rate: RationalTime::from_integer(30),
+            transform: None,
             cancelled: self.stream_control.request_token(),
         });
         self.flush();
@@ -293,6 +330,7 @@ impl PreviewWorker {
 pub(super) fn decode_preview(
     path: &Path,
     time: RationalTime,
+    transform: Option<prism_project::ClipTransform>,
     cancelled: &AtomicBool,
 ) -> Result<(prism_media::DecodedVideoFrame, RationalTime), String> {
     let metadata = FfprobeInspector::new(media_tool("ffprobe"))
@@ -315,19 +353,30 @@ pub(super) fn decode_preview(
     let (Some(width), Some(height)) = (video.width, video.height) else {
         return Err("Video dimensions unavailable".to_owned());
     };
-    let frame = FfmpegReferenceDecoder::new(media_tool("ffmpeg"))
-        .decode_video_frame_rgba_with_control(
-            path,
-            0,
-            time,
-            width,
-            height,
-            prism_media::MediaProcessControl {
-                timeout: Duration::from_secs(5),
-                cancelled,
-            },
+    let decoder = FfmpegReferenceDecoder::new(media_tool("ffmpeg"));
+    let control = prism_media::MediaProcessControl {
+        timeout: Duration::from_secs(5),
+        cancelled,
+    };
+    let frame = if let Some(transform) = transform {
+        let mut graph = "[0:v:0]setpts=PTS-STARTPTS[program_raw];".to_owned();
+        graph.push_str(
+            &prism_render::ffmpeg_composited_clip_transform_filter(
+                "program_raw",
+                "program",
+                width,
+                height,
+                transform,
+            )
+            .map_err(|error| error.to_string())?,
+        );
+        decoder.decode_video_frame_rgba_filtered_with_control(
+            path, time, width, height, &graph, "program", control,
         )
-        .map_err(|e| e.to_string())?;
+    } else {
+        decoder.decode_video_frame_rgba_with_control(path, 0, time, width, height, control)
+    }
+    .map_err(|e| e.to_string())?;
     Ok((frame, metadata.duration.unwrap_or(RationalTime::ZERO)))
 }
 

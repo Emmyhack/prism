@@ -1321,17 +1321,17 @@ impl NativeExportRuntime {
                     } else {
                         &asset.source_path
                     };
-                    Some((PathBuf::from(path), source_time))
+                    Some((PathBuf::from(path), source_time, clip.transform))
                 })
         });
-        if let Some((path, time)) = target {
+        if let Some((path, time, transform)) = target {
             if self.playing.get() {
                 // Keep the last completed frame visible while the next one decodes.
                 self.program_preview
-                    .request_playback(path, time, self.frame_rate());
+                    .request_playback(path, time, self.frame_rate(), transform);
             } else {
                 ui.set_has_program_frame(false);
-                self.program_preview.request(path, time);
+                self.program_preview.request_program(path, time, transform);
             }
             ui.set_preview_status("Decoding frame…".into());
         } else {
