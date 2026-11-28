@@ -12,7 +12,7 @@ use prism_media::{
     ProxyRequest, ProxyStatus, StreamKind, decode_thumbnail_artifact, fingerprint,
 };
 use prism_project::{
-    MediaAsset, Project, ProxySourceFingerprint, Sequence, TrackKind, TransitionKind,
+    ClipTransform, MediaAsset, Project, ProxySourceFingerprint, Sequence, TrackKind, TransitionKind,
 };
 use prism_studio::desktop::{
     AutosavePreferences, AutosavePreferencesStore, ExportController, ExportStatus, ExportWorker,

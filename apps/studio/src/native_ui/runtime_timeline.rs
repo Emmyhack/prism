@@ -88,6 +88,7 @@ impl NativeExportRuntime {
             ui.set_paired_duration(timing_text(clip.source_duration));
             ui.set_clip_source_in(timing_text(clip.source_start));
             ui.set_clip_duration(timing_text(clip.source_duration));
+            set_transform_fields(ui, clip.transform);
             let next = track
                 .clips
                 .iter()
@@ -110,7 +111,103 @@ impl NativeExportRuntime {
             ui.set_selected_track_index(-1);
             ui.set_selected_has_next(false);
             ui.set_selected_has_transition(false);
+            set_transform_fields(ui, ClipTransform::default());
         }
+    }
+
+    pub(super) fn apply_transform(&self, ui: &PrismStudio, reset: bool) -> Result<(), String> {
+        let transform = if reset {
+            ClipTransform::default()
+        } else {
+            ClipTransform {
+                position_x: parse_transform_value(
+                    ui.get_clip_transform_position_x().as_str(),
+                    "Position X",
+                )?,
+                position_y: parse_transform_value(
+                    ui.get_clip_transform_position_y().as_str(),
+                    "Position Y",
+                )?,
+                scale_x: parse_transform_value(
+                    ui.get_clip_transform_scale_x().as_str(),
+                    "Scale X",
+                )?,
+                scale_y: parse_transform_value(
+                    ui.get_clip_transform_scale_y().as_str(),
+                    "Scale Y",
+                )?,
+                rotation_degrees: parse_transform_value(
+                    ui.get_clip_transform_rotation().as_str(),
+                    "Rotation",
+                )?,
+                anchor_x: parse_transform_value(
+                    ui.get_clip_transform_anchor_x().as_str(),
+                    "Anchor X",
+                )?,
+                anchor_y: parse_transform_value(
+                    ui.get_clip_transform_anchor_y().as_str(),
+                    "Anchor Y",
+                )?,
+                opacity: parse_transform_value(
+                    ui.get_clip_transform_opacity().as_str(),
+                    "Opacity",
+                )?,
+                crop_left: parse_transform_value(
+                    ui.get_clip_transform_crop_left().as_str(),
+                    "Crop left",
+                )?,
+                crop_top: parse_transform_value(
+                    ui.get_clip_transform_crop_top().as_str(),
+                    "Crop top",
+                )?,
+                crop_right: parse_transform_value(
+                    ui.get_clip_transform_crop_right().as_str(),
+                    "Crop right",
+                )?,
+                crop_bottom: parse_transform_value(
+                    ui.get_clip_transform_crop_bottom().as_str(),
+                    "Crop bottom",
+                )?,
+            }
+        };
+        if !transform.is_valid() {
+            return Err("Transform requires finite nonzero scales, anchor/opacity/crop values from 0 to 1, and opposite crop sums below 1".to_owned());
+        }
+        let command = {
+            let project = self.project.borrow();
+            let project = project.as_ref().ok_or("Open a project first")?;
+            let sequence = project
+                .sequences
+                .values()
+                .next()
+                .ok_or("No sequence available")?;
+            let selected = usize::try_from(ui.get_selected_clip_index())
+                .map_err(|_| "Select a video clip first")?;
+            let (track, clip) = sequence
+                .tracks
+                .iter()
+                .flat_map(|track| track.clips.iter().map(move |clip| (track, clip)))
+                .nth(selected)
+                .ok_or("Selected clip unavailable")?;
+            if track.kind != TrackKind::Video {
+                return Err("Visual transforms require a video clip".to_owned());
+            }
+            Command::SetClipTransform {
+                sequence_id: sequence.id,
+                track_id: track.id,
+                clip_id: clip.id,
+                transform,
+            }
+        };
+        self.commit_commands(
+            ui,
+            vec![command],
+            if reset {
+                "Reset clip transform"
+            } else {
+                "Change clip transform"
+            },
+        )
     }
 
     pub(super) fn apply_timing(&self, ui: &PrismStudio) -> Result<(), String> {
@@ -1073,4 +1170,31 @@ impl NativeExportRuntime {
         }
         apply_export_status(ui, controller.status().as_ref());
     }
+}
+
+fn parse_transform_value(value: &str, label: &str) -> Result<f32, String> {
+    let parsed = value
+        .trim()
+        .parse::<f32>()
+        .map_err(|_| format!("{label} must be a number"))?;
+    if parsed.is_finite() {
+        Ok(parsed)
+    } else {
+        Err(format!("{label} must be finite"))
+    }
+}
+
+fn set_transform_fields(ui: &PrismStudio, transform: ClipTransform) {
+    ui.set_clip_transform_position_x(transform.position_x.to_string().into());
+    ui.set_clip_transform_position_y(transform.position_y.to_string().into());
+    ui.set_clip_transform_scale_x(transform.scale_x.to_string().into());
+    ui.set_clip_transform_scale_y(transform.scale_y.to_string().into());
+    ui.set_clip_transform_rotation(transform.rotation_degrees.to_string().into());
+    ui.set_clip_transform_anchor_x(transform.anchor_x.to_string().into());
+    ui.set_clip_transform_anchor_y(transform.anchor_y.to_string().into());
+    ui.set_clip_transform_opacity(transform.opacity.to_string().into());
+    ui.set_clip_transform_crop_left(transform.crop_left.to_string().into());
+    ui.set_clip_transform_crop_top(transform.crop_top.to_string().into());
+    ui.set_clip_transform_crop_right(transform.crop_right.to_string().into());
+    ui.set_clip_transform_crop_bottom(transform.crop_bottom.to_string().into());
 }
